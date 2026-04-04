@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -255,8 +255,14 @@ class CoordinatorStateManager:
         _LOG.info(f"Assigned task {task_id} to {teammate_id}")
         increment("coordinator_task_assigned_total")
 
-    def mark_task_done(self, task_id: str) -> None:
-        """Mark a task as completed."""
+    def mark_task_done(self, task_id: str, emit_event: Optional[Callable[[str, dict[str, Any]], None]] = None) -> None:
+        """
+        Mark a task as completed and notify of newly ready tasks.
+
+        Args:
+            task_id: Task ID to mark as done
+            emit_event: Optional callback to emit task.ready events for newly ready tasks
+        """
         if task_id not in self.task_board:
             raise ValueError(f"Unknown task: {task_id}")
 
@@ -265,6 +271,17 @@ class CoordinatorStateManager:
 
         _LOG.info(f"Task {task_id} completed")
         increment("coordinator_task_completed_total")
+
+        # Check if any queued tasks just became ready due to this task's completion
+        if emit_event:
+            newly_ready = self.get_ready_task_ids()
+            for ready_task_id in newly_ready:
+                if self.task_board[ready_task_id]["status"] == "queued":
+                    emit_event("task.ready", {
+                        "task_id": ready_task_id,
+                        "depends_on": self.task_board[ready_task_id]["depends_on"],
+                        "phase": self.task_board[ready_task_id].get("phase", "unknown"),
+                    })
 
     def mark_task_failed(self, task_id: str, error: str = "") -> None:
         """Mark a task as failed."""

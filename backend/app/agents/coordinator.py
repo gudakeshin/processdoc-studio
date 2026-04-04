@@ -903,7 +903,7 @@ class Coordinator:
                 failed_tasks.append((task_id, err))
                 _LOG.error(f"Task {task_id} failed: {err}")
             else:
-                sm.mark_task_done(task_id)
+                sm.mark_task_done(task_id, emit_event=emit_event)
                 all_updates.update(update)
                 _LOG.info(f"Task {task_id} completed")
 
