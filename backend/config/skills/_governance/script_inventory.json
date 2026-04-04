@@ -1,0 +1,96 @@
+{
+  "skills_root": "config/skills",
+  "script_count": 18,
+  "items": [
+    {
+      "skill": "approach_note_v1",
+      "script": "config/skills/approach_note_v1/scripts/check_approach_sections.py",
+      "tier": "A"
+    },
+    {
+      "skill": "brd_v1",
+      "script": "config/skills/brd_v1/scripts/check_brd_sections.py",
+      "tier": "A"
+    },
+    {
+      "skill": "docx_v1",
+      "script": "config/skills/docx_v1/scripts/accept_changes.py",
+      "tier": "B"
+    },
+    {
+      "skill": "docx_v1",
+      "script": "config/skills/docx_v1/scripts/comment.py",
+      "tier": "B"
+    },
+    {
+      "skill": "pdf_v1",
+      "script": "config/skills/pdf_v1/scripts/check_bounding_boxes.py",
+      "tier": "A"
+    },
+    {
+      "skill": "pdf_v1",
+      "script": "config/skills/pdf_v1/scripts/check_fillable_fields.py",
+      "tier": "A"
+    },
+    {
+      "skill": "pdf_v1",
+      "script": "config/skills/pdf_v1/scripts/convert_pdf_to_images.py",
+      "tier": "C"
+    },
+    {
+      "skill": "pdf_v1",
+      "script": "config/skills/pdf_v1/scripts/create_validation_image.py",
+      "tier": "B"
+    },
+    {
+      "skill": "pdf_v1",
+      "script": "config/skills/pdf_v1/scripts/extract_form_field_info.py",
+      "tier": "B"
+    },
+    {
+      "skill": "pdf_v1",
+      "script": "config/skills/pdf_v1/scripts/extract_form_structure.py",
+      "tier": "B"
+    },
+    {
+      "skill": "pdf_v1",
+      "script": "config/skills/pdf_v1/scripts/fill_fillable_fields.py",
+      "tier": "B"
+    },
+    {
+      "skill": "pdf_v1",
+      "script": "config/skills/pdf_v1/scripts/fill_pdf_form_with_annotations.py",
+      "tier": "B"
+    },
+    {
+      "skill": "pptx_v1",
+      "script": "config/skills/pptx_v1/scripts/add_slide.py",
+      "tier": "B"
+    },
+    {
+      "skill": "pptx_v1",
+      "script": "config/skills/pptx_v1/scripts/clean.py",
+      "tier": "B"
+    },
+    {
+      "skill": "pptx_v1",
+      "script": "config/skills/pptx_v1/scripts/thumbnail.py",
+      "tier": "C"
+    },
+    {
+      "skill": "proposal_finance_transformation_v1",
+      "script": "config/skills/proposal_finance_transformation_v1/scripts/check_proposal_signals.py",
+      "tier": "A"
+    },
+    {
+      "skill": "raci_v2",
+      "script": "config/skills/raci_v2/scripts/validate_raci_markdown.py",
+      "tier": "A"
+    },
+    {
+      "skill": "xlsx_v1",
+      "script": "config/skills/xlsx_v1/scripts/recalc.py",
+      "tier": "C"
+    }
+  ]
+}

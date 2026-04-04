@@ -1,0 +1,60 @@
+{
+  "contract_id": "proposal_finance_v1",
+  "schema_version": "deliverable-quality-contract-v1",
+  "display_name": "Finance transformation proposal",
+  "pass_threshold": 0.82,
+  "max_revision_rounds": 2,
+  "prompt": {
+    "section_heading_style": "##",
+    "sections": [
+      "Executive Summary",
+      "Current State and Problem Statement",
+      "Target Operating Model",
+      "Workstreams and Timeline",
+      "Value Case",
+      "Risks and Mitigations",
+      "Governance and Team Structure",
+      "Next Steps"
+    ],
+    "constraints": [
+      "Use quantified value levers where available; mark unknowns as [TBC] instead of inventing numbers.",
+      "Ground recommendations in finance-transformation context and executive decision-making needs.",
+      "Avoid generic consulting boilerplate and duplicate statements across sections."
+    ]
+  },
+  "dimensions": [
+    {
+      "id": "structure",
+      "weight": 0.38,
+      "kind": "section_coverage",
+      "required_sections": [
+        "Executive Summary",
+        "Current State and Problem Statement",
+        "Solution on a Page",
+        "Workstreams and Timeline",
+        "Value Case",
+        "Risks and Mitigations",
+        "Governance and Team Structure",
+        "Next Steps"
+      ],
+      "heading_prefixes": ["##", "#"]
+    },
+    {
+      "id": "evidence",
+      "weight": 0.22,
+      "kind": "citation_density",
+      "min_markers": 2,
+      "patterns": [
+        "\\[\\d+\\]",
+        "\\(source:[^)]+\\)",
+        "https?://\\S+"
+      ]
+    },
+    {
+      "id": "rubric_fit",
+      "weight": 0.4,
+      "kind": "llm_critique",
+      "rubric": "Score how well this finance-transformation proposal serves a CFO decision: problem-led opening, concrete workstreams and ownership, measurable value case with assumptions, explicit risks/mitigations, no duplicate filler. Penalize generic consulting language and missing quantification where the text asserts outcomes."
+    }
+  ]
+}

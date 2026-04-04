@@ -1,0 +1,27 @@
+{
+  "process_name": "Build a narrative",
+  "roles": [
+    "Process Owner"
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "name": "Build a narrative",
+      "role": "Process Owner",
+      "inputs": [],
+      "outputs": [
+        "narrative"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": ""
+    }
+  ],
+  "decisions": [],
+  "swimlanes": {
+    "Process Owner": [
+      "s1"
+    ]
+  },
+  "metadata": {}
+}

@@ -1,0 +1,94 @@
+{
+  "status": "fail",
+  "summary": "The document demonstrates solid structural organization with clear section hierarchy, consistent formatting patterns, and logical content flow. All major sections are properly delineated and content is well-organized for readability. | PPTX not found | Document fails multiple structural quality criteria. While it meets word count and H2 section requirements, it has duplicate H1 headings and critically low paragraph density indicating insufficient prose content.",
+  "findings": [
+    "Clear hierarchical structure: Primary sections (Build a Narrative, What This Process Does, Key Activities, etc.) are consistently formatted with bold headers followed by descriptive content",
+    "Consistent bullet-point formatting throughout: Uses bullet markers (\u2022) uniformly for lists and sub-items, maintaining visual consistency",
+    "Logical content organization: Sections flow logically from process overview \u2192 key activities \u2192 roles/accountability \u2192 next actions \u2192 validation \u2192 styling applied",
+    "Proper spacing between sections: Adequate white space separates major sections, improving scannability and reducing cognitive load",
+    "Nested list hierarchy is clear: Sub-bullets and indented items (e.g., under 'Key Activities' and 'Recommended Next Actions') are visually distinguished",
+    "Validation Summary section effectively uses inline formatting with bullet separators (\u2022 \u2022) to highlight key metrics and quality scores",
+    "Styling Applied section demonstrates consistent application of brand guidelines with specific technical details (font names, color codes, WCAG standards)",
+    "Content density is appropriate: No overcrowding; adequate line breaks between conceptual blocks",
+    "No tables present in this document, so table readability assessment is not applicable",
+    "Typography hierarchy is maintained through consistent use of bold headers and regular body text",
+    "Page indicator (docx page 1/1) confirms single-page deliverable with appropriate content volume",
+    "[DOCX] H1 count is 2, but exactly 1 is required (found: 'Build a narrative' and 'Build a Narrative \u2014 Executive Briefing')",
+    "[DOCX] avg_para_words is 8.4, below minimum threshold of 20 (indicates bullet-heavy content with minimal prose)",
+    "[DOCX] Paragraph-to-word ratio suggests content is fragmented; 17 paragraphs across 207 words yields very short paragraphs"
+  ],
+  "project_id": "p_a8373d1f06",
+  "run_id": "run_46b4efb039",
+  "mode": "strict_image",
+  "image_count": 1,
+  "missing_targets": [
+    "narrative",
+    "sop",
+    "raci_markdown",
+    "raci_html",
+    "process_map_mermaid",
+    "drawio_xml",
+    "xlsx",
+    "pdf",
+    "raci_xlsx"
+  ],
+  "render_diagnostics": [],
+  "render_stats": {
+    "native_images": 0,
+    "surrogate_images": 1
+  },
+  "strict_mode": false,
+  "per_artifact": {
+    "pptx": {
+      "status": "skip",
+      "summary": "PPTX not found",
+      "per_slide_findings": [],
+      "remediation_hints": []
+    },
+    "docx": {
+      "status": "fail",
+      "summary": "Document fails multiple structural quality criteria. While it meets word count and H2 section requirements, it has duplicate H1 headings and critically low paragraph density indicating insufficient prose content.",
+      "issues": [
+        "H1 count is 2, but exactly 1 is required (found: 'Build a narrative' and 'Build a Narrative \u2014 Executive Briefing')",
+        "avg_para_words is 8.4, below minimum threshold of 20 (indicates bullet-heavy content with minimal prose)",
+        "Paragraph-to-word ratio suggests content is fragmented; 17 paragraphs across 207 words yields very short paragraphs"
+      ],
+      "remediation_hints": [
+        {
+          "instruction": "Remove the duplicate H1 heading. Keep only one title at document start (recommend 'Build a Narrative \u2014 Executive Briefing' as it is more descriptive). Delete the other H1 entirely."
+        },
+        {
+          "instruction": "Expand paragraph content to increase avg_para_words from 8.4 to \u226520. Consolidate bullet points into flowing prose paragraphs with complete sentences. Each section should have substantive explanatory text, not just lists."
+        },
+        {
+          "instruction": "Review the 17 paragraphs and merge short fragments into coherent multi-sentence paragraphs. Target 10\u201312 well-developed paragraphs rather than 17 sparse ones."
+        },
+        {
+          "instruction": "Verify that 'Styling Applied' section adds meaningful content; if it is metadata or instructional, consider moving to appendix or removing to focus on core narrative sections."
+        }
+      ]
+    },
+    "xlsx": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "pdf": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "process_map": {
+      "status": "skip",
+      "summary": "No process map file found",
+      "issues": [],
+      "remediation_hints": []
+    }
+  },
+  "pptx_assessment": {
+    "status": "skip",
+    "summary": "PPTX not found",
+    "per_slide_findings": [],
+    "remediation_hints": []
+  }
+}

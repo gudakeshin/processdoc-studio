@@ -1,0 +1,93 @@
+{
+  "status": "fail",
+  "summary": "Document demonstrates clear hierarchical structure with consistent formatting, logical section organization, and readable content flow. Section headers are properly distinguished, bullet points are consistently applied, and spacing supports content comprehension. | PPTX not found | Document fails multiple structural and content quality criteria. Critical issues: 3 H1 headings instead of required 1, severely low average paragraph length (7.8 words vs. \u226520 required), and insufficient prose density indicating bullet-point or fragment-heavy structure.",
+  "findings": [
+    "Clear section hierarchy established: main heading 'Build a narrative' followed by subsections ('Critical Process Definition Issue', 'Problem Statement', 'What's Missing', 'Why This Matters', 'Recommended Path Forward') with consistent visual distinction",
+    "Consistent use of bullet points throughout document for listing items and sub-points, improving scannability",
+    "Adequate vertical spacing between major sections and subsections supports logical content organization",
+    "Problem Statement section uses bullet-point format effectively to enumerate specific issues (business outcome, input/output specifications, decision branches, etc.)",
+    "Recommended Path Forward section clearly delineates three numbered options (Option 1, Option 2, Option 3) with descriptive text, establishing clear decision framework",
+    "Content flows logically from problem identification through analysis to recommended solutions",
+    "Closing question ('Which would be most helpful?') provides clear call-to-action",
+    "No tables present in document; content organization relies on text hierarchy and bullet formatting",
+    "Consistent left-alignment and margin treatment throughout",
+    "Page indicator 'docx page 1/1' confirms single-page document with appropriate content density",
+    "[DOCX] H1 count is 3; must be exactly 1 (document has multiple top-level titles instead of single title)",
+    "[DOCX] avg_para_words is 7.8; must be \u226520 (paragraphs are too short, suggesting bullet points or fragments without substantive prose)",
+    "[DOCX] Document structure suggests fragmented content rather than cohesive narrative prose"
+  ],
+  "project_id": "p_3140f043ea",
+  "run_id": "run_dee0822e91",
+  "mode": "strict_image",
+  "image_count": 1,
+  "missing_targets": [
+    "narrative",
+    "sop",
+    "raci_markdown",
+    "raci_html",
+    "process_map_mermaid",
+    "drawio_xml",
+    "xlsx",
+    "pdf",
+    "raci_xlsx"
+  ],
+  "render_diagnostics": [],
+  "render_stats": {
+    "native_images": 0,
+    "surrogate_images": 1
+  },
+  "strict_mode": false,
+  "per_artifact": {
+    "pptx": {
+      "status": "skip",
+      "summary": "PPTX not found",
+      "per_slide_findings": [],
+      "remediation_hints": []
+    },
+    "docx": {
+      "status": "fail",
+      "summary": "Document fails multiple structural and content quality criteria. Critical issues: 3 H1 headings instead of required 1, severely low average paragraph length (7.8 words vs. \u226520 required), and insufficient prose density indicating bullet-point or fragment-heavy structure.",
+      "issues": [
+        "H1 count is 3; must be exactly 1 (document has multiple top-level titles instead of single title)",
+        "avg_para_words is 7.8; must be \u226520 (paragraphs are too short, suggesting bullet points or fragments without substantive prose)",
+        "Document structure suggests fragmented content rather than cohesive narrative prose"
+      ],
+      "remediation_hints": [
+        {
+          "instruction": "Consolidate the 3 H1 headings into a single document title (e.g., 'Critical Process Definition Issue: Recommended Path Forward'). Demote current H1s to H2 level."
+        },
+        {
+          "instruction": "Expand all paragraphs to minimum 20 words average. Replace bullet-point lists with full prose sentences that explain context, rationale, and implications. Aim for 2\u20133 sentence minimum per paragraph."
+        },
+        {
+          "instruction": "Review the 22 paragraphs: consolidate short fragments into coherent multi-sentence paragraphs that develop ideas fully rather than listing points."
+        },
+        {
+          "instruction": "Verify final word count reaches \u2265200 (currently 235, acceptable) after prose expansion; target 400+ words for a professional consulting deliverable."
+        }
+      ]
+    },
+    "xlsx": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "pdf": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "process_map": {
+      "status": "skip",
+      "summary": "No process map file found",
+      "issues": [],
+      "remediation_hints": []
+    }
+  },
+  "pptx_assessment": {
+    "status": "skip",
+    "summary": "PPTX not found",
+    "per_slide_findings": [],
+    "remediation_hints": []
+  }
+}

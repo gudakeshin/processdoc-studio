@@ -1,0 +1,48 @@
+# Optional only: Postgres + Redis for developers who want containers.
+# Local-first setup uses SQLite + in-process cache; you can ignore this file.
+version: "3.8"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: processdoc
+      POSTGRES_PASSWORD: processdoc
+      POSTGRES_DB: processdoc
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  # Optional: diagrams.net (draw.io) self-hosted editor for collaboration (embed=1, proto=json).
+  # This does not remove the need for the backend websocket collaboration endpoints;
+  # it only provides the diagram editor runtime.
+  #
+  # After starting:
+  # - HTTP:  http://localhost:8081
+  # - HTTPS: https://localhost:8444
+  #
+  # Note: your browser may warn about the self-signed certificate.
+  drawio:
+    image: jgraph/drawio
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+      - "8444:8443"
+    environment:
+      # Keep it simple for local dev; use the container's self-signed cert.
+      LETS_ENCRYPT_ENABLED: "false"
+      PUBLIC_DNS: "localhost"
+      ORGANISATION_UNIT: "dev"
+      ORGANISATION: "processdoc"
+      CITY: "local"
+      STATE: "local"
+      COUNTRY_CODE: "US"
+      # Ensure self-hosted URLs work correctly in iframe/embed mode.
+      # - DRAWIO_SERVER_URL must end with `/`
+      # - DRAWIO_LIGHTBOX_URL should differ from DRAWIO_BASE_URL; trailing `/.` is the documented workaround.
+      DRAWIO_SERVER_URL: "https://localhost:8444/"
+      DRAWIO_BASE_URL: "https://localhost:8444"
+      DRAWIO_LIGHTBOX_URL: "https://localhost:8444/."
+      DRAWIO_VIEWER_URL: "https://localhost:8444/js/viewer.min.js"

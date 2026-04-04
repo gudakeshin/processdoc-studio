@@ -1,0 +1,206 @@
+@import "./tokens.css";
+@import "./matrix-pane.css";
+@import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--primary-50);
+  color: var(--primary-900);
+  font-family: var(--font-inter), system-ui, sans-serif;
+}
+
+a {
+  color: var(--accent-blue);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.mono {
+  font-family: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-blue-light);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent-green) 35%, white);
+}
+
+.deloitte-surface {
+  border: 1px solid var(--surface-border);
+  background: var(--surface-default);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.surface-muted {
+  border: 1px solid var(--surface-border);
+  background: var(--surface-muted);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: var(--text-2xs);
+  line-height: 1.35;
+  font-weight: 500;
+}
+
+.status-pill--info {
+  background: color-mix(in srgb, var(--info) 14%, white);
+  color: color-mix(in srgb, var(--info) 72%, black);
+}
+
+.status-pill--success {
+  background: var(--success-light);
+  color: color-mix(in srgb, var(--success) 70%, black);
+}
+
+.status-pill--warning {
+  background: var(--warning-light);
+  color: color-mix(in srgb, var(--warning) 75%, black);
+}
+
+.status-pill--error {
+  background: var(--error-light);
+  color: color-mix(in srgb, var(--error) 72%, black);
+}
+
+.alert {
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.alert--info {
+  border-color: color-mix(in srgb, var(--info) 25%, white);
+  background: var(--info-light);
+  color: color-mix(in srgb, var(--info) 72%, black);
+}
+
+.alert--warning {
+  border-color: color-mix(in srgb, var(--warning) 35%, white);
+  background: var(--warning-light);
+  color: color-mix(in srgb, var(--warning) 80%, black);
+}
+
+.alert--error {
+  border-color: color-mix(in srgb, var(--error) 35%, white);
+  background: var(--error-light);
+  color: color-mix(in srgb, var(--error) 78%, black);
+}
+
+.alert--success {
+  border-color: color-mix(in srgb, var(--success) 28%, white);
+  background: var(--success-light);
+  color: color-mix(in srgb, var(--success) 75%, black);
+}
+
+/* Token-based type scale (use with Tailwind arbitrary-size migration) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.text-2xs {
+  font-size: var(--text-2xs);
+  line-height: 1.35;
+}
+
+/* Run / agent status chips (background + border + text from tokens) */
+.status-surface--queued {
+  border-color: var(--status-queued-border);
+  background: var(--status-queued-bg);
+  color: var(--status-queued-text);
+}
+
+.status-surface--running {
+  border-color: var(--status-running-border);
+  background: var(--status-running-bg);
+  color: var(--status-running-text);
+}
+
+.status-surface--done {
+  border-color: var(--status-done-border);
+  background: var(--status-done-bg);
+  color: var(--status-done-text);
+}
+
+.status-surface--failed {
+  border-color: var(--status-failed-border);
+  background: var(--status-failed-bg);
+  color: var(--status-failed-text);
+}
+
+.input-select-base {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--surface-border-strong);
+  background: var(--surface-default);
+  padding: 0.5rem 0.75rem;
+  font-size: var(--text-sm-size);
+  color: var(--text-default);
+}
+
+.shell-sidebar a {
+  color: inherit !important;
+}
+
+.project-studio-compact {
+  font-size: 13px;
+}
+
+.project-studio-compact h1 {
+  font-size: 1.35rem;
+}
+
+.project-studio-compact h2,
+.project-studio-compact h3 {
+  font-size: 0.9rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Minimal legacy fallback while migrating remaining low-traffic surfaces. */
+.border-slate-200 { border-color: color-mix(in srgb, var(--primary-700) 20%, transparent) !important; }
+.text-slate-600 { color: var(--primary-700) !important; }

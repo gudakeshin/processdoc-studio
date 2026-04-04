@@ -1,0 +1,16 @@
+{
+  "version_id": "model_0290491d_v_20260326_131538",
+  "created_at": "2026-03-26T13:15:38.811261+00:00",
+  "reason": "create",
+  "model": {
+    "id": "model_0290491d",
+    "name": "Conflict Model",
+    "description": "Per cell diffs",
+    "assumptions": {},
+    "created_at": "2026-03-26T13:15:38.810637+00:00",
+    "updated_at": "2026-03-26T13:15:38.810641+00:00",
+    "created_by": "conflicts@example.com",
+    "status": "draft"
+  },
+  "scenarios": []
+}

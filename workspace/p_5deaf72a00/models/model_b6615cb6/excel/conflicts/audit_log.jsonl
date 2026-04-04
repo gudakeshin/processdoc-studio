@@ -1,0 +1,4 @@
+{"event": "conflict_detected", "conflict_id": "cnf_f3fe02abf9", "actor": "conflicts@example.com", "timestamp": "2026-03-26T13:49:23.839846+00:00", "type": "formula_changed"}
+{"event": "conflict_resolved", "conflict_id": "cnf_f3fe02abf9", "actor": "conflicts@example.com", "timestamp": "2026-03-26T13:49:23.848105+00:00", "chosen_side": "remote"}
+{"event": "conflict_reopened", "conflict_id": "cnf_f3fe02abf9", "actor": "conflicts@example.com", "timestamp": "2026-03-26T13:49:23.850370+00:00", "reason": "new upstream revision"}
+{"event": "conflict_resolved", "conflict_id": "cnf_f3fe02abf9", "actor": "conflicts@example.com", "timestamp": "2026-03-26T13:49:23.852982+00:00", "chosen_side": "policy"}

@@ -1,0 +1,32 @@
+{
+  "process_name": "ObjectiveNow",
+  "roles": [
+    "Process Owner",
+    "Contributor"
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "name": "Build a narrative",
+      "role": "Process Owner",
+      "inputs": [],
+      "outputs": [],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": ""
+    }
+  ],
+  "decisions": [],
+  "swimlanes": {
+    "Process Owner": [
+      "s1"
+    ]
+  },
+  "metadata": {
+    "source": "heuristic_extraction",
+    "step_count": "1",
+    "source_trace": [
+      "Build a narrative"
+    ]
+  }
+}

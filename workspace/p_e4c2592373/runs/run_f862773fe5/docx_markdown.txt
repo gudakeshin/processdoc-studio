@@ -1,0 +1,7 @@
+# ObjectiveNow
+
+## Purpose
+Documented procedure for operational execution.
+
+## Procedure
+1. Complete run (Process Owner)

@@ -1,0 +1,3 @@
+Plan rationale: User requests building a narrative; only docx is allowed in this run. Using DOCX Authoring specialist as the primary skill to create a narrative-focused Word document.
+Per-output notes:
+- docx: narrative_v2 skill would semantically match 'Build a narrative' intent, but it outputs 'narrative' type (not in allowed_output_types). Using docx_v1 as the generic authoring tool to produce narrative content in docx form

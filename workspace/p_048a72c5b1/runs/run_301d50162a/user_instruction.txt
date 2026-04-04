@@ -1,0 +1,7 @@
+Complete run
+
+Guardrail remediation required before final review. Revise outputs to satisfy compliance gates and remove unsupported claims. Gate failed: source grounding. For each factual or quantitative claim, add explicit provenance in-line (for example: '(source: client-provided data)', '(source: benchmark assumptions)', or '(source: internal estimate; illustrative)'). Add a short 'Sources and assumptions' section summarizing key evidence used. Do not leave benchmark or percentage claims uncited.
+
+Guardrail remediation required before final review. Revise outputs to satisfy compliance gates and remove unsupported claims. Gate failed: source grounding. For each factual or quantitative claim, add explicit provenance in-line (for example: '(source: client-provided data)', '(source: benchmark assumptions)', or '(source: internal estimate; illustrative)'). Add a short 'Sources and assumptions' section summarizing key evidence used. Do not leave benchmark or percentage claims uncited.
+
+Guardrail remediation required before final review. Revise outputs to satisfy compliance gates and remove unsupported claims. Gate failed: source grounding. For each factual or quantitative claim, add explicit provenance in-line (for example: '(source: client-provided data)', '(source: benchmark assumptions)', or '(source: internal estimate; illustrative)'). Add a short 'Sources and assumptions' section summarizing key evidence used. Do not leave benchmark or percentage claims uncited.

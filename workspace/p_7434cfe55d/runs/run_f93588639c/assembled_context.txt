@@ -1,0 +1,19 @@
+## ObjectiveNow
+Complete run
+
+## NonNegotiables
+
+
+## WhatChanged
+user_intent_updated: Complete run
+qa_outcome: fail
+qa_remediation: qa remediation applied
+guardrail_outcome: fail
+qa_outcome: fail
+
+## Evidence
+# Project Context
+
+## KnownFailures
+qa_remediation: qa remediation applied
+guardrail_outcome: fail

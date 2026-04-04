@@ -1,0 +1,11 @@
+[
+  {
+    "id": "scn_6efe0ed7",
+    "name": "Optimistic",
+    "assumption_overrides": {
+      "growth_rate": 0.2
+    },
+    "created_at": "2026-03-26T13:22:32.937430+00:00",
+    "created_by": "model@example.com"
+  }
+]

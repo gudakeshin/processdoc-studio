@@ -1,0 +1,72 @@
+[
+  {
+    "id": "onedrive",
+    "description": "OneDrive/SharePoint integration via Anthropic's MCP connector",
+    "command": "npx",
+    "args": ["-y", "@anthropic/mcp-onedrive"],
+    "env": {
+      "ONEDRIVE_CLIENT_ID": "${ONEDRIVE_CLIENT_ID}",
+      "ONEDRIVE_CLIENT_SECRET": "${ONEDRIVE_CLIENT_SECRET}",
+      "ONEDRIVE_TENANT_ID": "${ONEDRIVE_TENANT_ID}"
+    },
+    "enabled": false,
+    "timeout_sec": 30.0,
+    "tools": [
+      {
+        "name": "list_files",
+        "description": "List files in OneDrive folder"
+      },
+      {
+        "name": "read_file",
+        "description": "Read file contents from OneDrive"
+      },
+      {
+        "name": "create_file",
+        "description": "Create or update file in OneDrive"
+      }
+    ]
+  },
+  {
+    "id": "slack",
+    "description": "Slack integration via MCP connector",
+    "command": "npx",
+    "args": ["-y", "@anthropic/mcp-slack"],
+    "env": {
+      "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
+      "SLACK_WORKSPACE": "${SLACK_WORKSPACE}"
+    },
+    "enabled": false,
+    "timeout_sec": 15.0,
+    "tools": [
+      {
+        "name": "post_message",
+        "description": "Post message to Slack channel"
+      },
+      {
+        "name": "read_channel",
+        "description": "Read messages from Slack channel"
+      },
+      {
+        "name": "list_users",
+        "description": "List users in Slack workspace"
+      }
+    ]
+  },
+  {
+    "id": "example-local",
+    "description": "Example local MCP server for testing",
+    "command": "node",
+    "args": ["./local_mcp_server.js"],
+    "env": {
+      "DEBUG": "true"
+    },
+    "enabled": false,
+    "timeout_sec": 10.0,
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Echo tool for testing"
+      }
+    ]
+  }
+]

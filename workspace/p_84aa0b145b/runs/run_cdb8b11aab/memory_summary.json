@@ -1,0 +1,17 @@
+{
+  "non_negotiables": [],
+  "recent_changes": [
+    {
+      "summary": "Complete run"
+    },
+    {
+      "scores": {
+        "docx_markdown": 0.85
+      },
+      "summary": "pass"
+    },
+    {
+      "summary": "fail"
+    }
+  ]
+}

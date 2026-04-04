@@ -1,0 +1,32 @@
+{
+  "process_name": "Build a narrative",
+  "roles": [
+    "Process Owner"
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "name": "Build a narrative",
+      "role": "Process Owner",
+      "inputs": [],
+      "outputs": [
+        "narrative"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": "User intent updated to build a narrative; QA outcome failed; QA remediation applied; guardrail outcome failed"
+    }
+  ],
+  "decisions": [],
+  "swimlanes": {
+    "Process Owner": [
+      "s1"
+    ]
+  },
+  "metadata": {
+    "user_intent": "Build a narrative",
+    "qa_outcome": "fail",
+    "qa_remediation": "qa remediation applied",
+    "guardrail_outcome": "fail"
+  }
+}

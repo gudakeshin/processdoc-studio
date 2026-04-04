@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migtest
+        options: >-
+          --health-cmd="pg_isready -U postgres -d migtest"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade "pip>=25.3" "setuptools>=78.1.1"
+          pip install -e ".[dev]"
+          pip install pip-audit
+      - name: pip-audit (dependency vulnerabilities)
+        # pygments CVE-2026-4539: ReDoS in optional lexer; local-access only; no fixed release in DB yet.
+        run: pip-audit --desc on --ignore-vuln CVE-2026-4539
+      - name: Pytest with coverage
+        run: pytest app/tests -q --cov=app --cov-report=term-missing
+      - name: Skill script smoke suite
+        run: pytest app/tests/test_skill_scripts_smoke.py -q
+      - name: Alembic upgrade smoke (Postgres)
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/migtest
+          PYTHONPATH: .
+        run: python -m alembic upgrade head
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: npm audit (high severity and above)
+        run: npm audit --audit-level=high
+      - name: Lint
+        run: npm run lint
+      - name: UI style / WCAG audit
+        run: npm run ui:style-audit
+      - name: Test
+        run: npm test
+      - name: Vitest
+        run: npm run test:vitest
+      - name: Build
+        run: npm run build

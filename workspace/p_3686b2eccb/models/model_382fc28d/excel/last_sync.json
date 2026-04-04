@@ -1,0 +1,31 @@
+{
+  "status": "degraded",
+  "mode": "force-fail",
+  "synced_at": "2026-03-31T16:51:27.109029+00:00",
+  "request_id": "req_93c86658da",
+  "sync_state": "degraded",
+  "checkpoint": {
+    "state": "degraded",
+    "delta_token": null,
+    "last_remote_revision": null,
+    "last_applied_change_id": null,
+    "last_pull_at": "2026-03-31T16:51:27.108219+00:00",
+    "last_push_at": null,
+    "last_error": "graph_sync_push_failed",
+    "updated_at": "2026-03-31T16:51:27.108905+00:00",
+    "mode": "force-fail",
+    "started_by": "sync@example.com",
+    "started_at": "2026-03-31T16:51:27.105722+00:00",
+    "last_request_id": "req_93c86658da"
+  },
+  "pull_applied": 0,
+  "pushed": 0,
+  "idempotent_replay": false,
+  "graph_connected": false,
+  "conflict_policy": {
+    "assumption_cells": "last_write_wins",
+    "computed_cells": "processdoc_wins"
+  },
+  "latency_seconds": 0,
+  "dead_letter_item_id": "dlq_40b9e34273"
+}

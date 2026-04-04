@@ -1,0 +1,10 @@
+{
+  "schema_version": "quality-contract-registry-v1",
+  "bindings": [
+    {
+      "skill_id": "proposal_finance_transformation_v1",
+      "output_types": ["docx", "pptx", "pdf"],
+      "contract_id": "proposal_finance_v1"
+    }
+  ]
+}

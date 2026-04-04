@@ -1,0 +1,3 @@
+Plan rationale: Compliance gate remediation focused on source grounding. The user requires revision of existing docx content to add inline provenance citations for all factual/quantitative claims and creation of a Sources and Assumptions section. Since only docx is allowed, execution centers on docx authoring and citation work.
+Per-output notes:
+- docx: Revise existing docx to add inline source attribution (e.g., '(source: client-provided data)', '(source: benchmark assumptions)', '(source: internal estimate; illustrative)') for all factual and quantitative claims. Add 

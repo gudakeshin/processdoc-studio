@@ -1,0 +1,13 @@
+## ObjectiveNow
+Build a narrative
+
+## NonNegotiables
+
+
+## WhatChanged
+user_intent_updated: Build a narrative
+
+## Evidence
+# Project Context
+
+## KnownFailures

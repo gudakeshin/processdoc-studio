@@ -1,0 +1,3 @@
+Plan rationale: User needs to build a narrative with guardrail remediation applied (source grounding). Only docx output is allowed. DOCX Authoring and Editing is the primary skill for creating and editing Word documents with compliance remediation (inline citations and sources section).
+Per-output notes:
+- docx: Guardrail remediation (source grounding) must be applied during authoring: add explicit provenance in-line for all factual, quantitative, and benchmark claims using formats like '(source: client-provided data)', '(source

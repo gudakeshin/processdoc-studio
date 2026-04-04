@@ -1,0 +1,9 @@
+{
+  "pii_entities_found": [],
+  "pii_entities_redacted": 0,
+  "gate7_pass": true,
+  "gate7_confidence_threshold": 0.6,
+  "detector_name": "regex_v1",
+  "detector_confidence": 0.0,
+  "entity_confidence": {}
+}

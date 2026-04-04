@@ -1,0 +1,309 @@
+/* Matrix CRT — applied to the whole app shell when `.matrix-app` is on the root flex container (AppShell).
+   Do not add Tailwind `text-[var(--primary-900)]` on the same node: utilities load after this file and break inherited color. */
+
+.matrix-app-html,
+.matrix-app-html body {
+  background: #000000;
+}
+
+.matrix-app {
+  --matrix-void: #000000;
+  --matrix-glow: #00ff41;
+  --matrix-deep: #003b00;
+  --matrix-highlight: #d1ffd7;
+
+  position: relative;
+  background: var(--matrix-void);
+  color: var(--matrix-glow);
+  font-family: var(--font-matrix-body), var(--font-jetbrains-mono), ui-monospace, monospace;
+  font-size: 1rem;
+  line-height: 1.45;
+
+  /* Remap design tokens for all descendants */
+  --surface-default: #000000;
+  --surface-muted: #030a03;
+  --surface-border: var(--matrix-deep);
+  --surface-border-strong: var(--matrix-glow);
+  --text-default: var(--matrix-glow);
+  --text-muted: rgba(0, 255, 65, 0.72);
+  --text-caption: rgba(0, 255, 65, 0.55);
+  /* Light theme maps high primary-* numbers to dark ink; on void black those same utilities must stay luminous. */
+  --primary-50: #000000;
+  --primary-100: #050805;
+  --primary-200: #0a120a;
+  --primary-400: rgba(0, 255, 65, 0.55);
+  --primary-600: rgba(0, 255, 65, 0.62);
+  --primary-700: rgba(0, 255, 65, 0.72);
+  --primary-800: rgba(0, 255, 65, 0.82);
+  /* Used heavily as body text via text-[var(--primary-900)] — must not be near-black on #000 */
+  --primary-900: var(--matrix-glow);
+  --primary-950: #000000;
+  --accent-blue: var(--matrix-glow);
+  --accent-blue-light: var(--matrix-highlight);
+  --accent-indigo: var(--matrix-glow);
+  --accent-violet: var(--matrix-glow);
+  --accent-green: var(--matrix-glow);
+  --accent-green-dark: var(--matrix-deep);
+  --info: var(--matrix-glow);
+  --info-light: rgba(0, 255, 65, 0.12);
+  --warning: #c9a227;
+  --warning-light: rgba(201, 162, 39, 0.15);
+  --error: #ff6b6b;
+  --error-light: rgba(255, 107, 107, 0.12);
+  --success: var(--matrix-glow);
+  --success-light: rgba(0, 255, 65, 0.14);
+  --agent-purple: #c4a3ff;
+  --agent-purple-light: rgba(196, 163, 255, 0.12);
+  --dpdp-orange: #ffb38a;
+  --dpdp-light: rgba(255, 179, 138, 0.12);
+  --status-queued-bg: rgba(201, 162, 39, 0.12);
+  --status-queued-border: rgba(201, 162, 39, 0.45);
+  --status-queued-text: #f0e6a6;
+  --status-running-bg: rgba(0, 255, 65, 0.1);
+  --status-running-border: var(--matrix-deep);
+  --status-running-text: var(--matrix-glow);
+  --status-done-bg: rgba(0, 255, 65, 0.12);
+  --status-done-border: var(--matrix-deep);
+  --status-done-text: var(--matrix-highlight);
+  --status-failed-bg: rgba(255, 107, 107, 0.12);
+  --status-failed-border: rgba(255, 107, 107, 0.45);
+  --status-failed-text: #ffc9c9;
+  --shadow-sm: none;
+  --shadow-md: none;
+}
+
+/* Dark fills where components use primary-800/900 as background (chat bubbles, tabs, pills).
+   Text tokens above intentionally use glow tints so text-[var(--primary-*)] stays readable. */
+.matrix-app .bg-\[var\(--primary-900\)\] {
+  background-color: #0a160a !important;
+}
+.matrix-app .bg-\[var\(--primary-800\)\] {
+  background-color: var(--matrix-deep) !important;
+}
+
+/* Full-viewport scanlines above chrome; pointer-events none */
+.matrix-app::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 255, 65, 0.04) 2px,
+    rgba(0, 255, 65, 0.04) 3px
+  );
+}
+
+.matrix-app .app-shell-body {
+  position: relative;
+  z-index: 1;
+  background: var(--matrix-void);
+}
+
+.matrix-app .app-shell-topbar {
+  background: var(--matrix-void) !important;
+  border-bottom: 1px solid var(--matrix-deep) !important;
+  backdrop-filter: none !important;
+  color: var(--matrix-glow);
+}
+
+.matrix-app .app-shell-topbar a {
+  color: var(--matrix-glow) !important;
+  text-shadow: 0 0 4px rgba(0, 255, 65, 0.35);
+}
+
+.matrix-app .app-shell-topbar a:hover {
+  color: var(--matrix-highlight) !important;
+}
+
+.matrix-app main {
+  background: var(--matrix-void);
+  color: var(--matrix-glow);
+}
+
+/* Left navigation rail */
+.matrix-app .shell-sidebar {
+  background: var(--matrix-void) !important;
+  border-right: 1px solid var(--matrix-deep) !important;
+  color: var(--matrix-glow) !important;
+}
+
+.matrix-app .shell-sidebar .text-\[var\(--accent-green\)\],
+.matrix-app .shell-sidebar span.text-\[var\(--accent-green\)\] {
+  color: var(--matrix-glow) !important;
+  text-shadow: 0 0 6px rgba(0, 255, 65, 0.4);
+}
+
+.matrix-app .shell-sidebar nav a {
+  border-radius: 0 !important;
+  border: 1px solid transparent !important;
+  color: rgba(0, 255, 65, 0.85) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.matrix-app .shell-sidebar nav a:hover {
+  border-color: var(--matrix-deep) !important;
+  background: rgba(0, 255, 65, 0.08) !important;
+  color: var(--matrix-highlight) !important;
+}
+
+/* Active nav row (Tailwind uses shadow-sm on current link) */
+.matrix-app .shell-sidebar nav a.shadow-sm,
+.matrix-app [role="dialog"] nav a.shadow-sm {
+  border-color: var(--matrix-glow) !important;
+  background: rgba(0, 255, 65, 0.12) !important;
+  color: var(--matrix-glow) !important;
+  text-shadow: 0 0 8px rgba(0, 255, 65, 0.45);
+}
+
+.matrix-app [role="dialog"] nav a {
+  border-radius: 0 !important;
+  border: 1px solid transparent !important;
+  color: rgba(0, 255, 65, 0.85) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.matrix-app [role="dialog"] nav a:hover {
+  border-color: var(--matrix-deep) !important;
+  background: rgba(0, 255, 65, 0.08) !important;
+  color: var(--matrix-highlight) !important;
+}
+
+.matrix-app .shell-sidebar-footer {
+  border-top-color: var(--matrix-deep) !important;
+}
+
+.matrix-app .shell-sidebar > div:first-child span,
+.matrix-app .shell-sidebar > div:first-child .text-\[#d9dee3\] {
+  color: rgba(0, 255, 65, 0.88) !important;
+}
+
+.matrix-app h1,
+.matrix-app h2,
+.matrix-app h3 {
+  font-family: var(--font-matrix-display), var(--font-matrix-body), monospace;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--matrix-glow);
+  text-shadow:
+    0 0 6px rgba(0, 255, 65, 0.45),
+    0 0 14px rgba(0, 255, 65, 0.22);
+}
+
+.matrix-app main a {
+  color: var(--matrix-glow);
+  text-shadow: 0 0 4px rgba(0, 255, 65, 0.25);
+}
+
+.matrix-app main a:hover {
+  color: var(--matrix-highlight);
+}
+
+.matrix-app ::selection {
+  background: rgba(0, 255, 65, 0.35);
+  color: var(--matrix-void);
+}
+
+.matrix-app [class*="rounded"] {
+  border-radius: 0 !important;
+}
+
+.matrix-app .bg-white {
+  background-color: var(--surface-muted) !important;
+  color: var(--matrix-glow) !important;
+  box-shadow: none !important;
+}
+
+/* CRT buttons: main content + nav chrome (exclude full-screen modal scrim) */
+.matrix-app main button[type="button"]:not(:disabled),
+.matrix-app main button[type="submit"]:not(:disabled),
+.matrix-app aside.shell-sidebar > button[type="button"]:not(:disabled),
+.matrix-app aside.shell-sidebar .shell-sidebar-footer button[type="button"]:not(:disabled),
+.matrix-app aside.shell-sidebar > div:first-child button[type="button"]:not(:disabled) {
+  border-radius: 0 !important;
+  background: transparent !important;
+  border: 1px solid var(--matrix-glow) !important;
+  color: var(--matrix-glow) !important;
+  box-shadow: none !important;
+}
+
+.matrix-app main button[type="button"]:not(:disabled):hover,
+.matrix-app main button[type="submit"]:not(:disabled):hover,
+.matrix-app aside.shell-sidebar > button[type="button"]:not(:disabled):hover,
+.matrix-app aside.shell-sidebar .shell-sidebar-footer button[type="button"]:not(:disabled):hover,
+.matrix-app aside.shell-sidebar > div:first-child button[type="button"]:not(:disabled):hover {
+  background: var(--matrix-glow) !important;
+  color: var(--matrix-void) !important;
+  border-color: var(--matrix-glow) !important;
+}
+
+.matrix-app main button[type="button"]:disabled,
+.matrix-app main button[type="submit"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent !important;
+  border-color: var(--matrix-deep) !important;
+  color: rgba(0, 255, 65, 0.45) !important;
+}
+
+.matrix-app main button:focus-visible,
+.matrix-app aside.shell-sidebar button:focus-visible {
+  outline: 2px solid var(--matrix-highlight) !important;
+  outline-offset: 2px;
+}
+
+.matrix-app main textarea {
+  border-radius: 0 !important;
+  background: var(--matrix-void) !important;
+  border: 1px solid var(--matrix-deep) !important;
+  color: var(--matrix-glow) !important;
+  box-shadow: none !important;
+}
+
+.matrix-app main textarea::placeholder {
+  color: rgba(0, 255, 65, 0.45);
+}
+
+.matrix-app main textarea:hover:not(:disabled) {
+  border-color: var(--matrix-glow) !important;
+}
+
+.matrix-app main textarea:focus {
+  border-color: var(--matrix-glow) !important;
+  box-shadow: 0 0 0 1px var(--matrix-highlight) !important;
+}
+
+.matrix-app main div[aria-label="Your message"] span[aria-hidden] {
+  color: var(--matrix-void) !important;
+}
+
+.matrix-crt-checkbox {
+  border-radius: 0 !important;
+  appearance: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid var(--matrix-glow);
+  background: transparent;
+  box-shadow: none;
+}
+
+.matrix-crt-checkbox:checked {
+  background: var(--matrix-glow);
+  box-shadow: inset 0 0 0 2px var(--matrix-void);
+}
+
+.matrix-crt-checkbox:focus-visible {
+  outline: 2px solid var(--matrix-highlight);
+  outline-offset: 2px;
+}
+
+.matrix-toggle-label-crt {
+  font-family: var(--font-matrix-display), var(--font-matrix-body), monospace;
+  font-size: 1.05rem;
+  text-shadow: 0 0 5px rgba(0, 255, 65, 0.55);
+}

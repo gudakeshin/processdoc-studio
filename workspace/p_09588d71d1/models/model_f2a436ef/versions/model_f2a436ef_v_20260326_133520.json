@@ -1,0 +1,16 @@
+{
+  "version_id": "model_f2a436ef_v_20260326_133520",
+  "created_at": "2026-03-26T13:35:20.645520+00:00",
+  "reason": "create",
+  "model": {
+    "id": "model_f2a436ef",
+    "name": "Sync Model",
+    "description": "Graph loop",
+    "assumptions": {},
+    "created_at": "2026-03-26T13:35:20.645028+00:00",
+    "updated_at": "2026-03-26T13:35:20.645031+00:00",
+    "created_by": "sync@example.com",
+    "status": "draft"
+  },
+  "scenarios": []
+}

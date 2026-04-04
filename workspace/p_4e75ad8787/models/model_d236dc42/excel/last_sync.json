@@ -1,0 +1,28 @@
+{
+  "status": "synced",
+  "mode": "manual",
+  "synced_at": "2026-03-26T13:25:46.437742+00:00",
+  "request_id": "req_447bf23534",
+  "sync_state": "idle",
+  "checkpoint": {
+    "state": "idle",
+    "delta_token": "delta_dd93bfda",
+    "last_remote_revision": "rev_07cab3f4",
+    "last_applied_change_id": "chg_0419d5c3",
+    "last_pull_at": "2026-03-26T13:25:46.437609+00:00",
+    "last_push_at": "2026-03-26T13:25:46.437610+00:00",
+    "last_error": null,
+    "updated_at": "2026-03-26T13:25:46.437685+00:00",
+    "mode": "manual",
+    "last_request_id": "req_447bf23534"
+  },
+  "pull_applied": 0,
+  "pushed": 0,
+  "idempotent_replay": false,
+  "graph_connected": false,
+  "conflict_policy": {
+    "assumption_cells": "last_write_wins",
+    "computed_cells": "processdoc_wins"
+  },
+  "latency_seconds": 0
+}

@@ -1,0 +1,9 @@
+# Executive Summary
+
+## Actions
+- Confirm baseline
+- Finalize KPI owners
+
+| KPI | Target |
+|---|---|
+| ROI | 20% |

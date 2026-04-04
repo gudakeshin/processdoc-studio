@@ -1,0 +1,10 @@
+{
+  "id": "model_cbb515eb",
+  "name": "Revenue Model",
+  "description": "Forecast",
+  "assumptions": {},
+  "created_at": "2026-03-31T16:51:26.885760+00:00",
+  "updated_at": "2026-03-31T16:51:26.885763+00:00",
+  "created_by": "model@example.com",
+  "status": "draft"
+}

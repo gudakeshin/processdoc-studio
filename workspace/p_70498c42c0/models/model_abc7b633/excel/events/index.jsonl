@@ -1,0 +1,5 @@
+{"event_id": 1, "event_type": "model_created", "project_id": "p_70498c42c0", "model_id": "model_abc7b633", "server_ts": "2026-03-26T13:54:10.475767+00:00", "payload": {"name": "Conflict Model"}}
+{"event_id": 2, "event_type": "conflict_detected", "project_id": "p_70498c42c0", "model_id": "model_abc7b633", "server_ts": "2026-03-26T13:54:10.478373+00:00", "payload": {"conflict_id": "cnf_313c022da0", "type": "formula_changed", "severity": "high"}}
+{"event_id": 3, "event_type": "conflict_resolved", "project_id": "p_70498c42c0", "model_id": "model_abc7b633", "server_ts": "2026-03-26T13:54:10.486948+00:00", "payload": {"conflict_id": "cnf_313c022da0", "chosen_side": "remote"}}
+{"event_id": 4, "event_type": "conflict_reopened", "project_id": "p_70498c42c0", "model_id": "model_abc7b633", "server_ts": "2026-03-26T13:54:10.489127+00:00", "payload": {"conflict_id": "cnf_313c022da0"}}
+{"event_id": 5, "event_type": "conflict_resolved", "project_id": "p_70498c42c0", "model_id": "model_abc7b633", "server_ts": "2026-03-26T13:54:10.491931+00:00", "payload": {"conflict_id": "cnf_313c022da0", "chosen_side": "policy"}}

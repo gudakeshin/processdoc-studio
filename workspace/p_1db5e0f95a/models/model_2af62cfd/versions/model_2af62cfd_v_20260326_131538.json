@@ -1,0 +1,16 @@
+{
+  "version_id": "model_2af62cfd_v_20260326_131538",
+  "created_at": "2026-03-26T13:15:38.617787+00:00",
+  "reason": "create",
+  "model": {
+    "id": "model_2af62cfd",
+    "name": "Sync Model",
+    "description": "Graph loop",
+    "assumptions": {},
+    "created_at": "2026-03-26T13:15:38.617229+00:00",
+    "updated_at": "2026-03-26T13:15:38.617232+00:00",
+    "created_by": "sync@example.com",
+    "status": "draft"
+  },
+  "scenarios": []
+}

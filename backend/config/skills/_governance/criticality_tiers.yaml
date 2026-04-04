@@ -1,0 +1,30 @@
+tier_definitions:
+  A:
+    name: BusinessCriticalValidators
+    examples:
+      - "check_*.py"
+      - "validate_*.py"
+    requirements:
+      - deterministic_output
+      - strict_exit_codes
+      - pr_blocking_smoke_tests
+  B:
+    name: CoreTransformers
+    examples:
+      - "add_slide.py"
+      - "clean.py"
+      - "accept_changes.py"
+    requirements:
+      - deterministic_cli_contract
+      - fixture_backed_unit_tests
+      - smoke_tests_on_pr
+  C:
+    name: ExternalDependencyHeavy
+    examples:
+      - "recalc.py"
+      - "thumbnail.py"
+      - "convert_pdf_to_images.py"
+    requirements:
+      - optional_dependency_detection
+      - nightly_integration_tests
+      - graceful_skip_policy

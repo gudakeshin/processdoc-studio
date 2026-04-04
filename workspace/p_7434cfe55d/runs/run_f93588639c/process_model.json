@@ -1,0 +1,68 @@
+{
+  "process_name": "Complete Run",
+  "roles": [
+    "Process Owner"
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "name": "Update user intent to complete run",
+      "role": "Process Owner",
+      "inputs": [],
+      "outputs": [
+        "user_intent_updated"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": ""
+    },
+    {
+      "id": "s2",
+      "name": "Execute QA assessment",
+      "role": "Process Owner",
+      "inputs": [],
+      "outputs": [
+        "qa_outcome"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": "QA outcome resulted in fail"
+    },
+    {
+      "id": "s3",
+      "name": "Apply QA remediation",
+      "role": "Process Owner",
+      "inputs": [
+        "qa_outcome"
+      ],
+      "outputs": [
+        "qa_remediation"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": "Remediation applied in response to QA failure"
+    },
+    {
+      "id": "s4",
+      "name": "Execute guardrail assessment",
+      "role": "Process Owner",
+      "inputs": [],
+      "outputs": [
+        "guardrail_outcome"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": "Guardrail outcome resulted in fail"
+    }
+  ],
+  "decisions": [],
+  "swimlanes": {
+    "Process Owner": [
+      "s1",
+      "s2",
+      "s3",
+      "s4"
+    ]
+  },
+  "metadata": {}
+}

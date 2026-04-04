@@ -1,0 +1,19 @@
+{
+  "char_cap": 32000,
+  "parsed_chunk_count": 0,
+  "selected_evidence_chunk_count": 1,
+  "section_sizes": {
+    "ObjectiveNow": 12,
+    "NonNegotiables": 0,
+    "WhatChanged": 74,
+    "Evidence": 17,
+    "KnownFailures": 23
+  },
+  "dropped_items": {
+    "ObjectiveNow": 0,
+    "NonNegotiables": 0,
+    "WhatChanged": 0,
+    "Evidence": 0,
+    "KnownFailures": 0
+  }
+}

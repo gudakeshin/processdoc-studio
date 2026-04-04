@@ -1,0 +1,46 @@
+[
+  {
+    "output_type_id": "process_map",
+    "display_name": "Process Map",
+    "description": "Process map (draw.io mxGraphModel XML) showing steps, roles, swimlanes, and decision branches",
+    "required_skills": ["process_map_v2"],
+    "output_file_type": "xml",
+    "template_ref": "templates/process_map.xml"
+  },
+  {
+    "output_type_id": "docx",
+    "display_name": "Word Document",
+    "description": "Structured Word document — content type (SOP, narrative, BRD, approach note, RACI) is determined by the active content skill",
+    "required_skills": ["docx_v1", "frontend_design_docx_v1", "brand_guidelines_v1"],
+    "content_skills": ["sop_v2", "narrative_v2", "brd_v1", "approach_note_v1", "proposal_finance_transformation_v1", "raci_v2"],
+    "output_file_type": "docx",
+    "template_ref": "templates/output.docx"
+  },
+  {
+    "output_type_id": "pptx",
+    "display_name": "Presentation Deck",
+    "description": "PowerPoint presentation — content driven by active skill (executive deck, process walkthrough, proposal)",
+    "required_skills": ["frontend_design_pptx_v1", "pptx_v1", "brand_guidelines_v1"],
+    "content_skills": ["narrative_v2", "brd_v1", "proposal_finance_transformation_v1"],
+    "output_file_type": "pptx",
+    "template_ref": "templates/output.pptx"
+  },
+  {
+    "output_type_id": "xlsx",
+    "display_name": "Spreadsheet Workbook",
+    "description": "Excel workbook — content driven by active skill (RACI matrix, process data table, financial model)",
+    "required_skills": ["frontend_design_xlsx_v1", "xlsx_v1", "brand_guidelines_v1"],
+    "content_skills": ["raci_v2"],
+    "output_file_type": "xlsx",
+    "template_ref": "templates/output.xlsx"
+  },
+  {
+    "output_type_id": "pdf",
+    "display_name": "PDF Report",
+    "description": "PDF report — content driven by active skill (narrative report, SOP, BRD, proposal)",
+    "required_skills": ["pdf_v1", "brand_guidelines_v1"],
+    "content_skills": ["narrative_v2", "sop_v2", "brd_v1", "proposal_finance_transformation_v1"],
+    "output_file_type": "pdf",
+    "template_ref": "templates/output.pdf"
+  }
+]

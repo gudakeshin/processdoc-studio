@@ -1,0 +1,26 @@
+{
+  "version_id": "model_fa703504_v_20260326_131538",
+  "created_at": "2026-03-26T13:15:38.413356+00:00",
+  "reason": "scenario_create",
+  "model": {
+    "id": "model_fa703504",
+    "name": "Revenue Model",
+    "description": "Forecast",
+    "assumptions": {},
+    "created_at": "2026-03-26T13:15:38.410158+00:00",
+    "updated_at": "2026-03-26T13:15:38.410162+00:00",
+    "created_by": "model@example.com",
+    "status": "draft"
+  },
+  "scenarios": [
+    {
+      "id": "scn_ffc2a64d",
+      "name": "Optimistic",
+      "assumption_overrides": {
+        "growth_rate": 0.2
+      },
+      "created_at": "2026-03-26T13:15:38.413171+00:00",
+      "created_by": "model@example.com"
+    }
+  ]
+}

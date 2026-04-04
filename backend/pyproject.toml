@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "processdoc-backend"
+version = "0.2.0"
+description = "ProcessDoc Studio backend"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+  "python-multipart",
+  "python-jose[cryptography]",
+  "passlib[bcrypt]",
+  "bcrypt>=4.0,<4.1",
+  "redis",
+  "httpx",
+  "python-dotenv",
+  "orjson",
+  "openpyxl",
+  "reportlab",
+  "sqlalchemy",
+  "alembic",
+  "psycopg[binary]",
+  "anthropic",
+  "pillow",
+  "pypdfium2",
+  "pypdf",
+  "pyyaml",
+  "langfuse",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-q"
+asyncio_mode = "auto"
+markers = [
+    "slow: longer integration-style tests (minutes / heavy I/O); exclude with -m \"not slow\"",
+    "live_llm: requires real Anthropic API; opt-in only",
+    "asyncio: marks tests as async (deselect with '-m \"not asyncio\"')",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/tests/*"]
+
+[tool.coverage.report]
+fail_under = 0
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["config*"]

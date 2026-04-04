@@ -1,0 +1,17 @@
+{
+  "state": "idle",
+  "delta_token": null,
+  "last_remote_revision": null,
+  "last_applied_change_id": null,
+  "last_pull_at": "2026-03-26T13:25:46.637253+00:00",
+  "last_push_at": null,
+  "last_error": null,
+  "updated_at": "2026-03-26T13:25:46.643856+00:00",
+  "mode": "force-fail",
+  "started_by": "sync@example.com",
+  "started_at": "2026-03-26T13:25:46.635307+00:00",
+  "last_request_id": "req_b34ef07b7b",
+  "last_replay_item_id": "dlq_1e5e89520d",
+  "stopped_by": "sync@example.com",
+  "stopped_at": "2026-03-26T13:25:46.643854+00:00"
+}

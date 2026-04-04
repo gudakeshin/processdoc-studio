@@ -1,0 +1,3 @@
+Plan rationale: User requests building a narrative. Process model specifies 'narrative' output type, but this run allows only 'docx'. Narrative will be created and delivered as a Word document using DOCX authoring.
+Per-output notes:
+- docx: Process model expects 'narrative' type; run restricts to 'docx' only. The narrative_v2 skill (specialized for process narratives with risks and next actions) cannot be used as it outputs 'narrative' type. Recommendation:

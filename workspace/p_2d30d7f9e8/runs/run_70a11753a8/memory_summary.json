@@ -1,0 +1,17 @@
+{
+  "non_negotiables": [],
+  "recent_changes": [
+    {
+      "summary": "Build a narrative"
+    },
+    {
+      "scores": {
+        "docx_markdown": 0.85
+      },
+      "summary": "pass"
+    },
+    {
+      "summary": "fail"
+    }
+  ]
+}

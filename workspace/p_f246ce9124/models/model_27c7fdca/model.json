@@ -1,0 +1,10 @@
+{
+  "id": "model_27c7fdca",
+  "name": "Conflict Model",
+  "description": "Per cell diffs",
+  "assumptions": {},
+  "created_at": "2026-03-26T13:27:33.896594+00:00",
+  "updated_at": "2026-03-26T13:27:33.896598+00:00",
+  "created_by": "conflicts@example.com",
+  "status": "draft"
+}

@@ -1,0 +1,100 @@
+{
+  "status": "fail",
+  "summary": "The document exhibits significant structural and organizational deficiencies that compromise readability and professional presentation. While basic hierarchy exists, inconsistent formatting, unclear section delineation, and poor spacing undermine document quality. | PPTX not found | Document fails multiple structural and content quality requirements for a professional consulting deliverable.",
+  "findings": [
+    "Inconsistent section hierarchy: 'Build a narrative', 'Perfect: All Validation Checks Pass', and 'Verification Status' lack clear visual distinction or standardized heading formatting",
+    "Poor spacing and layout: Excessive whitespace below content creates unbalanced page composition; content is concentrated in upper portion with no clear visual flow",
+    "Unclear section organization: Bullet points and sub-items lack consistent indentation and formatting (e.g., '\u22a1 + All Systems Operational' vs. '\u2022 Note \u2022' vs. '+ Heading +')",
+    "Inconsistent bullet/list markers: Mixed use of symbols (\u22a1, \u2022, +, -) without apparent logical distinction or hierarchy",
+    "Ambiguous content structure: 'Next Steps' section lists items without clear action items or prioritization; formatting suggests incomplete or placeholder text",
+    "Typography inconsistencies: Font styling appears irregular; some text appears to be technical notation rather than formatted content (e.g., '+ Heading + in Popping font (primary dark color #141413)')",
+    "Missing visual separation: No clear demarcation between major sections; transitions between 'Verification Status', 'Next Steps', and styling notes are abrupt",
+    "Readability concerns: Technical implementation details mixed with narrative content without clear separation or context",
+    "No table structures present despite evaluation criteria; content that could benefit from tabular organization is presented as unstructured lists",
+    "Professional presentation issues: Overall layout suggests draft or template state rather than finalized deliverable",
+    "[DOCX] H1 count is 2, but exactly 1 is required (found: 'Build a narrative', 'Perfect. All Validation Checks Pass')",
+    "[DOCX] H2 section count is 1, but minimum 3 are required (found only: 'Verification Status')",
+    "[DOCX] Word count is 95, below minimum threshold of 200 words",
+    "[DOCX] Average paragraph word count is 5.4, below minimum threshold of 20 words (indicates bullet-point or fragment-only content)",
+    "[DOCX] Document lacks substantive prose content and structured narrative"
+  ],
+  "project_id": "p_0fa390b944",
+  "run_id": "run_0c8df7f91c",
+  "mode": "strict_image",
+  "image_count": 1,
+  "missing_targets": [
+    "narrative",
+    "sop",
+    "raci_markdown",
+    "raci_html",
+    "process_map_mermaid",
+    "drawio_xml",
+    "xlsx",
+    "pdf",
+    "raci_xlsx"
+  ],
+  "render_diagnostics": [],
+  "render_stats": {
+    "native_images": 0,
+    "surrogate_images": 1
+  },
+  "strict_mode": false,
+  "per_artifact": {
+    "pptx": {
+      "status": "skip",
+      "summary": "PPTX not found",
+      "per_slide_findings": [],
+      "remediation_hints": []
+    },
+    "docx": {
+      "status": "fail",
+      "summary": "Document fails multiple structural and content quality requirements for a professional consulting deliverable.",
+      "issues": [
+        "H1 count is 2, but exactly 1 is required (found: 'Build a narrative', 'Perfect. All Validation Checks Pass')",
+        "H2 section count is 1, but minimum 3 are required (found only: 'Verification Status')",
+        "Word count is 95, below minimum threshold of 200 words",
+        "Average paragraph word count is 5.4, below minimum threshold of 20 words (indicates bullet-point or fragment-only content)",
+        "Document lacks substantive prose content and structured narrative"
+      ],
+      "remediation_hints": [
+        {
+          "instruction": "Remove or consolidate duplicate H1 headings. Keep only one primary document title as the H1; demote 'Perfect. All Validation Checks Pass' to H2 or H3 if it represents a section."
+        },
+        {
+          "instruction": "Expand document structure by adding at least 2 additional H2 sections beyond 'Verification Status' (e.g., 'Executive Summary', 'Findings', 'Recommendations', 'Conclusion')."
+        },
+        {
+          "instruction": "Increase word count to minimum 200 words by developing substantive prose paragraphs with context, analysis, and explanation\u2014not just bullet points or single-sentence fragments."
+        },
+        {
+          "instruction": "Rewrite paragraphs to average at least 20 words each. Combine short fragments into coherent sentences and add supporting detail to each section."
+        },
+        {
+          "instruction": "Consider adding a table with at least 2 data rows if relevant to the content (e.g., validation results, status summary, or comparison data) to enhance structure and readability."
+        }
+      ]
+    },
+    "xlsx": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "pdf": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "process_map": {
+      "status": "skip",
+      "summary": "No process map file found",
+      "issues": [],
+      "remediation_hints": []
+    }
+  },
+  "pptx_assessment": {
+    "status": "skip",
+    "summary": "PPTX not found",
+    "per_slide_findings": [],
+    "remediation_hints": []
+  }
+}

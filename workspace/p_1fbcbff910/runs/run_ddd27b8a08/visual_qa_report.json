@@ -1,0 +1,39 @@
+{
+  "status": "skip",
+  "summary": "Visual QA skipped: Claude API is not configured (ANTHROPIC_API_KEY unset).",
+  "findings": [
+    "Set ANTHROPIC_API_KEY to enable vision inspection."
+  ],
+  "project_id": "p_1fbcbff910",
+  "run_id": "run_ddd27b8a08",
+  "mode": "strict_image",
+  "per_artifact": {
+    "pptx": {
+      "status": "skip",
+      "summary": "PPTX not found",
+      "per_slide_findings": [],
+      "remediation_hints": []
+    },
+    "docx": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "xlsx": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "pdf": {
+      "status": "skip",
+      "issues": [],
+      "remediation_hints": []
+    },
+    "process_map": {
+      "status": "skip",
+      "summary": "No process map file found",
+      "issues": [],
+      "remediation_hints": []
+    }
+  }
+}

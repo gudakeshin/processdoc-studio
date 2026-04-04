@@ -1,0 +1,46 @@
+# Critical Process Definition Issue
+
+## Problem Statement
+
+The ProcessModel provided describes only a **single step** ("Build a narrative") with no operational detail, decision points, or multi-role workflow. The context excerpt confirms this is a **metadata record of a failed QA outcome**, not a functional business process.
+
+### What's Missing
+
+- No business outcome or stakeholder benefit defined
+- No input/output specifications beyond "narrative"
+- No decision branches, handoffs, or control points
+- No roles beyond "Process Owner"
+- No activities to sequence or risks to mitigate
+- QA and guardrail outcomes both failed; remediation status unclear
+
+### Why This Matters
+
+An executive briefing requires a **real process** with:
+- Clear business purpose (what problem does it solve?)
+- Defined activities and role accountability
+- Identifiable risks and controls
+- Actionable next steps for stakeholders
+
+---
+
+# Recommended Path Forward
+
+## Option 1: Clarify the Process
+
+Provide:
+- What is the narrative being built? (e.g., customer journey map, incident report, strategic plan)
+- Who initiates it and who approves/uses the output?
+- What are the major steps (research, draft, review, finalize)?
+- What are the known risks or control gaps?
+
+## Option 2: Provide a Different ProcessModel
+
+If you have a more complete process definition (e.g., client onboarding, claims processing, content approval), share that instead.
+
+## Option 3: Proceed with Placeholder Output
+
+I can generate a briefing template using the minimal data available, but it will be generic and not actionable—which violates the guardrail requirement for evidence-grounded claims.
+
+---
+
+**Which would be most helpful?**
