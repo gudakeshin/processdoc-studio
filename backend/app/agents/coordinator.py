@@ -1521,21 +1521,31 @@ class Coordinator:
             )
 
         # Phase 0: Use agentic event-driven loop if enabled (opt-in feature)
+        import os
+
+        # Try multiple methods to get the setting value
+        # Method 1: Direct environment variable (most reliable)
+        env_var = os.getenv("COORDINATOR_AGENTIC_LOOP_ENABLED", "false").lower().strip()
+        agentic_from_env = env_var in ("true", "1", "yes", "on")
+        _LOG.warning(f"ENV METHOD: COORDINATOR_AGENTIC_LOOP_ENABLED env var = {env_var} → {agentic_from_env}")
+
+        # Method 2: Pydantic settings object
         try:
-            # Try direct attribute access first
-            agentic_loop_enabled = settings.coordinator_agentic_loop_enabled
-            _LOG.warning(f"✓ Successfully read setting directly: coordinator_agentic_loop_enabled = {agentic_loop_enabled}")
-        except AttributeError:
-            # Fall back to getattr with default
-            agentic_loop_enabled = getattr(settings, "coordinator_agentic_loop_enabled", False)
-            _LOG.warning(f"⚠ Using getattr fallback: coordinator_agentic_loop_enabled = {agentic_loop_enabled}")
+            agentic_from_settings = bool(settings.coordinator_agentic_loop_enabled)
+            _LOG.warning(f"SETTINGS METHOD: coordinator_agentic_loop_enabled = {agentic_from_settings}")
+        except Exception as e:
+            agentic_from_settings = False
+            _LOG.warning(f"SETTINGS METHOD ERROR: {e}")
 
-        # Additional debug info
-        _LOG.warning(f"DEBUG: Type of agentic_loop_enabled = {type(agentic_loop_enabled)}")
-        _LOG.warning(f"DEBUG: Boolean value = {bool(agentic_loop_enabled)}")
-        _LOG.warning(f"DEBUG: All settings attributes with 'coordinator': {[attr for attr in dir(settings) if 'coordinator' in attr.lower()]}")
+        # Method 3: Getattr fallback
+        agentic_from_getattr = bool(getattr(settings, "coordinator_agentic_loop_enabled", False))
+        _LOG.warning(f"GETATTR METHOD: coordinator_agentic_loop_enabled = {agentic_from_getattr}")
 
-        if bool(agentic_loop_enabled):
+        # Use environment variable as source of truth (most direct)
+        agentic_loop_enabled = agentic_from_env
+        _LOG.warning(f"FINAL DECISION: Using environment variable method → {agentic_loop_enabled}")
+
+        if agentic_loop_enabled:
             _LOG.warning("🎯🎯🎯 AGENTIC LOOP ENABLED - USING NEW STATE MACHINE PATH 🎯🎯🎯")
             _LOG.info("Coordinator using agentic event loop (Phase 0)")
             return self._run_event_loop(
