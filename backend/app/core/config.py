@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import Field, field_validator, model_validator
@@ -15,7 +16,19 @@ class Settings(BaseSettings):
     control worker prompts and optional narrative extended thinking.
     """
 
-    model_config = SettingsConfigDict(env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
+    # Calculate paths to .env files
+    _backend_dir = Path(__file__).parent.parent.parent  # backend directory
+    _repo_root = _backend_dir.parent  # repo root
+
+    model_config = SettingsConfigDict(
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+        env_file=[
+            str(_repo_root / ".env"),  # Load repo root .env first
+            str(_backend_dir / ".env"),  # Then backend .env (overrides repo root)
+        ],
+    )
 
     processdoc_env: str = "development"
     jwt_secret: str = "change-me"
