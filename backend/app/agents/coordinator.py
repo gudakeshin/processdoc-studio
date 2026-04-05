@@ -1525,39 +1525,50 @@ class Coordinator:
         # Phase 0: Use agentic event-driven loop if enabled (opt-in feature)
         # CRITICAL: Load .env files explicitly to ensure environment variables are available
         # This ensures COORDINATOR_AGENTIC_LOOP_ENABLED is in os.environ
-        backend_dir = Path(__file__).parent.parent.parent  # backend directory
-        repo_root = backend_dir.parent  # repo root
+        try:
+            backend_dir = Path(__file__).parent.parent.parent  # backend directory
+            repo_root = backend_dir.parent  # repo root
 
-        _LOG.warning(f"Loading .env files: root={repo_root / '.env'}, backend={backend_dir / '.env'}")
-        load_dotenv(repo_root / ".env", override=False)
-        load_dotenv(backend_dir / ".env", override=True)
-        _LOG.warning("✓ .env files loaded")
+            _LOG.warning(f"[AGENTIC-INIT] Attempting to load .env files...")
+            _LOG.warning(f"[AGENTIC-INIT] root={repo_root / '.env'}, backend={backend_dir / '.env'}")
+
+            root_env = repo_root / ".env"
+            backend_env = backend_dir / ".env"
+
+            _LOG.warning(f"[AGENTIC-INIT] root .env exists: {root_env.exists()}")
+            _LOG.warning(f"[AGENTIC-INIT] backend .env exists: {backend_env.exists()}")
+
+            load_dotenv(root_env, override=False)
+            load_dotenv(backend_env, override=True)
+            _LOG.warning("[AGENTIC-INIT] ✓ .env files loaded successfully")
+        except Exception as e:
+            _LOG.warning(f"[AGENTIC-INIT] ✗ Error loading .env files: {e}")
 
         # Try multiple methods to get the setting value
         # Method 1: Direct environment variable (most reliable)
         env_var = os.getenv("COORDINATOR_AGENTIC_LOOP_ENABLED", "false").lower().strip()
         agentic_from_env = env_var in ("true", "1", "yes", "on")
-        _LOG.warning(f"ENV METHOD: COORDINATOR_AGENTIC_LOOP_ENABLED env var = '{env_var}' → {agentic_from_env}")
+        _LOG.warning(f"[AGENTIC-CHECK] METHOD 1 (ENV): COORDINATOR_AGENTIC_LOOP_ENABLED = '{env_var}' → {agentic_from_env}")
 
         # Method 2: Pydantic settings object
         try:
             agentic_from_settings = bool(settings.coordinator_agentic_loop_enabled)
-            _LOG.warning(f"SETTINGS METHOD: coordinator_agentic_loop_enabled = {agentic_from_settings}")
+            _LOG.warning(f"[AGENTIC-CHECK] METHOD 2 (PYDANTIC): coordinator_agentic_loop_enabled = {agentic_from_settings}")
         except Exception as e:
             agentic_from_settings = False
-            _LOG.warning(f"SETTINGS METHOD ERROR: {e}")
+            _LOG.warning(f"[AGENTIC-CHECK] METHOD 2 ERROR: {e}")
 
         # Method 3: Getattr fallback
         agentic_from_getattr = bool(getattr(settings, "coordinator_agentic_loop_enabled", False))
-        _LOG.warning(f"GETATTR METHOD: coordinator_agentic_loop_enabled = {agentic_from_getattr}")
+        _LOG.warning(f"[AGENTIC-CHECK] METHOD 3 (GETATTR): coordinator_agentic_loop_enabled = {agentic_from_getattr}")
 
         # Use environment variable as source of truth (most direct)
         agentic_loop_enabled = agentic_from_env
-        _LOG.warning(f"FINAL DECISION: Using environment variable method → {agentic_loop_enabled}")
+        _LOG.warning(f"[AGENTIC-CHECK] FINAL DECISION: agentic_loop_enabled = {agentic_loop_enabled}")
 
         if agentic_loop_enabled:
-            _LOG.warning("🎯🎯🎯 AGENTIC LOOP ENABLED - USING NEW STATE MACHINE PATH 🎯🎯🎯")
-            _LOG.info("Coordinator using agentic event loop (Phase 0)")
+            _LOG.warning("🎯🎯🎯 [AGENTIC-LOOP-ACTIVE] AGENTIC LOOP ENABLED - USING NEW STATE MACHINE PATH 🎯🎯🎯")
+            _LOG.info("[AGENTIC-LOOP-ACTIVE] Coordinator using agentic event loop (Phase 0)")
             return self._run_event_loop(
                 state,
                 emit_event=emit_event,
@@ -1565,7 +1576,7 @@ class Coordinator:
             )
 
         # Otherwise, use traditional linear execution pipeline (fallback for stability)
-        _LOG.warning("⚠️⚠️⚠️ AGENTIC LOOP DISABLED - USING OLD THREADPOOL PATH ⚠️⚠️⚠️")
+        _LOG.warning("⚠️⚠️⚠️ [AGENTIC-LOOP-DISABLED] AGENTIC LOOP DISABLED - USING OLD THREADPOOL PATH ⚠️⚠️⚠️")
         with _coordinator_abort_scope(abort_check):
             # region agent log
             _session_debug_log(
