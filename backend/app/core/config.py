@@ -193,10 +193,12 @@ class Settings(BaseSettings):
     google_custom_search_api_key: str = ""
     google_custom_search_cx: str = ""
     lp_library_local_path: str = ""
-    policy_evaluator_version: str = "policy-v1"
+    policy_evaluator_version: str = "policy-v2"
     policy_classifier_threshold: float = 0.5
     policy_enforce_enabled: bool = True
     policy_bundle_path: str = ""
+    # When True, legacy (non-agentic) path requires run_contract.nodes to be populated. Default False.
+    policy_require_contract_nodes: bool = False
     event_contract_strict: bool = True
     retry_cooldown_threshold_sec: float = 20.0
     run_retry_indefinite_for_scheduled: bool = False

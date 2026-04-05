@@ -704,6 +704,7 @@ def start_run(
         enforce_policy=bool(settings.policy_enforce_enabled),
         plan_payload=plan,
         include_human_gate=False,
+        agentic_loop_enabled=bool(settings.coordinator_agentic_loop_enabled),
     )
     blocked = [d for d in preflight if not d.allowed]
     initial_status = "plan_blocked" if blocked else "plan_ready"
@@ -1331,6 +1332,7 @@ def simulate_permission_pipeline(
         workspace_ready=True,
         enforce_policy=bool(body.enforce_policy),
         plan_payload=body.plan_payload if isinstance(body.plan_payload, dict) else None,
+        agentic_loop_enabled=bool(settings.coordinator_agentic_loop_enabled),
     )
     return {
         "project_id": project_id,

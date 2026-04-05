@@ -935,6 +935,7 @@ def _execute_run_job(
             classifier_threshold=float(settings.policy_classifier_threshold),
             enforce_policy=bool(settings.policy_enforce_enabled),
             plan_payload=plan_payload_obj if isinstance(plan_payload_obj, dict) else None,
+            agentic_loop_enabled=bool(settings.coordinator_agentic_loop_enabled),
         )
         for d in gate_decisions:
             append_run_event(
@@ -947,6 +948,7 @@ def _execute_run_job(
                     "code": d.code,
                     "reason": d.reason,
                     "metadata": d.metadata or {},
+                    "warnings": d.warnings or [],
                 },
             )
         if any(not d.allowed for d in gate_decisions):
