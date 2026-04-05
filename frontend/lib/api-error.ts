@@ -1,15 +1,52 @@
 import { getApiBase } from "./api";
 
+/**
+ * Read a fetch Response body once. If the body is not JSON (e.g. plain-text
+ * "Internal Server Error" from a proxy or ASGI), returns data: null and rawText for messaging.
+ */
+export async function parseResponseBodyLoose(res: Response): Promise<{ data: unknown; rawText: string }> {
+  const rawText = await res.text();
+  const t = rawText.trim();
+  if (!t) return { data: null, rawText: "" };
+  try {
+    return { data: JSON.parse(t), rawText };
+  } catch {
+    return { data: null, rawText: t.length > 1200 ? `${t.slice(0, 1200)}…` : t };
+  }
+}
+
 type ApiErrorShape = {
   detail?: string | { message?: string; [k: string]: unknown };
   message?: string;
   error?: string;
 };
 
+/** Plain-text bodies from Next rewrites or proxies when the upstream API is down. */
+export function humanizePlainUpstreamError(message: string): string {
+  const t = message.trim();
+  if (/^internal server error$/i.test(t)) {
+    return (
+      "Could not reach the API (the FastAPI backend is probably not running). " +
+      "With same-origin /api in dev, start it from the repo: `cd backend && python -m uvicorn app.main:app --reload` " +
+      "(default http://127.0.0.1:8000). In `frontend`, `API_PROXY_TARGET` must point at that URL."
+    );
+  }
+  if (/^bad gateway$/i.test(t)) {
+    return "Bad gateway: the Next.js dev server could not reach the API. Start the backend on port 8000.";
+  }
+  if (/^gateway timeout$/i.test(t) || /^504$/i.test(t)) {
+    return "Gateway timeout: the API took too long to respond or is unreachable.";
+  }
+  if (/^service unavailable$/i.test(t)) {
+    return "Service unavailable: the API may be down or still starting.";
+  }
+  return message;
+}
+
 export function extractApiErrorMessage(payload: unknown, fallback: string): string {
-  if (!payload || typeof payload !== "object") return fallback;
+  if (!payload || typeof payload !== "object") return humanizePlainUpstreamError(fallback);
   const data = payload as ApiErrorShape;
-  if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
+  if (typeof data.detail === "string" && data.detail.trim()) return humanizePlainUpstreamError(data.detail);
   if (Array.isArray(data.detail)) {
     const parts = data.detail
       .map((x) => {
@@ -19,14 +56,14 @@ export function extractApiErrorMessage(payload: unknown, fallback: string): stri
         return String(x);
       })
       .filter(Boolean);
-    if (parts.length) return parts.join("; ");
+    if (parts.length) return humanizePlainUpstreamError(parts.join("; "));
   }
   if (data.detail && typeof data.detail === "object" && typeof data.detail.message === "string" && data.detail.message.trim()) {
-    return data.detail.message;
+    return humanizePlainUpstreamError(data.detail.message);
   }
-  if (typeof data.message === "string" && data.message.trim()) return data.message;
-  if (typeof data.error === "string" && data.error.trim()) return data.error;
-  return fallback;
+  if (typeof data.message === "string" && data.message.trim()) return humanizePlainUpstreamError(data.message);
+  if (typeof data.error === "string" && data.error.trim()) return humanizePlainUpstreamError(data.error);
+  return humanizePlainUpstreamError(fallback);
 }
 
 export type ErrorGateKind = "plan" | "visual_qa" | "guardrail" | "network" | "other";

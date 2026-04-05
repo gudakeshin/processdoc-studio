@@ -18,7 +18,11 @@ export function createQueryClient(): QueryClient {
       mutations: {
         retry: false,
         onError: (error) => {
+          if (error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError")) {
+            return;
+          }
           const msg = error instanceof Error ? error.message : "Something went wrong";
+          if (/abort/i.test(msg)) return;
           emitToast(msg);
         },
       },

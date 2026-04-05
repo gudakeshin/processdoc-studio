@@ -11,7 +11,7 @@ describe("fetchSseToken", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ sse_token: "tok", expires_in: 90 }),
+      text: async () => JSON.stringify({ sse_token: "tok", expires_in: 90 }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -33,8 +33,12 @@ describe("fetchSseToken", () => {
   it("throws on non-OK response", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: false, status: 401 }),
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        text: async () => "Unauthorized",
+      }),
     );
-    await expect(fetchSseToken("http://localhost", "t")).rejects.toThrow("sse-token failed: 401");
+    await expect(fetchSseToken("http://localhost", "t")).rejects.toThrow(/sse-token failed: 401/);
   });
 });

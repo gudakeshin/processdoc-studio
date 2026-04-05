@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.db.models import Run, RunTask, User
 from app.db.session import get_db
 from app.services.observability import increment
-from app.services.run_tasks import serialize_run_task
+from app.services.run_tasks import serialize_run_task, validate_task_status_transition
 from app.services.run_worker import append_run_event
 from app.services.swarm import (
     ensure_swarm_team,
@@ -205,7 +205,12 @@ def swarm_patch_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     if body.status is not None:
-        task.status = body.status[:16]
+        # Validate status transition
+        new_status = body.status[:16]
+        is_valid, error_msg = validate_task_status_transition(task.status, new_status)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=error_msg)
+        task.status = new_status
     if body.blocked_reason is not None:
         task.blocked_reason = body.blocked_reason
     if body.assigned_teammate_id is not None:

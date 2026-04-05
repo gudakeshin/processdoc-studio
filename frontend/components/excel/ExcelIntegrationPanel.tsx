@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { extractApiErrorMessage, parseResponseBodyLoose } from "@/lib/api-error";
 import { useAuth } from "@/lib/auth-context";
 
 export function ExcelIntegrationPanel({ projectId, modelId }: { projectId: string; modelId: string }) {
@@ -17,8 +18,13 @@ export function ExcelIntegrationPanel({ projectId, modelId }: { projectId: strin
         `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/import`,
         { method: "POST", body: form, headers: {} }
       );
-      const data = (await res.json()) as { detail?: string; status?: string; filename?: string };
-      if (!res.ok) throw new Error(data.detail ?? "Import failed");
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as {
+        detail?: string;
+        status?: string;
+        filename?: string;
+      };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Import failed"));
       setMessage(`Imported workbook: ${data.filename ?? "file"}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Import failed");
@@ -36,8 +42,9 @@ export function ExcelIntegrationPanel({ projectId, modelId }: { projectId: strin
           ? `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/export`
           : `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/sync`;
       const res = await api(endpoint, { method: "POST" });
-      const data = (await res.json()) as { detail?: string; status?: string; file?: string };
-      if (!res.ok) throw new Error(data.detail ?? `${action} failed`);
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as { detail?: string; status?: string; file?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || `${action} failed`));
       setMessage(action === "export" ? `Export created: ${data.file ?? "export file"}` : "Sync completed");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : `${action} failed`);

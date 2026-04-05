@@ -42,6 +42,7 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
     submitDecisionAnswers,
     decisionBusy,
     runChecklistTodos,
+    parsedRunEvents,
     artifactsError,
     backpressureRetrySec,
     setBackpressureRetrySec,
@@ -141,6 +142,7 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
           thinkingTrace={coworkThinkingTrace}
           thinkingExpanded={coworkThinkingExpanded}
           onToggleThinkingTrace={() => setCoworkThinkingExpanded((v) => !v)}
+          showGuidedDecisions={false}
         />
         <ZoneCLiveMonitor
           events={liveEvents}
@@ -180,6 +182,7 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
       </section>
       <ToolActivityFeed
         events={liveEvents}
+        parsedEvents={parsedRunEvents}
         runChecklistTodos={runChecklistTodos}
         artifacts={artifacts}
         pollMode={pollMode}

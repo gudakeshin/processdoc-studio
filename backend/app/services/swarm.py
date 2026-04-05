@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import RunTask, SwarmMessage, SwarmTeam, SwarmTeammate
+from app.services.observability import increment
 
 _LOG = logging.getLogger(__name__)
 
@@ -60,33 +61,75 @@ def _normalize_dep_ids(raw: Any) -> list[str]:
     return [str(x).strip() for x in raw if str(x).strip()]
 
 
-def validate_task_dag(task_ids: Iterable[str], depends_map: dict[str, list[str]]) -> None:
-    """Raise ValueError if edges reference missing ids or form a cycle."""
+def validate_task_dag(task_ids: Iterable[str], depends_map: dict[str, list[str]]) -> tuple[bool, str | None]:
+    """
+    Validate task DAG for missing dependencies and cycles.
+
+    Args:
+        task_ids: Iterable of task IDs
+        depends_map: Dict mapping task_id to list of dependency task_ids
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
     ids = set(task_ids)
+
+    # Check for missing dependencies
     for tid, deps in depends_map.items():
         if tid not in ids:
             continue
         for d in deps:
             if d not in ids:
-                raise ValueError(f"Task {tid!r} depends on unknown task {d!r}")
+                return False, f"Task {tid!r} depends on unknown task {d!r}"
 
+    # Check for cycles using DFS
     visiting: set[str] = set()
     visited: set[str] = set()
 
-    def visit(node: str) -> None:
+    def visit(node: str) -> bool:
+        """Return True if cycle found."""
         if node in visited:
-            return
+            return False
         if node in visiting:
-            raise ValueError("Task graph contains a cycle")
+            return True  # Cycle detected
         visiting.add(node)
         for d in depends_map.get(node, []):
-            if d in ids:
-                visit(d)
+            if d in ids and visit(d):
+                return True
         visiting.remove(node)
         visited.add(node)
+        return False
 
     for tid in ids:
-        visit(tid)
+        if tid not in visited and visit(tid):
+            return False, "Task graph contains a cycle"
+
+    return True, None
+
+
+def validate_task_dag_from_run_tasks(tasks: list[RunTask]) -> tuple[bool, str | None]:
+    """
+    Validate task DAG from RunTask objects.
+
+    Args:
+        tasks: List of RunTask objects
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    task_ids = [t.id for t in tasks]
+    depends_map = {}
+
+    for task in tasks:
+        try:
+            deps = json.loads(task.depends_on_json or "[]")
+            if not isinstance(deps, list):
+                return False, f"Task {task.id!r} has invalid depends_on_json (not a list)"
+            depends_map[task.id] = deps
+        except json.JSONDecodeError as e:
+            return False, f"Task {task.id!r} has invalid JSON in depends_on_json: {e}"
+
+    return validate_task_dag(task_ids, depends_map)
 
 
 def ready_task_ids(tasks: list[RunTask]) -> list[str]:
@@ -206,6 +249,42 @@ def serialize_message(m: SwarmMessage) -> dict[str, Any]:
         "created_at": m.created_at.isoformat() if m.created_at else None,
         "read_at": m.read_at.isoformat() if m.read_at else None,
     }
+
+
+def persist_instruction_broadcast_swarm_event_payload(
+    session: Session,
+    *,
+    project_id: str,
+    run_id: str,
+    instruction: str,
+    from_teammate: str = "user",
+) -> dict[str, Any] | None:
+    """When swarm orchestration is enabled, persist a broadcast SwarmMessage for the run instruction.
+
+    Returns a payload suitable for ``append_run_event(..., \"swarm_message\", payload)`` with
+    ``broadcast: True``. Returns ``None`` if swarm is disabled or instruction is empty.
+    """
+    from app.core.config import settings
+
+    if not bool(getattr(settings, "swarm_orchestration_enabled", False)):
+        return None
+    text = (instruction or "").strip()
+    if not text:
+        return None
+    body = f"Run instruction:\n{text[:15000]}"
+    team = ensure_swarm_team(session, project_id=project_id, run_id=run_id)
+    msg = send_swarm_message(
+        session,
+        run_id=run_id,
+        project_id=project_id,
+        from_teammate=(from_teammate or "user").strip() or "user",
+        body=body,
+        to_teammate=None,
+        team_id=team.id,
+    )
+    payload = serialize_message(msg)
+    increment("swarm_instruction_broadcast_on_start_total")
+    return {**payload, "broadcast": True}
 
 
 def format_swarm_mailbox_for_teammate(*, run_id: str, teammate_id: str, limit: int = 20) -> str:

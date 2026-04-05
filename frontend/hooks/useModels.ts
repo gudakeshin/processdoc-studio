@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { extractApiErrorMessage, parseResponseBodyLoose } from "@/lib/api-error";
 import { useAuth } from "@/lib/auth-context";
 
 export type ModelSummary = {
@@ -41,8 +42,9 @@ export function useModels(projectId: string) {
     enabled: Boolean(token && projectId),
     queryFn: async (): Promise<ModelSummary[]> => {
       const res = await api(`/api/projects/${encodeURIComponent(projectId)}/models`);
-      const data = (await res.json()) as { items?: ModelSummary[]; detail?: string };
-      if (!res.ok) throw new Error(data.detail ?? "Failed to load models");
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as { items?: ModelSummary[]; detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Failed to load models"));
       return data.items ?? [];
     },
   });
@@ -57,8 +59,9 @@ export function useCreateModel(projectId: string) {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      const data = (await res.json()) as { id?: string; detail?: string };
-      if (!res.ok || !data.id) throw new Error(data.detail ?? "Create model failed");
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as { id?: string; detail?: string };
+      if (!res.ok || !data.id) throw new Error(extractApiErrorMessage(data, rawText || "Create model failed"));
       return data.id;
     },
     onSuccess: () => {
@@ -74,12 +77,13 @@ export function useModelDetail(projectId: string, modelId: string) {
     enabled: Boolean(token && projectId && modelId),
     queryFn: async (): Promise<{ model: ModelSummary & { assumptions?: Record<string, unknown> }; scenarios: Scenario[] }> => {
       const res = await api(`/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}`);
-      const data = (await res.json()) as {
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as {
         model?: ModelSummary & { assumptions?: Record<string, unknown> };
         scenarios?: Scenario[];
         detail?: string;
       };
-      if (!res.ok || !data.model) throw new Error(data.detail ?? "Load model failed");
+      if (!res.ok || !data.model) throw new Error(extractApiErrorMessage(data, rawText || "Load model failed"));
       return { model: data.model, scenarios: data.scenarios ?? [] };
     },
   });
@@ -94,11 +98,12 @@ export function useModelVersions(projectId: string, modelId: string) {
       const res = await api(
         `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/versions`
       );
-      const data = (await res.json()) as {
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as {
         items?: Array<{ version_id: string; created_at: string; reason: string }>;
         detail?: string;
       };
-      if (!res.ok) throw new Error(data.detail ?? "Load versions failed");
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Load versions failed"));
       return data.items ?? [];
     },
   });
@@ -116,8 +121,9 @@ export function useCreateScenario(projectId: string, modelId: string) {
           body: JSON.stringify(payload),
         }
       );
-      const data = (await res.json()) as { detail?: string };
-      if (!res.ok) throw new Error(data.detail ?? "Create scenario failed");
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as { detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Create scenario failed"));
       return data;
     },
     onSuccess: () => {
@@ -141,8 +147,9 @@ export function useModelDashboard(projectId: string, modelId: string) {
       const res = await api(
         `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/dashboard`
       );
-      const data = (await res.json()) as any;
-      if (!res.ok) throw new Error(data.detail ?? "Load dashboard failed");
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Load dashboard failed"));
       return data;
     },
   });
@@ -166,8 +173,9 @@ export function useModelConflicts(
       const res = await api(
         `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/conflicts${suffix}`
       );
-      const data = (await res.json()) as { items?: ModelConflict[]; detail?: string };
-      if (!res.ok) throw new Error(data.detail ?? "Load conflicts failed");
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as { items?: ModelConflict[]; detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Load conflicts failed"));
       return data.items ?? [];
     },
   });
@@ -182,8 +190,9 @@ export function useResolveModelConflict(projectId: string, modelId: string) {
         `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/conflicts/${encodeURIComponent(payload.conflictId)}/resolve`,
         { method: "POST", body: JSON.stringify({ chosen_side: payload.chosen_side, rationale: payload.rationale ?? "" }) }
       );
-      const data = (await res.json()) as { detail?: string };
-      if (!res.ok) throw new Error(data.detail ?? "Resolve conflict failed");
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as { detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Resolve conflict failed"));
       return data;
     },
     onSuccess: () => {
@@ -201,8 +210,9 @@ export function useReopenModelConflict(projectId: string, modelId: string) {
         `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/conflicts/${encodeURIComponent(payload.conflictId)}/reopen`,
         { method: "POST", body: JSON.stringify({ reason: payload.reason ?? "" }) }
       );
-      const data = (await res.json()) as { detail?: string };
-      if (!res.ok) throw new Error(data.detail ?? "Reopen conflict failed");
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as { detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Reopen conflict failed"));
       return data;
     },
     onSuccess: () => {

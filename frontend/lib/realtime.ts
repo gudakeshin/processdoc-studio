@@ -1,4 +1,5 @@
 import { getApiBase, getWsOriginForBrowser } from "@/lib/api";
+import { parseResponseBodyLoose } from "@/lib/api-error";
 import { apiFetch } from "@/lib/apiClient";
 
 export type ModelRealtimeEvent = {
@@ -26,8 +27,9 @@ export async function fetchModelEvents(
     }
   );
   if (!res.ok) return [];
-  const data = (await res.json()) as { items?: ModelRealtimeEvent[] };
-  return data.items ?? [];
+  const { data: parsed } = await parseResponseBodyLoose(res);
+  if (!parsed || typeof parsed !== "object") return [];
+  return (parsed as { items?: ModelRealtimeEvent[] }).items ?? [];
 }
 
 export function modelWsUrl(token: string, projectId: string, modelId: string): string {

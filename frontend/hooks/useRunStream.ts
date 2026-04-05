@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getApiBase } from "@/lib/api";
-import { extractApiErrorMessage } from "@/lib/api-error";
+import { extractApiErrorMessage, humanizePlainUpstreamError, parseResponseBodyLoose } from "@/lib/api-error";
 import { runEventsResponseSchema } from "@/lib/apiSchemas";
 import { useAuth } from "@/lib/auth-context";
 import { type ParsedRunEvent, parseEventLine } from "@/lib/runEvents";
@@ -41,12 +41,20 @@ export function useRunStream(pid: string, rid: string) {
 
   const hydrate = useCallback(async () => {
     const res = await api(`/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/events?after_event_id=0`);
+    const { data: parsedJson, rawText } = await parseResponseBodyLoose(res);
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setError(extractApiErrorMessage(body, "Failed to load run events"));
+      const errPayload = parsedJson && typeof parsedJson === "object" ? parsedJson : {};
+      setError(extractApiErrorMessage(errPayload, rawText || "Failed to load run events"));
       return;
     }
-    const parsedJson = await res.json();
+    if (parsedJson === null || typeof parsedJson !== "object") {
+      setError(
+        rawText
+          ? humanizePlainUpstreamError(rawText.slice(0, 300))
+          : "Run events response was not valid JSON",
+      );
+      return;
+    }
     const validated = runEventsResponseSchema.safeParse(parsedJson);
     if (!validated.success) {
       setError("Run events payload validation failed");
@@ -70,12 +78,20 @@ export function useRunStream(pid: string, rid: string) {
     const res = await api(
       `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/events?after_event_id=${lastEventIdRef.current}`
     );
+    const { data: parsedJson, rawText } = await parseResponseBodyLoose(res);
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setError(extractApiErrorMessage(body, "Failed to poll run events"));
+      const errPayload = parsedJson && typeof parsedJson === "object" ? parsedJson : {};
+      setError(extractApiErrorMessage(errPayload, rawText || "Failed to poll run events"));
       return;
     }
-    const parsedJson = await res.json();
+    if (parsedJson === null || typeof parsedJson !== "object") {
+      setError(
+        rawText
+          ? humanizePlainUpstreamError(rawText.slice(0, 300))
+          : "Run events response was not valid JSON",
+      );
+      return;
+    }
     const validated = runEventsResponseSchema.safeParse(parsedJson);
     if (!validated.success) {
       setError("Run events payload validation failed");

@@ -11,6 +11,44 @@ from app.db.models import RunTask
 
 TERMINAL_STATUSES = {"completed", "failed", "skipped"}
 
+# Task status lifecycle state machine
+VALID_STATUS_TRANSITIONS = {
+    "queued": {"assigned", "blocked", "skipped"},
+    "assigned": {"in_progress", "blocked", "skipped"},
+    "in_progress": {"completed", "failed", "blocked"},
+    "blocked": {"in_progress", "skipped"},
+    "completed": set(),  # Terminal state
+    "failed": {"queued"},  # Allow retry from failed state
+    "skipped": set(),  # Terminal state
+}
+
+
+def validate_task_status_transition(old_status: str, new_status: str) -> tuple[bool, str | None]:
+    """
+    Validate a task status transition is allowed.
+
+    Args:
+        old_status: Current task status
+        new_status: Desired task status
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    old_status = (old_status or "queued").strip().lower()
+    new_status = (new_status or "queued").strip().lower()
+
+    # Same status is always valid (idempotent)
+    if old_status == new_status:
+        return True, None
+
+    # Check if transition is allowed
+    allowed = VALID_STATUS_TRANSITIONS.get(old_status, set())
+    if new_status not in allowed:
+        allowed_list = ", ".join(sorted(allowed)) if allowed else "none (terminal state)"
+        return False, f"Invalid status transition: {old_status} → {new_status}. Allowed: {allowed_list}"
+
+    return True, None
+
 
 def _phase_for_task(task_id: str) -> str:
     tid = str(task_id or "").strip().lower()

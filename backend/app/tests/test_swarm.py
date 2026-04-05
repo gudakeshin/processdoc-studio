@@ -41,13 +41,15 @@ def test_enrich_run_todos_sets_depends_on_chain() -> None:
 
 
 def test_validate_task_dag_detects_cycle() -> None:
-    with pytest.raises(ValueError, match="cycle"):
-        validate_task_dag({"a", "b"}, {"a": ["b"], "b": ["a"]})
+    is_valid, error = validate_task_dag({"a", "b"}, {"a": ["b"], "b": ["a"]})
+    assert not is_valid
+    assert "cycle" in error.lower()
 
 
 def test_validate_task_dag_missing_dep() -> None:
-    with pytest.raises(ValueError, match="unknown"):
-        validate_task_dag({"a"}, {"a": ["missing"]})
+    is_valid, error = validate_task_dag({"a"}, {"a": ["missing"]})
+    assert not is_valid
+    assert "unknown" in error.lower()
 
 
 def test_teammate_workspace_path_containment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

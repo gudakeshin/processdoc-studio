@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import type { ChatMessage } from "@/hooks/useRunStudio";
+import { showGuidedDecisionsSection } from "@/lib/instructionChatCowork";
 
 type DecisionPrompt = {
   id: string;
@@ -175,6 +176,7 @@ export function ZoneAInstruction({
   thinkingTrace = [],
   thinkingExpanded = false,
   onToggleThinkingTrace = () => {},
+  showGuidedDecisions = true,
 }: {
   recommendationNote: string | null;
   chatMessages: ChatMessage[];
@@ -193,6 +195,7 @@ export function ZoneAInstruction({
   thinkingTrace?: ThinkingTraceItem[];
   thinkingExpanded?: boolean;
   onToggleThinkingTrace?: () => void;
+  showGuidedDecisions?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string[]>>({});
@@ -321,7 +324,7 @@ export function ZoneAInstruction({
           </div>
         ) : null}
 
-        {decisionPrompts.length > 0 ? (
+        {showGuidedDecisionsSection(showGuidedDecisions, decisionPrompts.length) ? (
           <div className="flex items-end justify-start gap-2">
             <AssistantAvatar />
             <div className="max-w-[82%] rounded-lg rounded-bl-sm border border-[var(--surface-border)] bg-[var(--surface-muted)] px-3 py-2">

@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import { getApiBase } from "./api";
+import { extractApiErrorMessage, parseResponseBodyLoose } from "./api-error";
 import { apiFetch } from "./apiClient";
 
 const TOKEN_KEY = "processdoc_token";
@@ -60,7 +61,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({ refresh_token: rt }),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { access_token?: string };
+    const { data: parsed } = await parseResponseBodyLoose(res);
+    const data = (parsed && typeof parsed === "object" ? parsed : {}) as { access_token?: string };
     if (!data.access_token) return null;
     localStorage.setItem(TOKEN_KEY, data.access_token);
     setToken(data.access_token);
@@ -74,12 +76,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: userEmail, password }),
     });
-    const data = (await res.json()) as {
+    const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+    const data = (parsed && typeof parsed === "object" ? parsed : {}) as {
       access_token?: string;
       refresh_token?: string;
       detail?: string;
     };
-    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Login failed");
+    if (!res.ok) {
+      throw new Error(extractApiErrorMessage(data, rawText || `Login failed (${res.status})`));
+    }
     if (!data.access_token) throw new Error("No access token");
     localStorage.setItem(TOKEN_KEY, data.access_token);
     if (data.refresh_token) localStorage.setItem(REFRESH_KEY, data.refresh_token);

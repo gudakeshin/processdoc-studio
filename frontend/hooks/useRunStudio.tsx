@@ -1035,6 +1035,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     latestAssistantMetadata,
     instructionChatMessages,
     runChecklistTodos,
+    parsedRunEvents,
     blockedContext,
     vqaArtifactKey,
     refreshChatFromServer,

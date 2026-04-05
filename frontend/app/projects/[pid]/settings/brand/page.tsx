@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
+import { parseResponseBodyLoose } from "@/lib/api-error";
 import { useAuth } from "@/lib/auth-context";
 
 export default function SettingsBrandPage() {
@@ -16,9 +17,12 @@ export default function SettingsBrandPage() {
 
   useEffect(() => {
     if (!token || !pid) return;
-    api(`/api/projects/${encodeURIComponent(pid)}/settings`)
-      .then((r) => r.json())
-      .then((data) => setNotes(typeof data.brand_notes === "string" ? data.brand_notes : ""))
+    void api(`/api/projects/${encodeURIComponent(pid)}/settings`)
+      .then((r) => parseResponseBodyLoose(r))
+      .then(({ data }) => {
+        const d = data && typeof data === "object" ? (data as { brand_notes?: unknown }) : {};
+        setNotes(typeof d.brand_notes === "string" ? d.brand_notes : "");
+      })
       .catch(() => setNotes(""));
   }, [api, token, pid]);
 

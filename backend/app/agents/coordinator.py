@@ -3,12 +3,14 @@ import time
 import asyncio
 import logging
 import threading
+import os
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from dotenv import load_dotenv
 from sqlalchemy import select
 
 from app.services.claude import (
@@ -1521,13 +1523,21 @@ class Coordinator:
             )
 
         # Phase 0: Use agentic event-driven loop if enabled (opt-in feature)
-        import os
+        # CRITICAL: Load .env files explicitly to ensure environment variables are available
+        # This ensures COORDINATOR_AGENTIC_LOOP_ENABLED is in os.environ
+        backend_dir = Path(__file__).parent.parent.parent  # backend directory
+        repo_root = backend_dir.parent  # repo root
+
+        _LOG.warning(f"Loading .env files: root={repo_root / '.env'}, backend={backend_dir / '.env'}")
+        load_dotenv(repo_root / ".env", override=False)
+        load_dotenv(backend_dir / ".env", override=True)
+        _LOG.warning("✓ .env files loaded")
 
         # Try multiple methods to get the setting value
         # Method 1: Direct environment variable (most reliable)
         env_var = os.getenv("COORDINATOR_AGENTIC_LOOP_ENABLED", "false").lower().strip()
         agentic_from_env = env_var in ("true", "1", "yes", "on")
-        _LOG.warning(f"ENV METHOD: COORDINATOR_AGENTIC_LOOP_ENABLED env var = {env_var} → {agentic_from_env}")
+        _LOG.warning(f"ENV METHOD: COORDINATOR_AGENTIC_LOOP_ENABLED env var = '{env_var}' → {agentic_from_env}")
 
         # Method 2: Pydantic settings object
         try:

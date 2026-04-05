@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { extractApiErrorMessage, parseResponseBodyLoose } from "@/lib/api-error";
 import { useAuth } from "@/lib/auth-context";
 
 type SwarmSummary = {
@@ -67,24 +68,30 @@ export function SwarmPanel({
         api(`${base}/messages`),
         api(`${base}/tasks${q}`),
       ]);
+      const { data: sData, rawText: sRaw } = await parseResponseBodyLoose(sRes);
       if (sRes.status === 403) {
-        const d = (await sRes.json().catch(() => ({}))) as { detail?: string };
+        const d = (sData && typeof sData === "object" ? sData : {}) as { detail?: string };
         setDisabled(typeof d.detail === "string" ? d.detail : "Swarm API disabled");
         setSummary(null);
         return;
       }
       if (!sRes.ok) {
-        setDisabled("Could not load swarm summary");
+        setDisabled(extractApiErrorMessage(sData, sRaw || "Could not load swarm summary"));
         return;
       }
-      const sJson = (await sRes.json()) as SwarmSummary;
-      setSummary(sJson);
+      if (!sData || typeof sData !== "object") {
+        setDisabled(sRaw ? sRaw.slice(0, 200) : "Could not load swarm summary");
+        return;
+      }
+      setSummary(sData as SwarmSummary);
       if (mRes.ok) {
-        const mJson = (await mRes.json()) as { items?: SwarmMessage[] };
+        const { data: mData } = await parseResponseBodyLoose(mRes);
+        const mJson = (mData && typeof mData === "object" ? mData : {}) as { items?: SwarmMessage[] };
         setMessages(Array.isArray(mJson.items) ? mJson.items : []);
       }
       if (tRes.ok) {
-        const tJson = (await tRes.json()) as { items?: SwarmTask[] };
+        const { data: tData } = await parseResponseBodyLoose(tRes);
+        const tJson = (tData && typeof tData === "object" ? tData : {}) as { items?: SwarmTask[] };
         setTasks(Array.isArray(tJson.items) ? tJson.items : []);
       } else if (tRes.status !== 403) {
         setTaskError("Could not load tasks");
@@ -94,9 +101,20 @@ export function SwarmPanel({
     }
   }, [api, base, pid, rid, token, statusFilter]);
 
+  // Refetch when live stream appends events (e.g. swarm_message from start_run instruction broadcast).
   useEffect(() => {
     void refresh();
   }, [refresh, liveEventsLength]);
+
+  // Independent polling for task board updates (every 1.5 seconds)
+  // Complements SSE-driven refresh to reduce stale task data
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void refresh();
+    }, 1500); // Poll every 1.5 seconds
+
+    return () => clearInterval(interval);
+  }, [refresh]);
 
   const sendMessage = async (broadcast: boolean) => {
     if (!msgBody.trim() || !token) return;

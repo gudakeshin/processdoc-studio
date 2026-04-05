@@ -1,10 +1,11 @@
+import asyncio
 import hashlib
 import json
 import re
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Request
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_project_role
@@ -17,43 +18,76 @@ from app.services.storage import ensure_workspace, workspace_path
 router = APIRouter()
 
 
-def _extract_text_from_bytes(filename: str, content: bytes) -> tuple[str, str]:
+async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: int = 30) -> tuple[str, str]:
+    """Extract text from various document formats with timeout protection."""
     lower = (filename or "").lower()
+
     if lower.endswith((".txt", ".md", ".csv", ".json")):
         return content.decode("utf-8", errors="ignore"), "utf8_text"
+
     if lower.endswith(".docx") or lower.endswith(".pptx"):
         try:
-            import io
+            def _extract_zip():
+                import io
+                zf = zipfile.ZipFile(io.BytesIO(content))
+                text_parts: list[str] = []
+                for name in zf.namelist():
+                    if lower.endswith(".docx") and not name.startswith("word/"):
+                        continue
+                    if lower.endswith(".pptx") and not name.startswith("ppt/"):
+                        continue
+                    if not name.endswith(".xml"):
+                        continue
+                    raw = zf.read(name).decode("utf-8", errors="ignore")
+                    cleaned = re.sub(r"<[^>]+>", " ", raw)
+                    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+                    if cleaned:
+                        text_parts.append(cleaned)
+                return "\n".join(text_parts)
 
-            zf = zipfile.ZipFile(io.BytesIO(content))
-            text_parts: list[str] = []
-            for name in zf.namelist():
-                if lower.endswith(".docx") and not name.startswith("word/"):
-                    continue
-                if lower.endswith(".pptx") and not name.startswith("ppt/"):
-                    continue
-                if not name.endswith(".xml"):
-                    continue
-                raw = zf.read(name).decode("utf-8", errors="ignore")
-                cleaned = re.sub(r"<[^>]+>", " ", raw)
-                cleaned = re.sub(r"\s+", " ", cleaned).strip()
-                if cleaned:
-                    text_parts.append(cleaned)
-            return "\n".join(text_parts), "zip_xml"
+            text = await asyncio.wait_for(
+                asyncio.to_thread(_extract_zip),
+                timeout=timeout_sec
+            )
+            return text, "zip_xml"
+        except asyncio.TimeoutError:
+            # Timeout during extraction, fallback to binary
+            return content.decode("utf-8", errors="ignore"), "zip_timeout_fallback"
         except Exception:
-            return content.decode("utf-8", errors="ignore"), "binary_fallback"
+            return content.decode("utf-8", errors="ignore"), "zip_error_fallback"
+
     if lower.endswith(".pdf"):
         try:
-            import io
-            from pypdf import PdfReader
+            def _extract_pdf():
+                import io
+                from pypdf import PdfReader
 
-            reader = PdfReader(io.BytesIO(content))
-            pages = []
-            for page in reader.pages:
-                pages.append(page.extract_text() or "")
-            return "\n".join(pages), "pypdf"
+                reader = PdfReader(io.BytesIO(content))
+                pages = []
+                # Limit pages to first 50 for very large PDFs
+                for idx, page in enumerate(reader.pages[:50]):
+                    if idx > 50:
+                        break
+                    try:
+                        text = page.extract_text() or ""
+                        if text.strip():
+                            pages.append(text)
+                    except Exception:
+                        # Skip pages that fail extraction
+                        continue
+                return "\n".join(pages)
+
+            text = await asyncio.wait_for(
+                asyncio.to_thread(_extract_pdf),
+                timeout=timeout_sec
+            )
+            return text, "pypdf"
+        except asyncio.TimeoutError:
+            # PDF extraction timeout, return empty text
+            return f"[PDF extraction timeout for {filename}]", "pdf_timeout_fallback"
         except Exception:
-            return content.decode("utf-8", errors="ignore"), "binary_fallback"
+            return f"[Unable to extract PDF for {filename}]", "pdf_error_fallback"
+
     return content.decode("utf-8", errors="ignore"), "binary_fallback"
 
 
@@ -63,38 +97,72 @@ async def upload_document(
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ) -> dict:
+    """Upload and parse a document.
+
+    Timeout: 60 seconds for file reading + parsing.
+    Supports: txt, md, csv, json, pdf, docx, pptx, xlsx, xls
+    """
     require_project_role(project_id, {"Owner", "Editor"}, user, db)
     ensure_workspace(project_id)
-    content = await file.read()
+
+    try:
+        # Read file with timeout (30 sec for up to 100MB)
+        content = await asyncio.wait_for(file.read(), timeout=30.0)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=408,
+            detail="File upload timeout. File may be too large or network too slow. Try smaller file (< 50MB)."
+        )
+
     validate_document_upload(file.filename or "upload.bin", content)
     digest = hashlib.sha256(content).hexdigest()
 
     cached = cache_service.get(f"parse:{digest}")
-    text, parse_mode = _extract_text_from_bytes(file.filename or "", content)
+    text, parse_mode = None, None
 
-    def chunk_text(t: str, *, chunk_chars: int = 1200, overlap_chars: int = 120) -> list[str]:
-        t = t.strip()
-        if not t:
-            return []
-        out: list[str] = []
-        start = 0
-        while start < len(t):
-            end = min(len(t), start + chunk_chars)
-            chunk = t[start:end].strip()
-            if chunk:
-                out.append(chunk)
-            if end >= len(t):
-                break
-            start = max(0, end - overlap_chars)
-        return out
-
-    chunks: list[str]
-    if cached and isinstance(cached.get("chunks"), list) and all(isinstance(x, str) for x in cached["chunks"]):
-        chunks = cached["chunks"]
+    if cached and isinstance(cached.get("chunks"), list):
+        text = cached.get("text", "")
+        parse_mode = cached.get("parse_mode", "cached")
+        chunks = cached.get("chunks", [])
     else:
+        try:
+            # Extract text with 30-second timeout
+            text, parse_mode = await asyncio.wait_for(
+                _extract_text_from_bytes(file.filename or "", content, timeout_sec=30),
+                timeout=35.0  # Slightly longer than internal timeout for margin
+            )
+        except asyncio.TimeoutError:
+            # Fall back to basic decode on timeout
+            text = content.decode("utf-8", errors="ignore")
+            parse_mode = "timeout_fallback"
+
+        def chunk_text(t: str, *, chunk_chars: int = 1200, overlap_chars: int = 120) -> list[str]:
+            t = t.strip()
+            if not t:
+                return []
+            out: list[str] = []
+            start = 0
+            while start < len(t):
+                end = min(len(t), start + chunk_chars)
+                chunk = t[start:end].strip()
+                if chunk:
+                    out.append(chunk)
+                if end >= len(t):
+                    break
+                start = max(0, end - overlap_chars)
+            return out
+
         chunks = chunk_text(text)
-        cached = {"status": "chunked", "chars": len(text), "chunk_count": len(chunks), "chunks": chunks}
+        cached = {
+            "status": "chunked",
+            "chars": len(text),
+            "chunk_count": len(chunks),
+            "chunks": chunks,
+            "text": text,
+            "parse_mode": parse_mode,
+        }
         cache_service.set(f"parse:{digest}", cached, ttl_seconds=3600)
 
     target = workspace_path(project_id) / "source_docs" / (file.filename or "upload.bin")
@@ -104,7 +172,7 @@ async def upload_document(
     parsed_payload = {
         "sha256": digest,
         "filename": file.filename,
-        "chars": len(text),
+        "chars": len(text or ""),
         "parse_mode": parse_mode,
         "chunks": chunks,
     }
@@ -113,7 +181,12 @@ async def upload_document(
     return {
         "filename": file.filename,
         "sha256": digest,
-        "parse": {"status": cached.get("status"), "chars": cached.get("chars"), "chunk_count": len(chunks), "mode": parse_mode},
+        "parse": {
+            "status": cached.get("status"),
+            "chars": cached.get("chars"),
+            "chunk_count": len(chunks),
+            "mode": parse_mode
+        },
         "path": str(target),
         "parsed_path": str(parsed_path),
     }

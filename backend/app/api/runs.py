@@ -31,6 +31,7 @@ from app.services.run_worker import (
 )
 from app.services.run_events import lifecycle_event
 from app.services.run_tasks import serialize_run_task
+from app.services.swarm import persist_instruction_broadcast_swarm_event_payload
 from app.services.permission_pipeline import evaluate_permission_pipeline
 from app.services.hooks import disable_hook, list_registered_hooks, sync_disabled_hooks_from_db, upsert_hook_control
 from app.services.observability import increment
@@ -742,6 +743,14 @@ def start_run(
         event_type="user_intent_updated",
         payload_obj={"summary": body.instruction[:400]},
     )
+    swarm_instr = persist_instruction_broadcast_swarm_event_payload(
+        db,
+        project_id=body.project_id,
+        run_id=run.id,
+        instruction=body.instruction,
+    )
+    if swarm_instr:
+        append_run_event(db, run.id, "swarm_message", swarm_instr)
     db.commit()
     # region agent log
     _debug_log(
