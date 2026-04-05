@@ -1521,7 +1521,22 @@ class Coordinator:
             )
 
         # Phase 0: Use agentic event-driven loop if enabled (opt-in feature)
-        if bool(getattr(settings, "coordinator_agentic_loop_enabled", False)):
+        try:
+            # Try direct attribute access first
+            agentic_loop_enabled = settings.coordinator_agentic_loop_enabled
+            _LOG.warning(f"✓ Successfully read setting directly: coordinator_agentic_loop_enabled = {agentic_loop_enabled}")
+        except AttributeError:
+            # Fall back to getattr with default
+            agentic_loop_enabled = getattr(settings, "coordinator_agentic_loop_enabled", False)
+            _LOG.warning(f"⚠ Using getattr fallback: coordinator_agentic_loop_enabled = {agentic_loop_enabled}")
+
+        # Additional debug info
+        _LOG.warning(f"DEBUG: Type of agentic_loop_enabled = {type(agentic_loop_enabled)}")
+        _LOG.warning(f"DEBUG: Boolean value = {bool(agentic_loop_enabled)}")
+        _LOG.warning(f"DEBUG: All settings attributes with 'coordinator': {[attr for attr in dir(settings) if 'coordinator' in attr.lower()]}")
+
+        if bool(agentic_loop_enabled):
+            _LOG.warning("🎯🎯🎯 AGENTIC LOOP ENABLED - USING NEW STATE MACHINE PATH 🎯🎯🎯")
             _LOG.info("Coordinator using agentic event loop (Phase 0)")
             return self._run_event_loop(
                 state,
@@ -1530,6 +1545,7 @@ class Coordinator:
             )
 
         # Otherwise, use traditional linear execution pipeline (fallback for stability)
+        _LOG.warning("⚠️⚠️⚠️ AGENTIC LOOP DISABLED - USING OLD THREADPOOL PATH ⚠️⚠️⚠️")
         with _coordinator_abort_scope(abort_check):
             # region agent log
             _session_debug_log(
