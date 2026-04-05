@@ -134,6 +134,12 @@ class Settings(BaseSettings):
     # When True, coordinator runs queued RunTask rows with phase=custom after main outputs.
     swarm_execute_custom_tasks_enabled: bool = False
 
+    # Phase 0: Agentic loop - event-driven coordinator using CoordinatorStateManager (opt-in, defaults to False for backward compat).
+    # When True, coordinator uses state machine loop instead of linear ThreadPoolExecutor execution.
+    coordinator_agentic_loop_enabled: bool = False
+    # When True and coordinator_agentic_loop_enabled, use subprocess-based teammate execution (Phase 2 feature).
+    subprocess_execution_enabled: bool = False
+
     memory_v2_retrieval_enabled: bool = True
     # When True, coordinator uses assemble_v2 so MemoryItem, MemoryEvent, and ProjectMemoryProfile feed assembled_context.
     memory_compaction_v1_enabled: bool = True

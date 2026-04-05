@@ -18,6 +18,7 @@ from app.services.claude import (
 )
 
 from app.agents.agent_types import AgentOutput, build_agent_context, merge_agent_output
+from app.agents.coordinator_teammate_integration import CoordinatorTeammateIntegration
 from app.agents.subagents import (
     run_docx_agent,
     run_drawio_agent,
@@ -31,6 +32,7 @@ from app.core.run_control import RunAborted
 from app.core.state import ProcessDocState
 from app.services.dpdp import DPDPService
 from app.services.guardrails import GuardrailPipeline
+from app.services.teammate_executor import TeammateExecutor
 from app.services.qa import QAAgentLoop
 from app.services.retrieval import TieredContextEngine
 from app.core.config import settings
@@ -364,6 +366,15 @@ class Coordinator:
         self.dpdp = DPDPService()
         self.skill_registry = self._load_skill_registry()
         self.output_requirements = self._load_output_requirements()
+
+        # Phase 2: Initialize subprocess executor for independent teammate processes
+        use_subprocess = bool(getattr(settings, "coordinator_use_subprocess_workers", False))
+        if use_subprocess:
+            self.executor = TeammateExecutor(max_processes=8)
+            self.teammate_integration: Optional[CoordinatorTeammateIntegration] = None
+        else:
+            self.executor = None
+            self.teammate_integration = None
 
     @staticmethod
     def _load_skill_registry() -> list[dict]:
@@ -1502,6 +1513,23 @@ class Coordinator:
         emit_event: Callable[[str, dict[str, Any]], None] | None = None,
         abort_check: Callable[[], bool] | None = None,
     ) -> ProcessDocState:
+        # Phase 2: Initialize subprocess integration if enabled
+        if self.executor and not self.teammate_integration:
+            self.teammate_integration = CoordinatorTeammateIntegration(
+                executor=self.executor,
+                emit_event=emit_event,
+            )
+
+        # Phase 0: Use agentic event-driven loop if enabled (opt-in feature)
+        if bool(getattr(settings, "coordinator_agentic_loop_enabled", False)):
+            _LOG.info("Coordinator using agentic event loop (Phase 0)")
+            return self._run_event_loop(
+                state,
+                emit_event=emit_event,
+                abort_check=abort_check,
+            )
+
+        # Otherwise, use traditional linear execution pipeline (fallback for stability)
         with _coordinator_abort_scope(abort_check):
             # region agent log
             _session_debug_log(
@@ -1977,25 +2005,44 @@ class Coordinator:
                 state["run_contract_progress"] = node_statuses
             else:
                 worker_jobs = [(k, _OUTPUT_AGENTS[k]) for k in wanted if k in _OUTPUT_AGENTS]
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    future_map = {
-                        executor.submit(
-                            self._execute_worker_with_retry,
-                            w,
-                            state,
-                            max_retries=1,
-                            output_type=k,
-                            defer_state_merge=True,
-                        ): k
-                        for k, w in worker_jobs
-                    }
-                    for fut in as_completed(future_map):
+
+                # Phase 2: Use subprocess workers if enabled, otherwise use ThreadPoolExecutor
+                if self.teammate_integration:
+                    # Subprocess-based execution
+                    _LOG.info(f"Using subprocess workers for {len(worker_jobs)} output types")
+                    for k, w in worker_jobs:
                         _coordinator_poll_abort()
-                        patch, err = fut.result()
+                        patch, err = self.teammate_integration.execute_worker_subprocess(
+                            output_type=k,
+                            state=state,
+                            task_id=f"out:{k}",
+                        )
                         if err:
                             state.setdefault("worker_errors", []).append(err)
                         elif patch:
                             self._apply_worker_patch(state, patch)
+                else:
+                    # Traditional ThreadPoolExecutor-based execution
+                    _LOG.info(f"Using ThreadPoolExecutor for {len(worker_jobs)} output types")
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        future_map = {
+                            executor.submit(
+                                self._execute_worker_with_retry,
+                                w,
+                                state,
+                                max_retries=1,
+                                output_type=k,
+                                defer_state_merge=True,
+                            ): k
+                            for k, w in worker_jobs
+                        }
+                        for fut in as_completed(future_map):
+                            _coordinator_poll_abort()
+                            patch, err = fut.result()
+                            if err:
+                                state.setdefault("worker_errors", []).append(err)
+                            elif patch:
+                                self._apply_worker_patch(state, patch)
 
             werrs = state.get("worker_errors")
             failed_workers = bool(werrs) if isinstance(werrs, list) else bool(werrs)
@@ -2104,6 +2151,10 @@ class Coordinator:
                     if h.outcome == "ABORT":
                         raise RuntimeError(f"hook_abort:{h.hook_name}:{h.message}")
                 emit_event("fanout_complete", {"stages": ["context_assembly", "skill_selection", "plan_validation"]})
+
+            # Phase 2: Cleanup subprocess workers
+            if self.teammate_integration:
+                self.teammate_integration.terminate_all_subprocesses()
 
             return state
 
