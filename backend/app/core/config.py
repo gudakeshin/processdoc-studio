@@ -8,6 +8,27 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _get_env_files() -> list[str]:
+    """Calculate .env file paths relative to this config.py file."""
+    config_file = Path(__file__)
+    backend_dir = config_file.parent.parent.parent  # up 3 levels to backend/
+    repo_root = backend_dir.parent  # up 1 more level to repo root
+
+    env_files = [
+        str(repo_root / ".env"),  # Load repo root .env first
+        str(backend_dir / ".env"),  # Then backend .env (overrides repo root)
+    ]
+
+    # Log the paths we're using for debugging
+    import sys
+    print(f"[CONFIG] Using .env files:", file=sys.stderr)
+    for ef in env_files:
+        exists = Path(ef).exists()
+        print(f"[CONFIG]   {ef} (exists={exists})", file=sys.stderr)
+
+    return env_files
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment (see .env.example).
 
@@ -16,18 +37,11 @@ class Settings(BaseSettings):
     control worker prompts and optional narrative extended thinking.
     """
 
-    # Calculate paths to .env files
-    _backend_dir = Path(__file__).parent.parent.parent  # backend directory
-    _repo_root = _backend_dir.parent  # repo root
-
     model_config = SettingsConfigDict(
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
-        env_file=[
-            str(_repo_root / ".env"),  # Load repo root .env first
-            str(_backend_dir / ".env"),  # Then backend .env (overrides repo root)
-        ],
+        env_file=_get_env_files(),
     )
 
     processdoc_env: str = "development"
