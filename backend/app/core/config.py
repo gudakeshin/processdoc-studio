@@ -147,7 +147,7 @@ class Settings(BaseSettings):
     run_execution_retry_backoff_max_sec: float = 20.0
     run_dead_letter_replay_cooldown_sec: int = 10
     format_negotiation_v2_enabled: bool = True
-    instruction_decision_prompts_enabled: bool = True
+    instruction_decision_prompts_enabled: bool = False
     scratchpad_visibility_enabled: bool = True
     # Phase C: LLM strategy options + execution_strategy decision prompt (extra Anthropic call per plan message).
     strategy_options_planning_enabled: bool = False

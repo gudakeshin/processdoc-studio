@@ -215,47 +215,10 @@ def evaluate_permission_pipeline(
     # 5) Hooks pre-check (hook execution itself happens elsewhere)
     decisions.append(PermissionDecision(allowed=True, stage="hooks_precheck", code="ok"))
 
-    # 6) Policy/model classifier gate (v2: effective readiness)
-    evaluator = policy_evaluator or PolicyEvaluator()
-    eval_score, eval_reason, eval_warnings = evaluator.evaluate(
-        outputs=outputs,
-        run_status=run_status,
-        plan_payload=plan_payload,
-        agentic_loop_enabled=agentic_loop_enabled,
-    )
-    effective_score = min(float(classifier_score), float(eval_score))
-    cls_allowed = effective_score >= float(classifier_threshold)
-    if not enforce_policy:
-        cls_allowed = True
-    policy_hash = hashlib.sha256(
-        f"{evaluator.version()}::{evaluator.rule_id(eval_reason)}::{eval_reason}".encode("utf-8")
-    ).hexdigest()[:16]
-    decisions.append(
-        PermissionDecision(
-            allowed=cls_allowed,
-            stage="policy_classifier_gate",
-            code="ok" if cls_allowed else "classifier.below_threshold",
-            reason="" if cls_allowed else "classifier_rejected",
-            warnings=eval_warnings if eval_warnings else None,
-            metadata={
-                "score": effective_score,
-                "threshold": float(classifier_threshold),
-                "policy_reason": eval_reason,
-                "policy_version": evaluator.version(),
-                "rule_id": evaluator.rule_id(eval_reason),
-                "policy_hash": policy_hash,
-                "matched_rules": [evaluator.rule_id(eval_reason)],
-                "decision_path": evaluator.decision_path(),
-                "enforcement_mode": "enforce" if enforce_policy else "advisory",
-                "agentic_loop_enabled": agentic_loop_enabled,
-                "warnings": eval_warnings,
-            },
-        )
-    )
-    if not cls_allowed:
-        return decisions
+    # Stage 6 (policy classifier gate) REMOVED.
+    # Quality evaluation is the coordinator's responsibility, not a pre-execution gate.
 
-    # 7) Human approval gate
+    # 6) Human approval gate
     if not include_human_gate:
         return decisions
     approved = has_approval and run_status in {"approved", "running"}

@@ -34,27 +34,22 @@ def test_permission_pipeline_has_machine_readable_code() -> None:
     deny = [d for d in decisions if d.stage == "deny_rules"][0]
     assert deny.allowed is False
     assert deny.code == "deny.forbidden_output"
-    classifier = [d for d in decisions if d.stage == "policy_classifier_gate"]
-    if classifier:
-        assert classifier[0].metadata is not None
-        assert "policy_version" in classifier[0].metadata
-        assert "policy_hash" in classifier[0].metadata
-        assert "decision_path" in classifier[0].metadata
+    # Stage 6 (policy classifier gate) was removed — quality is the coordinator's job
+    assert all(d.stage != "policy_classifier_gate" for d in decisions)
 
 
-def test_permission_pipeline_dry_run_mode_allows_with_metadata() -> None:
+def test_permission_pipeline_no_quality_gate() -> None:
+    """Pipeline has no Stage 6 quality gate. Quality evaluation belongs in the coordinator."""
     decisions = evaluate_permission_pipeline(
         run_status="approved",
         has_approval=True,
         requested_outputs=["docx"],
-        classifier_score=0.1,
-        classifier_threshold=0.9,
-        enforce_policy=False,
+        plan_payload={},
     )
-    classifier = [d for d in decisions if d.stage == "policy_classifier_gate"][0]
-    assert classifier.allowed is True
-    assert classifier.metadata is not None
-    assert classifier.metadata["enforcement_mode"] == "advisory"
+    stages = [d.stage for d in decisions]
+    assert "policy_classifier_gate" not in stages
+    # Should reach human approval gate without any quality checks
+    assert "human_approval_gate" in stages
 
 
 def test_permission_pipeline_preflight_without_human_gate() -> None:
@@ -63,59 +58,21 @@ def test_permission_pipeline_preflight_without_human_gate() -> None:
         has_approval=False,
         requested_outputs=["docx"],
         include_human_gate=False,
-        plan_payload={"run_contract": {"nodes": [{"id": "n1"}]}},
     )
     assert decisions
     assert all(d.stage != "human_approval_gate" for d in decisions)
     assert all(d.allowed for d in decisions)
 
 
-def test_permission_pipeline_flags_no_substance_plan() -> None:
-    """A plan with no instruction, no nodes, and no content is genuinely unrunnable."""
+def test_permission_pipeline_allows_any_valid_plan() -> None:
+    """Any plan with valid output types passes — no quality gate blocking."""
     decisions = evaluate_permission_pipeline(
-        run_status="plan_ready",
+        run_status="approved",
         has_approval=True,
-        requested_outputs=["docx"],
-        classifier_threshold=0.5,
-        plan_payload={},
-        include_human_gate=False,
-        agentic_loop_enabled=False,
-    )
-    classifier = [d for d in decisions if d.stage == "policy_classifier_gate"][0]
-    assert classifier.allowed is False
-    assert classifier.metadata is not None
-    assert classifier.metadata["policy_reason"] == "policy_plan_no_substance"
-
-
-def test_permission_pipeline_allows_without_nodes_in_agentic_mode() -> None:
-    """Agentic loop builds its own task board; missing contract_nodes should not block."""
-    decisions = evaluate_permission_pipeline(
-        run_status="plan_ready",
-        has_approval=True,
-        requested_outputs=["docx"],
-        plan_payload={"skill_card": "narrative_v1", "sub_agents": ["narrative"]},
-        include_human_gate=False,
-        agentic_loop_enabled=True,
+        requested_outputs=["docx", "narrative"],
+        plan_payload={},  # Empty plan — no contract_nodes, no instruction
     )
     assert all(d.allowed for d in decisions)
-    classifier = [d for d in decisions if d.stage == "policy_classifier_gate"][0]
-    assert classifier.metadata["agentic_loop_enabled"] is True
-    assert classifier.metadata["policy_reason"] == "policy_allow"
-
-
-def test_permission_pipeline_warns_on_missing_nodes_legacy() -> None:
-    """Legacy mode without strict setting: advisory warning emitted, but run still allowed."""
-    decisions = evaluate_permission_pipeline(
-        run_status="plan_ready",
-        has_approval=True,
-        requested_outputs=["docx"],
-        plan_payload={"skill_card": "auto_selected"},
-        include_human_gate=False,
-        agentic_loop_enabled=False,
-    )
-    classifier = [d for d in decisions if d.stage == "policy_classifier_gate"][0]
-    assert classifier.allowed is True
-    assert "contract_nodes_empty_advisory" in (classifier.warnings or [])
 
 
 def test_retry_policy_honors_retry_after() -> None:

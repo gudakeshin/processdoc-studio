@@ -341,7 +341,8 @@ def _persist_assistant_plan_message(
                     open_questions = [
                         "Select one of the proposed execution approaches (see Approaches below).",
                     ] + open_questions
-    ready_for_confirmation = len(unresolved_prompt_ids) == 0
+    # When decision prompts are disabled, always ready — the LLM handles clarification via conversation.
+    ready_for_confirmation = True if not settings.instruction_decision_prompts_enabled else len(unresolved_prompt_ids) == 0
     display_open_questions = open_questions + soft_hints
     plan_hash = _build_plan_hash(
         instruction=instruction,
@@ -826,7 +827,9 @@ def confirm_project_conversation_plan(
             status_code=409,
             detail=_detail("plan_missing", "No assistant plan is available to confirm"),
         )
-    if not bool(plan_meta.get("ready_for_confirmation")):
+    # When decision prompts are disabled, always allow confirmation.
+    # The LLM handles clarification via conversation, not hardcoded gates.
+    if settings.instruction_decision_prompts_enabled and not bool(plan_meta.get("ready_for_confirmation")):
         raise HTTPException(
             status_code=409,
             detail=_detail(
