@@ -18,6 +18,7 @@ from pptx.enum.text import PP_ALIGN
 from pypdf import PdfWriter
 
 from app.core.config import settings
+from app.core.deliverable import DeliverableRegistry
 
 
 def workspace_path(project_id: str) -> Path:
@@ -94,6 +95,13 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
         elif isinstance(value, str):
             suffix = ".md" if key.endswith("_md") else ".txt"
             (run_dir / f"{key}{suffix}").write_text(value, encoding="utf-8")
+
+    for output_type in requested_set:
+        try:
+            deliverable = DeliverableRegistry.get(output_type)
+        except Exception:
+            continue
+        deliverable.render(payload, run_dir, branding=payload.get("branding"))
 
     def _rows_from_markdown(md: str) -> list[list[str]]:
         rows: list[list[str]] = []
@@ -485,21 +493,34 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
                 n = len(bullets)
                 # Content-driven sizing: fewer bullets → larger font + more breathing room
                 if n <= 3:
-                    font_size, space_after, top = 16, Pt(14), 1.05
+                    font_size, space_after, top, max_chars = 16, Pt(14), 1.05, 150
                 elif n <= 5:
-                    font_size, space_after, top = 14, Pt(10), 0.95
+                    font_size, space_after, top, max_chars = 14, Pt(10), 0.95, 130
                 elif n <= 8:
-                    font_size, space_after, top = 12, Pt(6),  0.92
+                    font_size, space_after, top, max_chars = 12, Pt(6),  0.92, 110
                 else:
-                    font_size, space_after, top = 10, Pt(3),  0.92
+                    font_size, space_after, top, max_chars = 10, Pt(3),  0.92, 90
+
+                # Phase 1 fix: Validate text length before rendering
+                validated_bullets = []
+                for b_idx, bullet in enumerate(bullets[:12]):
+                    bullet_text = _safe_text(bullet)
+                    if len(bullet_text) > max_chars:
+                        _LOG.warning(
+                            f"[PPTX QA] Slide {page_num} ('{item.get('title')}'): Bullet {b_idx} is "
+                            f"{len(bullet_text)} chars (max {max_chars}). Text: '{bullet_text[:60]}...' "
+                            f"May be truncated in rendering."
+                        )
+                    validated_bullets.append(bullet_text)
+
                 txb = slide.shapes.add_textbox(Inches(0.28), Inches(top), Inches(9.44), Inches(5.10 - top))
                 tf = txb.text_frame
                 tf.word_wrap = True
-                for b_idx, bullet in enumerate(bullets[:12]):
+                for b_idx, bullet in enumerate(validated_bullets):
                     p = tf.paragraphs[0] if b_idx == 0 else tf.add_paragraph()
                     p.alignment = PP_ALIGN.LEFT
                     run = p.add_run()
-                    run.text = _safe_text(bullet)
+                    run.text = bullet
                     run.font.name = _FONT
                     run.font.size = Pt(font_size)
                     run.font.color.rgb = _B["mid"]
@@ -515,6 +536,13 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
             slide = _blank_slide(prs)
             _add_chrome(slide, _safe_text(item.get("title"), ""), page_num, total)
             cards = item.get("stat_cards") if isinstance(item.get("stat_cards"), list) else []
+            # Phase 1 fix: Warn if stat_cards are empty (slide will be title-only)
+            if not cards:
+                _LOG.warning(
+                    f"[PPTX QA] Slide {page_num} ('{item.get('title')}'): "
+                    f"slide_type='stat_cards' has no cards. Expected 3 cards, got 0. "
+                    f"Slide will render with title only (blank content). This indicates agent generation failure."
+                )
             _DEFAULT_FILLS = ["dark", "mid_dark", "gray"]
             card_w = 3.02
             card_h = 3.55
@@ -550,6 +578,13 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
             slide = _blank_slide(prs)
             _add_chrome(slide, _safe_text(item.get("title"), ""), page_num, total)
             cards = item.get("column_cards") if isinstance(item.get("column_cards"), list) else []
+            # Phase 1 fix: Warn if column_cards are empty
+            if not cards:
+                _LOG.warning(
+                    f"[PPTX QA] Slide {page_num} ('{item.get('title')}'): "
+                    f"slide_type='column_cards' has no cards. Expected 3 columns, got 0. "
+                    f"Slide will render with title only. This indicates agent generation failure."
+                )
             _ACCENT_DEFAULTS = ["green", "dark", "gray"]
             card_w = 3.02
             card_h = 3.45
@@ -601,6 +636,13 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
             rows = table_spec.get("rows") if isinstance(table_spec.get("rows"), list) else []
             data_rows = [r for r in rows if isinstance(r, list)]
             all_rows = ([headers] + data_rows) if headers else data_rows
+            # Phase 1 fix: Warn if table has no rows (only headers or completely empty)
+            if not data_rows:
+                _LOG.warning(
+                    f"[PPTX QA] Slide {page_num} ('{item.get('title')}'): "
+                    f"slide_type='table' has no data rows. Expected process steps table, got 0 rows. "
+                    f"Slide will render with title only. This indicates agent generation failure."
+                )
             if not all_rows:
                 note = item.get("footer_note")
                 if note:
@@ -767,14 +809,7 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
         raci_rows = _rows_from_process_model(payload.get("process_model") or {})
     if "raci" in requested_set:
         _write_raci_xlsx(raci_rows)
-    if "xlsx" in requested_set:
-        _write_xlsx_output()
-    if "pdf" in requested_set:
-        _write_pdf_output()
-    if "docx" in requested_set:
-        _write_docx_output()
     if "pptx" in requested_set:
-        _write_pptx_output()
         # Persist slide JSON for targeted Visual QA remediation (merge on retry).
         ps = payload.get("pptx_slides")
         if isinstance(ps, list) and ps:

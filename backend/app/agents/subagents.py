@@ -47,13 +47,34 @@ _DEBUG_SESSION_ID = "a9841a"
 
 
 def _append_conversation_digest_block(user: str, ctx: AgentContext) -> str:
+    extra_parts: list[str] = []
     d = (ctx.conversation_digest or "").strip()
-    if not d:
+    if d:
+        cap = max(0, int(settings.subagent_conversation_digest_max_chars))
+        if cap > 0:
+            extra_parts.append(f"## Confirmed conversation (digest)\n{d[:cap]}")
+
+    # Shared enrichment is now passed via AgentContext; include compact hints for all agents.
+    if ctx.enrichment is not None:
+        audience = ctx.get_audience_hints().strip()
+        risk = ctx.get_risk_focus().strip()
+        value = ctx.get_value_emphasis().strip()
+        analytics = getattr(ctx.enrichment, "process_analytics", None)
+        metrics: list[str] = []
+        if analytics is not None:
+            metrics.append(f"steps={getattr(analytics, 'steps_count', 0)}")
+            metrics.append(f"roles={getattr(analytics, 'roles_count', 0)}")
+            metrics.append(f"decisions={getattr(analytics, 'decision_points', 0)}")
+        lines = [x for x in [audience, risk, value, ("Process analytics: " + ", ".join(metrics)) if metrics else ""] if x]
+        if lines:
+            extra_parts.append("## Shared enrichment\n" + "\n".join(f"- {ln}" for ln in lines))
+
+    if not extra_parts:
         return user
     cap = max(0, int(settings.subagent_conversation_digest_max_chars))
-    if cap <= 0:
+    if cap <= 0 and d:
         return user
-    return f"{user}\n\n## Confirmed conversation (digest)\n{d[:cap]}\n"
+    return f"{user}\n\n" + "\n\n".join(extra_parts) + "\n"
 
 
 def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
@@ -1708,7 +1729,7 @@ def _docx_deterministic_fallback(pm: ProcessModel, deliverable: str) -> str:
         return "\n".join(lines)
 
 
-def _pptx_user_context_appendix(ctx: AgentContext) -> str:
+def _shared_user_context_appendix(ctx: AgentContext) -> str:
     blocks: list[str] = []
     ui = ctx.user_instruction.strip()
     if ui:
@@ -1719,6 +1740,9 @@ def _pptx_user_context_appendix(ctx: AgentContext) -> str:
     pae = ctx.prior_artifacts_excerpt.strip()
     if pae:
         blocks.append(pae)
+    enrichment_context = str(getattr(ctx.enrichment, "context_snippets", "") or "").strip()
+    if enrichment_context:
+        blocks.append(f"## Prior artifacts context\n{enrichment_context[:2200]}")
     if not blocks:
         return ""
     return "\n\n".join(blocks) + "\n\n---\n\n"
@@ -1937,7 +1961,30 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 "You are a Deloitte presentation strategist producing a slide blueprint for python-pptx rendering. "
                 "Use varied, professional slide types — not just bullet lists. "
                 "Return ONLY a JSON object with a single top-level key 'slides' containing an array. "
-                "No prose, no markdown fences, no explanation. The JSON must be parseable with json.loads()."
+                "No prose, no markdown fences, no explanation. The JSON must be parseable with json.loads().\n\n"
+                "CRITICAL: Always populate slides with actual data. Never generate empty arrays for stat_cards, column_cards, or table rows.\n\n"
+                "EXAMPLE — stat_cards slide (slide_type=\"stat_cards\"):\n"
+                '{"slide_type": "stat_cards", "title": "Process Scale & Scope", "stat_cards": [\n'
+                '  {"stat": "14", "label": "Process Steps", "description": "End-to-end procure-to-pay workflow", "fill": "dark"},\n'
+                '  {"stat": "5", "label": "Key Roles", "description": "Procurement, Finance, Stores, Treasury, Vendors", "fill": "mid_dark"},\n'
+                '  {"stat": "$450M", "label": "Annual Spend", "description": "High-volume P2P spanning organization", "fill": "gray"}\n'
+                ']}\n\n'
+                "EXAMPLE — column_cards slide (slide_type=\"column_cards\"):\n"
+                '{"slide_type": "column_cards", "title": "Three Pillars", "column_cards": [\n'
+                '  {"heading": "Governance", "accent": "green", "body": "Centralize vendor master; enforce controls"},\n'
+                '  {"heading": "Quality", "accent": "dark", "body": "Activate QM module; block failures"},\n'
+                '  {"heading": "Automation", "accent": "gray", "body": "OCR invoices; DMEE payment integration"}\n'
+                ']}\n\n'
+                "EXAMPLE — table slide (slide_type=\"table\"):\n"
+                '{"slide_type": "table", "title": "Workflow Steps", "table": {\n'
+                '  "headers": ["Step", "Owner", "Inputs → Outputs"],\n'
+                '  "rows": [\n'
+                '    ["1. Create PR", "Dept Head", "Material list → PR in ME51N"],\n'
+                '    ["2. Countersign", "Finance", "PR >INR 50K → Approved"],\n'
+                '    ["3. Create PO", "Procurement", "PR → PO in ME21N"]\n'
+                "  ]\n"
+                '}}\n\n'
+                "RULE: Do NOT generate empty stat_cards=[], column_cards=[], or table.rows=[]. Always populate with real data.\n"
             ),
         )
         n_steps = len(pm.get("steps") or [])
@@ -1947,10 +1994,47 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             n_slides_guidance = "7–8 slides"
         else:
             n_slides_guidance = "8–10 slides"
+
+        # ── Inject enriched context metrics (Phase 1 fix) ──────────────────────
+        enrichment = ctx.enrichment
+        analytics = getattr(enrichment, "process_analytics", None) if enrichment else None
+        steps_count = analytics.steps_count if analytics else n_steps
+        roles_count = analytics.roles_count if analytics else len(set(s.get("role") or s.get("owner") for s in pm.get("steps", []) if isinstance(s, dict)))
+        decision_points = analytics.decision_points if analytics else len(pm.get("decisions", []) or [])
+        systems_count = len(pm.get("systems", [])) if isinstance(pm.get("systems"), list) else 3
+
+        # Extract risks and value drivers from enrichment
+        risk_profile = getattr(enrichment, "risk_profile", None) if enrichment else None
+        risks = risk_profile.risks if risk_profile else pm.get("risks", [])
+        value_drivers = getattr(enrichment, "value_drivers", []) if enrichment else pm.get("improvement_opportunities", [])
+
+        # Build data injection for key slides
+        data_for_slide_2 = (
+            f"\nDATA FOR SLIDE 2 (stat_cards) — MUST POPULATE WITH THESE METRICS:\n"
+            f"- Card 1: stat=\"{steps_count}\", label=\"Process Steps\", "
+            f"description=\"End-to-end workflow from initiation to completion\"\n"
+            f"- Card 2: stat=\"{roles_count}\", label=\"Key Roles\", "
+            f"description=\"Departments and stakeholders involved in execution\"\n"
+            f"- Card 3: stat=\"{systems_count}\", label=\"System Touchpoints\", "
+            f"description=\"Applications and tools required for automation\"\n"
+        )
+
+        data_for_slide_7 = (
+            f"\nDATA FOR SLIDE 7 (stat_cards) — MUST POPULATE WITH KEY METRICS:\n"
+            f"Use these 3 metrics or extract similar ones from the ProcessModel:\n"
+            f"- If cycle time available: include as Card 1\n"
+            f"- If error/exception rate available: include as Card 2\n"
+            f"- If control points or compliance metrics available: include as Card 3\n"
+            f"Each card MUST have stat (number/percentage), label (2-4 words), "
+            f"and description (1 sentence explaining significance).\n"
+            f"Use [TBC] ONLY if data is truly unavailable.\n"
+        )
+
         user_core = (
             f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
             "below (user instruction, assembled context, prior narrative/document drafts).\n"
-            "Use Deloitte visual conventions: varied slide types, not just bullets.\n\n"
+            "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
+            + data_for_slide_2 + data_for_slide_7 + "\n"
             "Slide ordering mandate (follow this sequence):\n"
             "1. slide_type=\"title\" — process name as title, subtitle=\"Process Overview\",\n"
             "   badges=[up to 4 short capability phrases from ProcessModel context]\n"
@@ -1996,7 +2080,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             "  - Do not mix bullets + table on the same slide.\n"
             "  - Return ONLY valid JSON: {\"slides\": [...]}\n\n"
         )
-        appendix = _pptx_user_context_appendix(ctx)
+        appendix = _shared_user_context_appendix(ctx)
         user = user_core + appendix + f"ProcessModel JSON:\n{json.dumps(pm)}"
         visual_feedback: list[dict] = (ctx.plan_payload or {}).get("pptx_visual_feedback") or []
         if visual_feedback and isinstance(visual_feedback, list):

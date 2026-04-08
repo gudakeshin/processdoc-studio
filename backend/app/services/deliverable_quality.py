@@ -15,6 +15,55 @@ from app.services.claude import claude_generate_json, is_claude_enabled
 from app.services.langfuse_tracing import langfuse_span
 from app.services.observability import increment
 from app.services.quality_contract_registry import contract_for_outputs
+from app.core.quality_framework import UnifiedQualityFramework
+
+
+# Phase 1 fix: PPTX completeness validation
+def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
+    """
+    Check that PPTX slides have required content (not just titles).
+    Returns (is_complete, issues_list).
+    """
+    issues = []
+    try:
+        parsed = json.loads(pptx_json) if pptx_json.strip().startswith("{") else None
+    except json.JSONDecodeError:
+        return False, ["Invalid JSON in pptx_slides"]
+
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("slides"), list):
+        return False, ["pptx_slides missing or invalid 'slides' array"]
+
+    slides = parsed["slides"]
+    if not slides:
+        return False, ["pptx_slides has no slides"]
+
+    slide_type_requirements = {
+        "stat_cards": ("stat_cards", 3),
+        "column_cards": ("column_cards", 3),
+        "stack_layers": ("stack_layers", 3),
+        "table": ("table", 1),
+        "bullets": ("bullets", 1),
+    }
+
+    for idx, slide in enumerate(slides):
+        if not isinstance(slide, dict):
+            continue
+
+        slide_type = slide.get("slide_type")
+        title = slide.get("title", f"[Slide {idx + 1}]")
+
+        if slide_type in slide_type_requirements:
+            field, min_items = slide_type_requirements[slide_type]
+            items = slide.get(field, [])
+
+            if not isinstance(items, list) or len(items) < min_items:
+                actual = len(items) if isinstance(items, list) else 0
+                issues.append(
+                    f"Slide {idx + 1} ({title}): "
+                    f"slide_type='{slide_type}' requires {min_items} {field}, got {actual}"
+                )
+
+    return len(issues) == 0, issues
 
 
 def _to_text(value: Any) -> str:
@@ -245,6 +294,7 @@ def run_deliverable_quality_loop(
 
     working = dict(outputs)
     rounds_meta: list[dict[str, Any]] = []
+    unified_framework = UnifiedQualityFramework() if bool(getattr(settings, "enable_unified_quality_framework", False)) else None
     increment("deliverable_quality_runs_total")
 
     for rnd in range(max_rounds):
@@ -256,7 +306,35 @@ def run_deliverable_quality_loop(
                 continue
             if raw is None or (isinstance(raw, str) and not raw.strip()):
                 continue
+
+            # PPTX completeness check: before quality evaluation
+            if ok == "pptx_slides" and isinstance(raw, str):
+                is_complete, issues = _validate_pptx_completeness(raw)
+                if not is_complete:
+                    # Log completeness failures and fail this slide type
+                    for issue in issues:
+                        increment("deliverable_quality_pptx_incomplete")
+                    gated_failures[ok] = {
+                        "reason": f"PPTX completeness check failed: {len(issues)} slides incomplete",
+                        "target_score": 0.85,
+                        "actions": issues,
+                        "rewrite_prompt": (
+                            f"Regenerate pptx_slides: {'; '.join(issues[:3])}. "
+                            f"Ensure stat_cards/column_cards/stack_layers/table have required items."
+                        ),
+                    }
+                    continue
+
             ev = _evaluate_one_output(ok, raw, contract, project_id=project_id)
+            if unified_framework is not None:
+                output_type = ok.replace("_markdown", "").replace("_slides", "")
+                uf = unified_framework.evaluate_deliverable(
+                    output_type=output_type,
+                    text=str(raw or ""),
+                    metadata={},
+                    context={},
+                )
+                ev["unified_quality"] = uf
             per_output[ok] = ev
             thr = float(contract.get("pass_threshold") or 0.72)
             if not ev.get("passed"):
