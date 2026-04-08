@@ -1,5 +1,5 @@
 import React from "react";
-import { Inter, JetBrains_Mono, Source_Code_Pro, VT323 } from "next/font/google";
+import { Inter, Open_Sans, JetBrains_Mono, Source_Code_Pro, VT323 } from "next/font/google";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { QueryProvider } from "@/components/providers/QueryProvider";
@@ -7,6 +7,11 @@ import { AppShell } from "@/components/shell/AppShell";
 import { GlobalToastListener } from "@/components/toast/GlobalToastListener";
 import { AuthProvider } from "@/lib/auth-context";
 import "@/styles/globals.css";
+
+const openSans = Open_Sans({
+  subsets: ["latin"],
+  variable: "--font-open-sans",
+});
 
 const inter = Inter({
   subsets: ["latin"],
@@ -33,7 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable} ${matrixBody.variable} ${matrixDisplay.variable}`}
+      className={`${openSans.variable} ${inter.variable} ${jetbrainsMono.variable} ${matrixBody.variable} ${matrixDisplay.variable}`}
     >
       <body suppressHydrationWarning>
         <ErrorBoundary>

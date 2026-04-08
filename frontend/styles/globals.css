@@ -15,8 +15,8 @@ body {
 
 body {
   background: var(--primary-50);
-  color: var(--primary-900);
-  font-family: var(--font-inter), system-ui, sans-serif;
+  color: var(--coral-black);
+  font-family: var(--font-open-sans), var(--font-inter), system-ui, sans-serif;
 }
 
 a {
@@ -51,8 +51,9 @@ select {
 .deloitte-surface {
   border: 1px solid var(--surface-border);
   background: var(--surface-default);
-  border-radius: 12px;
+  border-radius: 0px;
   box-shadow: var(--shadow-sm);
+  border-top: 2px solid var(--deloitte-green);
 }
 
 .surface-muted {
@@ -63,11 +64,12 @@ select {
 .status-pill {
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
-  padding: 2px 8px;
+  border-radius: 0px;
+  padding: 4px 8px;
   font-size: var(--text-2xs);
   line-height: 1.35;
   font-weight: 500;
+  border: 1px solid currentColor;
 }
 
 .status-pill--info {
@@ -92,9 +94,10 @@ select {
 
 .alert {
   border: 1px solid var(--surface-border);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: 0px;
+  padding: 12px 14px;
   font-size: 13px;
+  border-left: 4px solid var(--surface-border);
 }
 
 .alert--info {
@@ -165,10 +168,10 @@ select {
 }
 
 .input-select-base {
-  border-radius: var(--radius-md);
-  border: 1px solid var(--surface-border-strong);
+  border-radius: 0px;
+  border: 1px solid var(--light-gray);
   background: var(--surface-default);
-  padding: 0.5rem 0.75rem;
+  padding: 0.75rem 1rem;
   font-size: var(--text-sm-size);
   color: var(--text-default);
 }

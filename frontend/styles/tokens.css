@@ -1,20 +1,29 @@
 :root {
-  /* Deloitte-inspired core palette */
+  /* Deloitte brand colors */
+  --coral-black: #0F0B0B;
+  --tundora-gray: #4C4C4C;
+  --light-gray: #E5E5E5;
+  --deloitte-green: #86BC24;
+  --deloitte-blue: #0072B1;
+  --white: #FFFFFF;
+  --alabaster: #FBFBFB;
+
+  /* Legacy palette (kept for backward compatibility during migration) */
   --primary-950: #0f1214;
-  --primary-900: #1b1f23;
+  --primary-900: #0F0B0B; /* Updated to Coral Black */
   --primary-800: #2a2f35;
-  --primary-700: #3d434a;
+  --primary-700: #4C4C4C; /* Updated to Tundora Gray */
   --primary-600: #59616a;
   --primary-400: #a2a8b0;
   --primary-200: #d5dbe2;
   --primary-100: #eceff2;
   --primary-50: #f6f8f9;
 
-  --accent-blue: #005eb8;
+  --accent-blue: #0072B1;
   --accent-blue-light: #2b7cd3;
   --accent-indigo: #1f4e8c;
   --accent-violet: #395a8f;
-  --accent-green: #86bc25;
+  --accent-green: #86BC24;
   --accent-green-dark: #6ea118;
 
   --success: #16a34a;
@@ -32,12 +41,12 @@
 
   --surface-default: #ffffff;
   --surface-muted: var(--primary-50);
-  --surface-border: color-mix(in srgb, var(--primary-700) 20%, transparent);
-  --surface-border-strong: color-mix(in srgb, var(--primary-700) 35%, transparent);
-  --text-default: var(--primary-900);
-  --text-muted: var(--primary-700);
-  /* Stronger contrast for captions on light surfaces (WCAG-friendly vs primary-50) */
-  --text-caption: var(--primary-600);
+  --surface-border: color-mix(in srgb, var(--light-gray) 100%, transparent);
+  --surface-border-strong: color-mix(in srgb, var(--light-gray) 100%, transparent);
+  --text-default: var(--coral-black);
+  --text-muted: var(--tundora-gray);
+  /* Stronger contrast for captions on light surfaces (WCAG-friendly) */
+  --text-caption: var(--tundora-gray);
 
   /* Typography scale */
   --text-2xs: 0.6875rem;
@@ -65,14 +74,16 @@
   --status-failed-border: color-mix(in srgb, var(--error) 35%, transparent);
   --status-failed-text: color-mix(in srgb, var(--error) 78%, black);
 
-  --radius-sm: 4px;
-  --radius: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* Deloitte: Sharp corners, 0px border-radius throughout */
+  --radius-sm: 0px;
+  --radius: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.15);
+  /* Deloitte: Soft, diffused shadows */
+  --shadow-sm: 0 4px 12px rgba(15, 11, 11, 0.08);
+  --shadow-md: 0 8px 16px rgba(15, 11, 11, 0.12);
+  --shadow-lg: 0 12px 20px rgba(15, 11, 11, 0.14);
+  --shadow-xl: 0 16px 28px rgba(15, 11, 11, 0.16);
 }

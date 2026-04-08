@@ -10,12 +10,12 @@ export function Button({ className, variant = "primary", ...props }: Props) {
   return (
     <button
       className={cn(
-        "rounded-md px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60",
+        "px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 active:brightness-90",
         variant === "primary" &&
-          "bg-[var(--accent-blue)] text-white hover:bg-[var(--accent-indigo)] focus-visible:outline-[var(--accent-green)]",
+          "bg-[#86BC24] text-white hover:bg-[#7aa71f] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0F0B0B]",
         variant === "secondary" &&
-          "border border-[color:color-mix(in_srgb,var(--primary-700)_35%,transparent)] bg-white text-[var(--primary-900)] hover:bg-[var(--primary-50)]",
-        variant === "ghost" && "text-[var(--primary-700)] hover:bg-[color:color-mix(in_srgb,var(--primary-100)_70%,white)]",
+          "border-2 border-[#0F0B0B] bg-white text-[#0F0B0B] hover:bg-[#f6f8f9] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0F0B0B]",
+        variant === "ghost" && "text-[#4C4C4C] hover:bg-[#f6f8f9] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0F0B0B]",
         className
       )}
       {...props}
