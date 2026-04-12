@@ -7,6 +7,7 @@ Provides REST API for wiki operations with automatic retry, auto-correction, and
 from fastapi import APIRouter, HTTPException, Query
 from typing import Any, Dict, List, Optional
 import logging
+from datetime import datetime, timezone
 
 from app.services.wiki_operations import (
     wiki_ingest_with_retry,
@@ -18,6 +19,7 @@ from app.services.wiki_operations import (
     _detect_changed_pages,
 )
 from app.services.wiki_cache import get_wiki_cache
+from app.services.wiki_analytics import get_wiki_recommender
 from app.services.wiki_corrections import DataCorrector
 from app.services.wiki_qa import WikiQAEvaluator
 from app.services.wiki_integrations import (
@@ -1653,6 +1655,364 @@ async def search_wiki(
 
     except Exception as e:
         logger.error(f"Wiki search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===== Analytics & Recommendations (Phase 6) =====
+
+@router.post("/{wiki_type}/analytics/view")
+async def record_page_view(
+    wiki_type: str,
+    page_id: str,
+    project_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Record a page view for analytics.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        page_id: Page ID being viewed
+        project_id: Project ID (for project wiki)
+        user_id: Optional user ID for behavior tracking
+
+    Returns:
+        {
+            "status": "success",
+            "page_id": str,
+            "recorded_at": ISO timestamp
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        recommender = get_wiki_recommender()
+        recommender.analytics.record_view(page_id, user_id=user_id)
+
+        return {
+            "status": "success",
+            "page_id": page_id,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Record view failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{wiki_type}/analytics/search")
+async def record_search(
+    wiki_type: str,
+    query: str,
+    result_count: int = 0,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Record a search query for analytics.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        query: Search query text
+        result_count: Number of results returned
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "status": "success",
+            "query": str,
+            "recorded_at": ISO timestamp
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        recommender = get_wiki_recommender()
+        recommender.analytics.record_search(query, result_count=result_count)
+
+        return {
+            "status": "success",
+            "query": query,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Record search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{wiki_type}/analytics/popular-pages")
+async def get_popular_pages(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    limit: int = Query(10, ge=1, le=100),
+) -> Dict[str, Any]:
+    """
+    Get most viewed pages (trending).
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID (for project wiki)
+        limit: Max results (default 10)
+
+    Returns:
+        {
+            "status": "success",
+            "popular_pages": [
+                {"page_id": str, "view_count": int},
+                ...
+            ],
+            "count": int
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        recommender = get_wiki_recommender()
+        popular = recommender.analytics.get_popular_pages(limit=limit)
+
+        return {
+            "status": "success",
+            "popular_pages": popular,
+            "count": len(popular),
+        }
+
+    except Exception as e:
+        logger.error(f"Get popular pages failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{wiki_type}/analytics/trending-searches")
+async def get_trending_searches(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    limit: int = Query(10, ge=1, le=100),
+) -> Dict[str, Any]:
+    """
+    Get trending search queries.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID (for project wiki)
+        limit: Max results (default 10)
+
+    Returns:
+        {
+            "status": "success",
+            "trending_searches": [
+                {"query": str, "count": int},
+                ...
+            ],
+            "count": int
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        recommender = get_wiki_recommender()
+        trending = recommender.analytics.get_trending_searches(limit=limit)
+
+        return {
+            "status": "success",
+            "trending_searches": trending,
+            "count": len(trending),
+        }
+
+    except Exception as e:
+        logger.error(f"Get trending searches failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{wiki_type}/recommendations/{page_id}")
+async def get_page_recommendations(
+    wiki_type: str,
+    page_id: str,
+    project_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    limit: int = Query(5, ge=1, le=20),
+) -> Dict[str, Any]:
+    """
+    Get recommendations for a specific page.
+
+    Returns related pages, personalized recommendations, missing pages, and trending pages.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        page_id: Current page ID
+        project_id: Project ID (for project wiki)
+        user_id: Optional user ID for personalized recommendations
+        limit: Max results per recommendation type (default 5)
+
+    Returns:
+        {
+            "status": "success",
+            "page_id": str,
+            "related_pages": [
+                {"page_id": str, "distance": int, "relevance": float},
+                ...
+            ],
+            "personalized_recommendations": [
+                {"page_id": str, "score": float, "reason": str},
+                ...
+            ],
+            "missing_pages": [
+                {"concept": str, "mentions": int, "suggested_action": str},
+                ...
+            ],
+            "trending_pages": [
+                {"page_id": str, "view_count": int},
+                ...
+            ]
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        recommender = get_wiki_recommender()
+
+        # Get user's viewed pages if user_id provided
+        user_pages = None
+        if user_id:
+            user_pages = recommender.analytics.get_user_pages(user_id)
+
+        recs = recommender.get_recommendations(
+            page_id=page_id,
+            user_id=user_id,
+            user_pages=user_pages,
+        )
+
+        return {
+            "status": "success",
+            "page_id": page_id,
+            "related_pages": recs["related_pages"][:limit],
+            "personalized_recommendations": recs["personalized_recommendations"][:limit],
+            "missing_pages": recs["missing_pages"][:3],
+            "trending_pages": recs["trending_pages"][:limit],
+        }
+
+    except Exception as e:
+        logger.error(f"Get recommendations failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{wiki_type}/analytics/update")
+async def update_analytics_from_wiki(
+    wiki_type: str,
+    pages: List[Dict[str, Any]],
+    relationships: List[Dict[str, Any]],
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Update recommender with current wiki state.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        pages: List of wiki pages (with id, title, content)
+        relationships: List of relationships (with source_id, target_id)
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "status": "success",
+            "pages_indexed": int,
+            "relationships_loaded": int,
+            "updated_at": ISO timestamp
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        recommender = get_wiki_recommender()
+        recommender.update_from_wiki(pages, relationships)
+
+        return {
+            "status": "success",
+            "pages_indexed": len(pages),
+            "relationships_loaded": len(relationships),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Update analytics failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{wiki_type}/insights")
+async def get_wiki_insights(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get comprehensive wiki insights and analytics.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "status": "success",
+            "analytics": {
+                "total_views": int,
+                "unique_pages_viewed": int,
+                "total_searches": int,
+                "unique_searches": int,
+                "tracked_users": int
+            },
+            "recommendation_engine": {
+                "graph_nodes": int,
+                "graph_edges": int,
+                "avg_degree": float
+            },
+            "coverage": {
+                "total_pages": int,
+                "total_concepts": int,
+                "covered_concepts": int,
+                "coverage_percentage": float,
+                "missing_concepts": int
+            }
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        recommender = get_wiki_recommender()
+        insights = recommender.get_insights()
+
+        return {
+            "status": "success",
+            **insights,
+        }
+
+    except Exception as e:
+        logger.error(f"Get insights failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
