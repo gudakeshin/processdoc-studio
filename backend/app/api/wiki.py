@@ -17,6 +17,7 @@ from app.services.wiki_operations import (
     _get_wiki_performance_metrics,
     _detect_changed_pages,
 )
+from app.services.wiki_cache import get_wiki_cache
 from app.services.wiki_corrections import DataCorrector
 from app.services.wiki_qa import WikiQAEvaluator
 from app.services.wiki_integrations import (
@@ -1485,6 +1486,173 @@ async def detect_wiki_changes(
 
     except Exception as e:
         logger.error(f"Change detection failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===== Cache Management (Phase 5) =====
+
+@router.get("/cache/stats")
+async def get_cache_statistics() -> Dict[str, Any]:
+    """
+    Get wiki query cache statistics.
+
+    Returns:
+        {
+            "status": "success",
+            "hits": int,
+            "misses": int,
+            "hit_rate": float (0-1),
+            "query_cache": {
+                "size": int,
+                "max_size": int,
+                "ttl_seconds": int,
+            },
+            "search_index": {
+                "indexed_pages": int,
+                "vocabulary_size": int,
+            },
+        }
+    """
+    try:
+        cache = get_wiki_cache()
+        stats = cache.get_stats()
+
+        return {
+            "status": "success",
+            **stats,
+        }
+
+    except Exception as e:
+        logger.error(f"Cache stats query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/cache/invalidate")
+async def invalidate_cache(
+    pattern: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Invalidate cache entries.
+
+    Args:
+        pattern: If provided, invalidate entries matching pattern. If None, clear all.
+
+    Returns:
+        {
+            "status": "success",
+            "invalidated_count": int,
+            "message": str,
+        }
+    """
+    try:
+        cache = get_wiki_cache()
+
+        if pattern is None:
+            cache.clear_all()
+            return {
+                "status": "success",
+                "invalidated_count": 0,
+                "message": "All caches cleared",
+            }
+        else:
+            invalidated = cache.query_cache.invalidate(pattern)
+            return {
+                "status": "success",
+                "invalidated_count": invalidated,
+                "message": f"Invalidated {invalidated} entries matching pattern '{pattern}'",
+            }
+
+    except Exception as e:
+        logger.error(f"Cache invalidation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/cache/warmup")
+async def warmup_cache(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Pre-warm cache with hot data (god nodes, communities, etc).
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "status": "success",
+            "pages_cached": int,
+            "message": str,
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        # In practice, this would load god nodes and communities
+        # For now, it's a placeholder that demonstrates the pattern
+        cache = get_wiki_cache()
+
+        return {
+            "status": "success",
+            "pages_cached": 0,
+            "message": "Cache warmup requested (implementation depends on god nodes/communities loading)",
+        }
+
+    except Exception as e:
+        logger.error(f"Cache warmup failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cache/search")
+async def search_wiki(
+    wiki_type: str,
+    query: str,
+    project_id: Optional[str] = None,
+    limit: int = Query(10, ge=1, le=100),
+) -> Dict[str, Any]:
+    """
+    Search wiki using cached full-text index.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        query: Search query (space-separated terms)
+        project_id: Project ID (for project wiki)
+        limit: Maximum results (default 10)
+
+    Returns:
+        {
+            "status": "success",
+            "query": str,
+            "results": [{"page_id": str, "relevance": float}],
+            "result_count": int,
+            "cached": bool,
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        cache = get_wiki_cache()
+        results = cache.search_index.search(query, limit=limit)
+
+        return {
+            "status": "success",
+            "query": query,
+            "results": results,
+            "result_count": len(results),
+            "cached": True,
+        }
+
+    except Exception as e:
+        logger.error(f"Wiki search failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
