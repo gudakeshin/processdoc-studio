@@ -267,22 +267,16 @@ class TestWikiLintRetry:
 
     def test_lint_success_on_first_attempt(self):
         """Lint should succeed on first attempt"""
-        with patch('app.services.wiki_operations._get_all_wiki_pages') as mock_get, \
-             patch('app.services.wiki_operations._check_contradictions') as mock_contra, \
-             patch('app.services.wiki_operations._check_orphans') as mock_orphan, \
-             patch('app.services.wiki_operations._check_broken_links') as mock_broken, \
-             patch('app.services.wiki_operations._check_coverage_gaps') as mock_gaps, \
-             patch('app.services.wiki_operations._check_staleness') as mock_stale, \
-             patch('app.services.wiki_operations._generate_lint_suggestions') as mock_sugg, \
+        with patch('app.services.wiki_operations._evaluate_wiki_qa') as mock_qa, \
              patch('app.services.wiki_operations._append_wiki_log'):
 
-            mock_get.return_value = [{"id": "p1", "title": "Page 1"}]
-            mock_contra.return_value = []
-            mock_orphan.return_value = []
-            mock_broken.return_value = []
-            mock_gaps.return_value = []
-            mock_stale.return_value = []
-            mock_sugg.return_value = []
+            mock_qa.return_value = {
+                "passed": True,
+                "issues": [],
+                "suggestions": [],
+                "severity": "low",
+                "summary": {"broken_links": 0, "orphaned_pages": 0, "missing_entities": 0, "total_issues": 0}
+            }
 
             result, error = wiki_lint_with_retry(
                 wiki_type="project",
@@ -292,16 +286,22 @@ class TestWikiLintRetry:
             assert error is None
             assert result["issues_count"] == 0
             assert result["severity"] == "low"
-            assert mock_get.call_count == 1
+            assert mock_qa.call_count == 1
 
     def test_lint_retries_on_transient_error(self):
         """Lint should retry on transient errors"""
-        with patch('app.services.wiki_operations._get_all_wiki_pages') as mock_get, \
+        with patch('app.services.wiki_operations._evaluate_wiki_qa') as mock_qa, \
              patch('time.sleep'):
 
-            mock_get.side_effect = [
+            mock_qa.side_effect = [
                 TimeoutError("Search timeout"),
-                [{"id": "p1", "title": "Page 1"}],
+                {
+                    "passed": True,
+                    "issues": [],
+                    "suggestions": [],
+                    "severity": "low",
+                    "summary": {"broken_links": 0, "orphaned_pages": 0, "missing_entities": 0, "total_issues": 0}
+                },
             ]
 
             result, error = wiki_lint_with_retry(
@@ -311,7 +311,7 @@ class TestWikiLintRetry:
             )
 
             assert error is None
-            assert mock_get.call_count == 2
+            assert mock_qa.call_count == 2
 
 
 # ===== Integration Tests (5 tests) =====

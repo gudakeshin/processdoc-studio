@@ -14,6 +14,8 @@ from app.services.wiki_operations import (
     wiki_lint_with_retry,
     _build_cross_wiki_relationships,
     _get_cross_wiki_references,
+    _get_wiki_performance_metrics,
+    _detect_changed_pages,
 )
 from app.services.wiki_corrections import DataCorrector
 from app.services.wiki_qa import WikiQAEvaluator
@@ -1393,6 +1395,96 @@ async def get_cross_wiki_references(
 
     except Exception as e:
         logger.error(f"Cross-wiki reference lookup failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===== Performance Monitoring (Phase 4) =====
+
+@router.get("/{wiki_type}/performance/metrics")
+async def get_wiki_performance(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get wiki performance metrics for monitoring.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "status": "success",
+            "total_pages": int,
+            "relationships_count": int,
+            "last_update": ISO timestamp,
+            "incremental_enabled": bool,
+            "manifest_version": int,
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        metrics = _get_wiki_performance_metrics(wiki_type, project_id)
+
+        return {
+            "status": "success",
+            "wiki_type": wiki_type,
+            **metrics,
+        }
+
+    except Exception as e:
+        logger.error(f"Performance metrics query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{wiki_type}/performance/changes")
+async def detect_wiki_changes(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Detect changed pages since last index update.
+
+    Useful for monitoring indexing efficiency.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "status": "success",
+            "changed_count": int,
+            "unchanged_count": int,
+            "deleted_count": int,
+            "changed_pages": [page_ids],
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        changed, unchanged, deleted = _detect_changed_pages(wiki_type, project_id)
+
+        return {
+            "status": "success",
+            "wiki_type": wiki_type,
+            "changed_count": len(changed),
+            "unchanged_count": len(unchanged),
+            "deleted_count": len(deleted),
+            "changed_pages": list(changed.keys()),
+        }
+
+    except Exception as e:
+        logger.error(f"Change detection failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
