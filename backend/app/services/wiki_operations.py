@@ -695,6 +695,85 @@ def _extract_relationships(
     return relationships
 
 
+def _save_persistent_graph(
+    wiki_type: str,
+    project_id: Optional[str],
+) -> bool:
+    """
+    Save persistent graph.json for fast querying without re-extraction.
+
+    Stores NetworkX adjacency format for quick loading.
+    """
+    try:
+        import networkx as nx
+        from networkx.readwrite import json_graph
+        from app.services.storage import workspace_path
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        G, page_titles = _load_wiki_graph(wiki_type, project_id)
+
+        # Convert to JSON-serializable format
+        graph_json = json_graph.node_link_data(G)
+
+        # Save graph
+        graph_file = wiki_dir / "graph.json"
+        graph_file.write_text(json.dumps({
+            "graph": graph_json,
+            "page_titles": page_titles,
+            "metadata": {
+                "node_count": G.number_of_nodes(),
+                "edge_count": G.number_of_edges(),
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+        }, indent=2))
+
+        logger.info(f"Saved persistent graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error saving persistent graph: {e}")
+        return False
+
+
+def _load_persistent_graph(
+    wiki_type: str,
+    project_id: Optional[str],
+) -> tuple:
+    """
+    Load persistent graph from graph.json for fast queries.
+
+    Returns:
+        (G, page_titles, metadata) or (None, {}, None) on error
+    """
+    try:
+        from networkx.readwrite import json_graph
+        from app.services.storage import workspace_path
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        graph_file = wiki_dir / "graph.json"
+        if not graph_file.exists():
+            return None, {}, None
+
+        graph_data = json.loads(graph_file.read_text())
+        G = json_graph.node_link_graph(graph_data["graph"])
+        page_titles = graph_data.get("page_titles", {})
+        metadata = graph_data.get("metadata", {})
+
+        return G, page_titles, metadata
+
+    except Exception as e:
+        logger.warning(f"Error loading persistent graph: {e}")
+        return None, {}, None
+
+
 def _build_and_persist_relationships(
     wiki_type: str,
     project_id: Optional[str],
@@ -779,6 +858,9 @@ def _build_and_persist_relationships(
         god_nodes_data = _detect_god_nodes(wiki_type, project_id)
         _save_god_nodes(wiki_type, project_id, god_nodes_data)
         logger.info(f"Detected {len(god_nodes_data['god_nodes'])} god nodes")
+
+        # Save persistent graph for fast queries (Phase 2)
+        _save_persistent_graph(wiki_type, project_id)
 
         avg_links = len(all_relationships) / max(len(pages), 1) if pages else 0
 
@@ -1098,6 +1180,250 @@ def _save_god_nodes(
     except Exception as e:
         logger.error(f"Error saving god nodes: {e}")
         return False
+
+
+def _load_wiki_graph(wiki_type: str, project_id: Optional[str]) -> tuple:
+    """
+    Load wiki relationship graph from relationships.json.
+
+    Returns:
+        (G, page_titles): NetworkX graph and mapping of page_id to page_title
+    """
+    try:
+        import networkx as nx
+        from app.services.storage import workspace_path
+        import json
+        import re
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        # Load relationships
+        relationships_file = wiki_dir / "relationships.json"
+        if not relationships_file.exists():
+            return nx.Graph(), {}
+
+        rels_data = json.loads(relationships_file.read_text())
+        relationships = rels_data.get("relationships", [])
+
+        # Build graph
+        G = nx.Graph()
+        page_titles = {}
+
+        # Add all pages
+        for md_file in wiki_dir.glob("*.md"):
+            if md_file.name not in ("index.md", "log.md", "relationships.json"):
+                page_id = md_file.stem
+                content = md_file.read_text(encoding="utf-8")
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else page_id.replace("_", " ").title()
+                G.add_node(page_id)
+                page_titles[page_id] = title
+
+        # Add edges
+        for rel in relationships:
+            source = rel["source_id"]
+            target = rel["target_id"]
+            weight = rel.get("confidence_score", 0.5)
+            G.add_edge(source, target, weight=weight, confidence=rel["confidence"])
+
+        return G, page_titles
+
+    except Exception as e:
+        logger.error(f"Error loading wiki graph: {e}")
+        return nx.Graph(), {}
+
+
+def _query_graph_bfs(
+    G: Any,
+    start_node: str,
+    max_distance: int = 3,
+    max_results: int = 20,
+) -> list:
+    """
+    Breadth-first search from a starting node.
+
+    Returns list of (node, distance, path) tuples.
+    """
+    try:
+        import networkx as nx
+
+        results = []
+        visited = set()
+        queue = [(start_node, 0, [start_node])]
+
+        while queue and len(results) < max_results:
+            current, distance, path = queue.pop(0)
+
+            if current in visited:
+                continue
+            visited.add(current)
+
+            if distance > 0:  # Don't include start node
+                results.append({
+                    "node_id": current,
+                    "distance": distance,
+                    "path": path,
+                })
+
+            if distance < max_distance:
+                for neighbor in G.neighbors(current):
+                    if neighbor not in visited:
+                        queue.append((neighbor, distance + 1, path + [neighbor]))
+
+        return results
+
+    except Exception as e:
+        logger.warning(f"Error in BFS: {e}")
+        return []
+
+
+def _query_graph_shortest_path(
+    G: Any,
+    start_node: str,
+    end_node: str,
+) -> Optional[dict]:
+    """
+    Find shortest path between two nodes.
+    """
+    try:
+        import networkx as nx
+
+        if start_node not in G or end_node not in G:
+            return None
+
+        try:
+            path = nx.shortest_path(G, start_node, end_node, weight="weight")
+            return {
+                "start": start_node,
+                "end": end_node,
+                "path": path,
+                "distance": len(path) - 1,
+                "hop_count": len(path) - 1,
+            }
+        except nx.NetworkXNoPath:
+            return None
+
+    except Exception as e:
+        logger.warning(f"Error finding shortest path: {e}")
+        return None
+
+
+def _query_graph_neighbors(
+    G: Any,
+    node_id: str,
+) -> list:
+    """
+    Get immediate neighbors of a node.
+    """
+    try:
+        results = []
+        if node_id in G:
+            for neighbor in G.neighbors(node_id):
+                edge_data = G.get_edge_data(node_id, neighbor)
+                results.append({
+                    "node_id": neighbor,
+                    "distance": 1,
+                    "weight": edge_data.get("weight", 0.5) if edge_data else 0.5,
+                    "confidence": edge_data.get("confidence", "INFERRED") if edge_data else "INFERRED",
+                })
+        return results
+    except Exception as e:
+        logger.warning(f"Error getting neighbors: {e}")
+        return []
+
+
+def _execute_graph_query(
+    wiki_type: str,
+    project_id: Optional[str],
+    query: str,
+    query_type: str = "neighbors",
+    start_node: Optional[str] = None,
+    end_node: Optional[str] = None,
+    max_distance: int = 3,
+    max_results: int = 20,
+) -> dict:
+    """
+    Execute a graph query (traversal) on the wiki relationship graph.
+
+    Query types:
+    - neighbors: Get direct connections to a page
+    - bfs: Breadth-first search from a page
+    - shortest_path: Find shortest path between two pages
+    - related: Find pages related by name (legacy keyword search)
+
+    Returns:
+        {
+            "query": str,
+            "query_type": str,
+            "start_node": str (optional),
+            "results": [
+                {
+                    "node_id": str,
+                    "distance": int,
+                    "path": [str] (optional),
+                    "weight": float (optional)
+                },
+                ...
+            ],
+            "total_results": int,
+            "truncated": bool,
+            "reason": str (optional)
+        }
+    """
+    try:
+        G, page_titles = _load_wiki_graph(wiki_type, project_id)
+
+        if not G.nodes():
+            return {
+                "query": query,
+                "query_type": query_type,
+                "results": [],
+                "total_results": 0,
+                "truncated": False,
+            }
+
+        results = []
+
+        if query_type == "neighbors" and start_node:
+            results = _query_graph_neighbors(G, start_node)
+
+        elif query_type == "bfs" and start_node:
+            results = _query_graph_bfs(G, start_node, max_distance, max_results)
+
+        elif query_type == "shortest_path" and start_node and end_node:
+            path_result = _query_graph_shortest_path(G, start_node, end_node)
+            if path_result:
+                results = [path_result]
+
+        elif query_type == "related" and start_node:
+            # Find pages with similar names or high similarity
+            results = _query_graph_neighbors(G, start_node)
+            # Add pages with similar titles (optional semantic similarity)
+
+        return {
+            "query": query,
+            "query_type": query_type,
+            "start_node": start_node,
+            "end_node": end_node if query_type == "shortest_path" else None,
+            "results": results[:max_results],
+            "total_results": len(results),
+            "truncated": len(results) > max_results,
+            "reason": "max_results limit exceeded" if len(results) > max_results else None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error executing graph query: {e}")
+        return {
+            "query": query,
+            "query_type": query_type,
+            "results": [],
+            "total_results": 0,
+            "truncated": False,
+            "error": str(e),
+        }
 
 
 def _get_god_nodes(wiki_type: str, project_id: Optional[str], limit: int = 10) -> list:

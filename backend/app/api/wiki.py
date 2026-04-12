@@ -995,6 +995,145 @@ async def get_god_nodes(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ===== Graph Query Operations =====
+
+@router.get("/{wiki_type}/query")
+async def query_wiki_graph(
+    wiki_type: str,
+    q: str,
+    query_type: str = Query("neighbors", regex="^(neighbors|bfs|shortest_path|related)$"),
+    start_node: Optional[str] = None,
+    end_node: Optional[str] = None,
+    max_distance: int = Query(3, ge=1, le=5),
+    max_results: int = Query(20, ge=1, le=100),
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Query the wiki knowledge graph using relationship traversal.
+
+    Query types:
+    - neighbors: Direct connections to a page
+    - bfs: Breadth-first search from a page (distance-based)
+    - shortest_path: Shortest path between two pages
+    - related: Pages related to a query (by name/semantics)
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        q: Query text or page ID
+        query_type: Type of query
+        start_node: Starting page ID (for neighbors, bfs, shortest_path)
+        end_node: Ending page ID (for shortest_path)
+        max_distance: Max hops to search (for bfs)
+        max_results: Max results to return
+        project_id: Project ID
+
+    Returns:
+        {
+            "status": "success",
+            "query": str,
+            "query_type": str,
+            "results": [
+                {
+                    "node_id": str,
+                    "distance": int,
+                    "path": [str] (optional),
+                    "confidence": str (optional)
+                },
+                ...
+            ],
+            "total_results": int,
+            "truncated": bool
+        }
+    """
+    try:
+        from app.services.wiki_operations import _execute_graph_query
+
+        # Use start_node from params or try to resolve q as page ID
+        node_id = start_node or q
+
+        result = _execute_graph_query(
+            wiki_type=wiki_type,
+            project_id=project_id,
+            query=q,
+            query_type=query_type,
+            start_node=node_id if query_type in ["neighbors", "bfs", "related"] else None,
+            end_node=end_node,
+            max_distance=max_distance,
+            max_results=max_results,
+        )
+
+        return {
+            "status": "success",
+            **result,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Graph query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{wiki_type}/graph/stats")
+async def get_graph_stats(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get statistics about the wiki knowledge graph.
+
+    Returns:
+        {
+            "status": "success",
+            "stats": {
+                "node_count": int,
+                "edge_count": int,
+                "avg_degree": float,
+                "density": float,
+                "last_updated": ISO datetime
+            }
+        }
+    """
+    try:
+        from app.services.wiki_operations import _load_persistent_graph
+        import networkx as nx
+
+        G, page_titles, metadata = _load_persistent_graph(wiki_type, project_id)
+
+        if not G or G.number_of_nodes() == 0:
+            return {
+                "status": "success",
+                "stats": {
+                    "node_count": 0,
+                    "edge_count": 0,
+                    "avg_degree": 0.0,
+                    "density": 0.0,
+                    "last_updated": None,
+                }
+            }
+
+        # Calculate graph metrics
+        density = nx.density(G)
+        avg_degree = (2 * G.number_of_edges()) / max(G.number_of_nodes(), 1)
+
+        return {
+            "status": "success",
+            "stats": {
+                "node_count": G.number_of_nodes(),
+                "edge_count": G.number_of_edges(),
+                "avg_degree": round(avg_degree, 2),
+                "density": round(density, 3),
+                "last_updated": metadata.get("last_updated") if metadata else None,
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get graph stats failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ===== Dashboard Operations =====
 
 @router.get("/{wiki_type}/stats")
