@@ -416,7 +416,8 @@ async def list_pages(
 
         pages = []
 
-        # Load relationship counts
+        # Load relationship counts and community assignments
+        from app.services.wiki_operations import _get_community_for_page
         rel_counts = _get_relationship_counts(wiki_type, project_id)
 
         # Read markdown files from wiki directory
@@ -459,15 +460,16 @@ async def list_pages(
                             summary = line.strip()[:200]
                             break
 
-                    # Get relationship counts
+                    # Get relationship counts and community
                     page_id = md_file.stem
                     inbound_count = rel_counts.get(page_id, {}).get("inbound", 0)
+                    community_info = _get_community_for_page(wiki_type, project_id, page_id)
 
                     # Apply filters
                     if category and category != "artifact":
                         continue  # For now, only show artifact pages
                     if category == category:  # Category filter
-                        pages.append({
+                        page_dict = {
                             "id": page_id,
                             "title": title,
                             "category": category,
@@ -476,7 +478,11 @@ async def list_pages(
                             "summary": summary,
                             "inbound_links": inbound_count,
                             "outbound_links": rel_counts.get(page_id, {}).get("outbound", 0),
-                        })
+                        }
+                        if community_info:
+                            page_dict["community_id"] = community_info["community_id"]
+                            page_dict["community_concepts"] = community_info.get("top_concepts", [])
+                        pages.append(page_dict)
                 except Exception as e:
                     logger.warning(f"Failed to parse wiki page {md_file.name}: {e}")
                     continue
@@ -754,6 +760,152 @@ async def get_page_relationships(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ===== Community Operations =====
+
+@router.get("/{wiki_type}/communities")
+async def get_communities(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get all wiki communities (functional clusters).
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID
+
+    Returns:
+        {
+            "status": "success",
+            "total_communities": int,
+            "communities": {
+                "0": {
+                    "page_ids": [page_id, ...],
+                    "top_concepts": [concept, ...],
+                    "size": int,
+                    "density": float
+                },
+                ...
+            },
+            "last_updated": ISO datetime
+        }
+    """
+    try:
+        from app.services.storage import workspace_path
+        import json
+
+        # Determine wiki directory
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            if not project_id:
+                raise HTTPException(status_code=400, detail="project_id required for project wiki")
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        communities_file = wiki_dir / "communities.json"
+        if not communities_file.exists():
+            return {
+                "status": "success",
+                "total_communities": 0,
+                "communities": {},
+                "last_updated": None,
+            }
+
+        communities_data = json.loads(communities_file.read_text())
+
+        return {
+            "status": "success",
+            "total_communities": communities_data["total_communities"],
+            "communities": communities_data["communities"],
+            "last_updated": communities_data.get("last_updated"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get communities failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{wiki_type}/communities/{community_id}")
+async def get_community_details(
+    wiki_type: str,
+    community_id: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get details for a specific community.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        community_id: Community ID
+        project_id: Project ID
+
+    Returns:
+        {
+            "status": "success",
+            "community_id": str,
+            "page_ids": [page_id, ...],
+            "top_concepts": [concept, ...],
+            "size": int,
+            "density": float,
+            "pages": [page objects with full details]
+        }
+    """
+    try:
+        from app.services.storage import workspace_path
+        import json
+        import re
+
+        # Determine wiki directory
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            if not project_id:
+                raise HTTPException(status_code=400, detail="project_id required for project wiki")
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        communities_file = wiki_dir / "communities.json"
+        if not communities_file.exists():
+            raise HTTPException(status_code=404, detail="No communities found")
+
+        communities_data = json.loads(communities_file.read_text())
+        community = communities_data["communities"].get(community_id)
+
+        if not community:
+            raise HTTPException(status_code=404, detail=f"Community {community_id} not found")
+
+        # Load full page details for pages in this community
+        pages = []
+        for page_id in community["page_ids"]:
+            page_file = wiki_dir / f"{page_id}.md"
+            if page_file.exists():
+                content = page_file.read_text(encoding="utf-8")
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else page_id.replace("_", " ").title()
+
+                pages.append({
+                    "id": page_id,
+                    "title": title,
+                })
+
+        return {
+            "status": "success",
+            "community_id": community_id,
+            "page_ids": community["page_ids"],
+            "top_concepts": community["top_concepts"],
+            "size": community["size"],
+            "density": community["density"],
+            "pages": pages,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get community details failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ===== Dashboard Operations =====
 
 @router.get("/{wiki_type}/stats")
@@ -853,7 +1005,7 @@ async def get_wiki_stats(
                     logger.warning(f"Failed to parse wiki page {md_file.name}: {e}")
                     continue
 
-        # Load relationship statistics
+        # Load relationship and community statistics
         rel_counts = _get_relationship_counts(wiki_type, project_id)
         total_relationships = 0
         pages_with_links = 0
@@ -861,6 +1013,15 @@ async def get_wiki_stats(
             total_relationships += counts.get("outbound", 0)
             if counts.get("inbound", 0) > 0 or counts.get("outbound", 0) > 0:
                 pages_with_links += 1
+
+        # Load community statistics
+        communities_data = {}
+        try:
+            communities_file = wiki_dir / "communities.json"
+            if communities_file.exists():
+                communities_data = json.loads(communities_file.read_text())
+        except Exception as e:
+            logger.warning(f"Error loading communities: {e}")
 
         stats = {
             "total_pages": total_pages,
@@ -877,6 +1038,12 @@ async def get_wiki_stats(
                 "total_relationships": total_relationships,
                 "pages_with_links": pages_with_links,
                 "connectivity": round(pages_with_links / max(total_pages, 1) * 100, 1) if total_pages > 0 else 0,
+            },
+            "communities": {
+                "total_communities": communities_data.get("total_communities", 0),
+                "avg_community_size": round(
+                    total_pages / max(communities_data.get("total_communities", 1), 1), 1
+                ) if total_pages > 0 else 0,
             },
         }
 

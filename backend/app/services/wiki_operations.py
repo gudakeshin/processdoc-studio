@@ -770,16 +770,217 @@ def _build_and_persist_relationships(
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }, indent=2))
 
+        # Detect communities from the relationship graph
+        communities_data = _detect_communities(wiki_type, project_id)
+        _save_communities(wiki_type, project_id, communities_data)
+        logger.info(f"Detected {communities_data['total_communities']} communities")
+
         avg_links = len(all_relationships) / max(len(pages), 1) if pages else 0
 
         return {
             "total_relationships": len(all_relationships),
             "pages_with_links": pages_with_links,
             "average_links_per_page": round(avg_links, 2),
+            "total_communities": communities_data["total_communities"],
         }
     except Exception as e:
         logger.error(f"Error building relationships: {e}")
         return {"total_relationships": 0, "pages_with_links": 0, "average_links_per_page": 0}
+
+
+def _detect_communities(
+    wiki_type: str,
+    project_id: Optional[str],
+) -> dict:
+    """
+    Detect communities (functional clusters) from wiki relationship graph using Louvain algorithm.
+
+    Louvain algorithm optimizes modularity to find natural clustering.
+    Returns stable, meaningful communities based on edge density.
+
+    Returns:
+        {
+            "total_communities": int,
+            "communities": {
+                community_id: {
+                    "page_ids": [page_id, ...],
+                    "top_concepts": [page_title, ...],
+                    "size": int,
+                    "density": float (0.0-1.0)
+                }
+            },
+            "page_community_map": {page_id: community_id, ...}
+        }
+    """
+    try:
+        import networkx as nx
+        from networkx.algorithms import community
+        from app.services.storage import workspace_path
+        import json
+
+        # Determine wiki directory
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        if not wiki_dir.exists():
+            return {
+                "total_communities": 0,
+                "communities": {},
+                "page_community_map": {},
+            }
+
+        # Load relationships
+        relationships_file = wiki_dir / "relationships.json"
+        if not relationships_file.exists():
+            return {
+                "total_communities": 0,
+                "communities": {},
+                "page_community_map": {},
+            }
+
+        rels_data = json.loads(relationships_file.read_text())
+        relationships = rels_data.get("relationships", [])
+
+        # Build undirected graph (treat relationships as edges)
+        G = nx.Graph()
+
+        # Add nodes (all pages)
+        for md_file in wiki_dir.glob("*.md"):
+            if md_file.name not in ("index.md", "log.md", "relationships.json"):
+                G.add_node(md_file.stem)
+
+        # Add edges from relationships
+        for rel in relationships:
+            source = rel["source_id"]
+            target = rel["target_id"]
+            weight = rel.get("confidence_score", 0.5)
+            G.add_edge(source, target, weight=weight)
+
+        # Detect communities using Louvain algorithm (modularity optimization)
+        communities_list = list(community.louvain_communities(G, seed=42))
+
+        # Build communities dict
+        communities = {}
+        page_community_map = {}
+        page_titles = {}
+
+        # First pass: load all page titles
+        for md_file in wiki_dir.glob("*.md"):
+            if md_file.name not in ("index.md", "log.md", "relationships.json"):
+                page_id = md_file.stem
+                content = md_file.read_text(encoding="utf-8")
+                import re
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else page_id.replace("_", " ").title()
+                page_titles[page_id] = title
+
+        # Build community details
+        for community_id, nodes in enumerate(communities_list):
+            page_ids = list(nodes)
+            subgraph = G.subgraph(page_ids)
+
+            # Calculate community density
+            num_edges = subgraph.number_of_edges()
+            num_possible_edges = len(page_ids) * (len(page_ids) - 1) / 2
+            density = num_edges / num_possible_edges if num_possible_edges > 0 else 0
+
+            # Get top concepts (by degree centrality within community)
+            if page_ids:
+                degree_centrality = nx.degree_centrality(subgraph)
+                top_pages = sorted(
+                    degree_centrality.items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:3]
+                top_concepts = [page_titles.get(pid, pid) for pid, _ in top_pages]
+            else:
+                top_concepts = []
+
+            communities[str(community_id)] = {
+                "page_ids": page_ids,
+                "top_concepts": top_concepts,
+                "size": len(page_ids),
+                "density": round(density, 3),
+            }
+
+            # Map pages to communities
+            for page_id in page_ids:
+                page_community_map[page_id] = community_id
+
+        return {
+            "total_communities": len(communities),
+            "communities": communities,
+            "page_community_map": page_community_map,
+        }
+
+    except Exception as e:
+        logger.error(f"Error detecting communities: {e}")
+        return {
+            "total_communities": 0,
+            "communities": {},
+            "page_community_map": {},
+        }
+
+
+def _save_communities(
+    wiki_type: str,
+    project_id: Optional[str],
+    communities_data: dict,
+) -> bool:
+    """Save community assignments to communities.json."""
+    try:
+        from app.services.storage import workspace_path
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        wiki_dir.mkdir(parents=True, exist_ok=True)
+        communities_file = wiki_dir / "communities.json"
+
+        communities_file.write_text(json.dumps({
+            "total_communities": communities_data["total_communities"],
+            "communities": communities_data["communities"],
+            "page_community_map": communities_data["page_community_map"],
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }, indent=2))
+
+        return True
+    except Exception as e:
+        logger.error(f"Error saving communities: {e}")
+        return False
+
+
+def _get_community_for_page(wiki_type: str, project_id: Optional[str], page_id: str) -> Optional[dict]:
+    """Get community information for a specific page."""
+    try:
+        from app.services.storage import workspace_path
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        communities_file = wiki_dir / "communities.json"
+        if not communities_file.exists():
+            return None
+
+        communities_data = json.loads(communities_file.read_text())
+        community_id = communities_data["page_community_map"].get(page_id)
+
+        if community_id is None:
+            return None
+
+        return {
+            "community_id": community_id,
+            **communities_data["communities"][str(community_id)],
+        }
+    except Exception as e:
+        logger.warning(f"Error loading community for page {page_id}: {e}")
+        return None
 
 
 def _get_relationship_counts(wiki_type: str, project_id: Optional[str]) -> dict:

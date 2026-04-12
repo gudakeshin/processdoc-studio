@@ -15,6 +15,10 @@ interface WikiStats {
     pages_with_links: number;
     connectivity: number;
   };
+  communities?: {
+    total_communities: number;
+    avg_community_size: number;
+  };
 }
 
 interface WikiPage {
@@ -104,6 +108,11 @@ export function WikiQuickAccess({ projectId }: { projectId: string }) {
           {stats.relationships && (
             <div className="text-xs text-gray-600">
               🔗 {stats.relationships.total_relationships} connections ({stats.relationships.connectivity}% linked)
+            </div>
+          )}
+          {stats.communities && stats.communities.total_communities > 0 && (
+            <div className="text-xs text-gray-600">
+              🏘️ {stats.communities.total_communities} communities ({stats.communities.avg_community_size} pages avg)
             </div>
           )}
         </div>
