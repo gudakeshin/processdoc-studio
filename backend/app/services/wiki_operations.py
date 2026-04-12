@@ -679,6 +679,245 @@ def _extract_relationships(
     return relationships
 
 
+def _extract_cross_wiki_relationships(
+    source_page_id: str,
+    source_wiki_type: str,
+    content: str,
+    project_id: Optional[str] = None,
+) -> list[dict]:
+    """
+    Extract cross-wiki relationships (LP <-> Project wiki links).
+
+    Supports patterns:
+    - [[lp://Page Name]] - Leading Practice wiki
+    - [[wiki://leading_practice/Page Name]]
+    - [[wiki://project/{project_id}/Page Name]]
+
+    Args:
+        source_page_id: ID of source page
+        source_wiki_type: "leading_practice" or "project"
+        content: Page content
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        List of cross-wiki relationship dicts with structure:
+        {
+            "source_id": str,
+            "source_wiki": "leading_practice" | "project",
+            "target_id": str,
+            "target_wiki": "leading_practice" | "project",
+            "target_project_id": str (if target is project),
+            "relation_type": "cross_wiki_reference",
+            "confidence": "EXPLICIT",
+            "confidence_score": float,
+            "created_at": ISO timestamp
+        }
+    """
+    import re
+    cross_wiki_rels = []
+
+    try:
+        # Pattern for explicit cross-wiki links
+        # [[lp://Page Name]] or [[wiki://leading_practice/Page Name]]
+        lp_pattern = r"\[\[(?:lp://|wiki://leading_practice/)([^\]]+)\]\]"
+        for match in re.finditer(lp_pattern, content, re.IGNORECASE):
+            target_name = match.group(1).strip()
+            target_id = target_name.lower().replace(" ", "_").replace(".", "")[:50]
+
+            cross_wiki_rels.append({
+                "source_id": source_page_id,
+                "source_wiki": source_wiki_type,
+                "target_id": target_id,
+                "target_wiki": "leading_practice",
+                "target_project_id": None,
+                "relation_type": "cross_wiki_reference",
+                "confidence": "EXPLICIT",
+                "confidence_score": 1.0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        # Pattern for cross-project wiki links
+        # [[wiki://project/{project_id}/Page Name]]
+        proj_pattern = r"\[\[wiki://project/([^/]+)/([^\]]+)\]\]"
+        for match in re.finditer(proj_pattern, content):
+            target_project_id = match.group(1)
+            target_name = match.group(2).strip()
+            target_id = target_name.lower().replace(" ", "_").replace(".", "")[:50]
+
+            cross_wiki_rels.append({
+                "source_id": source_page_id,
+                "source_wiki": source_wiki_type,
+                "target_id": target_id,
+                "target_wiki": "project",
+                "target_project_id": target_project_id,
+                "relation_type": "cross_wiki_reference",
+                "confidence": "EXPLICIT",
+                "confidence_score": 1.0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+    except Exception as e:
+        logger.warning(f"Error extracting cross-wiki relationships from {source_page_id}: {e}")
+
+    return cross_wiki_rels
+
+
+def _build_cross_wiki_relationships(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+) -> dict:
+    """
+    Build and persist cross-wiki relationships between LP and Project wikis.
+
+    Creates bidirectional index for fast cross-wiki navigation.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "lp_to_projects": {lp_page_id: [project_refs]},
+            "projects_to_lp": {project_page_id: [lp_refs]},
+            "total_links": int,
+        }
+    """
+    from app.services.storage import workspace_path
+
+    try:
+        lp_to_projects = {}
+        projects_to_lp = {}
+
+        # Get all pages in this wiki
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        pages_file = wiki_dir / "pages.json"
+        if not pages_file.exists():
+            return {"lp_to_projects": {}, "projects_to_lp": {}, "total_links": 0}
+
+        pages_data = json.loads(pages_file.read_text())
+        all_pages = pages_data.get("pages", [])
+
+        # Extract cross-wiki references from each page
+        for page in all_pages:
+            page_id = page.get("id")
+            content = page.get("content", "")
+            cross_refs = _extract_cross_wiki_relationships(page_id, wiki_type, content, project_id)
+
+            for ref in cross_refs:
+                if ref["target_wiki"] == "leading_practice":
+                    if page_id not in lp_to_projects:
+                        lp_to_projects[page_id] = []
+                    lp_to_projects[page_id].append({
+                        "target_page_id": ref["target_id"],
+                        "source_page_id": page_id,
+                        "source_wiki": wiki_type,
+                        "source_project_id": project_id,
+                    })
+                elif ref["target_wiki"] == "project":
+                    if page_id not in projects_to_lp:
+                        projects_to_lp[page_id] = []
+                    projects_to_lp[page_id].append({
+                        "target_page_id": ref["target_id"],
+                        "target_project_id": ref["target_project_id"],
+                        "source_page_id": page_id,
+                    })
+
+        # Save cross-wiki index
+        cross_wiki_file = wiki_dir / "cross_wiki_links.json"
+        cross_wiki_file.write_text(json.dumps({
+            "lp_to_projects": lp_to_projects,
+            "projects_to_lp": projects_to_lp,
+            "total_links": len(lp_to_projects) + len(projects_to_lp),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }, indent=2))
+
+        logger.info(f"Built cross-wiki relationships: {len(lp_to_projects)} LP refs, {len(projects_to_lp)} Project refs")
+        return {
+            "lp_to_projects": lp_to_projects,
+            "projects_to_lp": projects_to_lp,
+            "total_links": len(lp_to_projects) + len(projects_to_lp),
+        }
+
+    except Exception as e:
+        logger.error(f"Error building cross-wiki relationships: {e}")
+        return {"lp_to_projects": {}, "projects_to_lp": {}, "total_links": 0}
+
+
+def _get_cross_wiki_references(
+    wiki_type: str,
+    page_id: str,
+    project_id: Optional[str] = None,
+) -> dict:
+    """
+    Get cross-wiki references for a specific page.
+
+    Returns pages from the other wiki that reference this page.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        page_id: Page ID
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "incoming": [references_from_other_wiki],
+            "outgoing": [references_to_other_wiki],
+        }
+    """
+    from app.services.storage import workspace_path
+
+    try:
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        cross_wiki_file = wiki_dir / "cross_wiki_links.json"
+        if not cross_wiki_file.exists():
+            return {"incoming": [], "outgoing": []}
+
+        cross_data = json.loads(cross_wiki_file.read_text())
+
+        # Get incoming and outgoing references for this page
+        lp_to_projects = cross_data.get("lp_to_projects", {})
+        projects_to_lp = cross_data.get("projects_to_lp", {})
+
+        incoming = []
+        outgoing = []
+
+        if wiki_type == "leading_practice":
+            # Get LP pages referencing this one (from projects)
+            for project_pages in projects_to_lp.values():
+                for ref in project_pages:
+                    if ref.get("target_page_id") == page_id:
+                        incoming.append(ref)
+
+            # Get Project pages this LP page references
+            if page_id in lp_to_projects:
+                outgoing = lp_to_projects[page_id]
+
+        else:  # project wiki
+            # Get Project pages referencing this one (from LP)
+            for lp_pages in lp_to_projects.values():
+                for ref in lp_pages:
+                    if ref.get("target_page_id") == page_id:
+                        incoming.append(ref)
+
+            # Get LP pages this project page references
+            if page_id in projects_to_lp:
+                outgoing = projects_to_lp[page_id]
+
+        return {"incoming": incoming, "outgoing": outgoing}
+
+    except Exception as e:
+        logger.warning(f"Error getting cross-wiki references for {page_id}: {e}")
+        return {"incoming": [], "outgoing": []}
+
+
 def _save_persistent_graph(
     wiki_type: str,
     project_id: Optional[str],

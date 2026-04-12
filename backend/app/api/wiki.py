@@ -12,6 +12,8 @@ from app.services.wiki_operations import (
     wiki_ingest_with_retry,
     wiki_query_with_retry,
     wiki_lint_with_retry,
+    _build_cross_wiki_relationships,
+    _get_cross_wiki_references,
 )
 from app.services.wiki_corrections import DataCorrector
 from app.services.wiki_qa import WikiQAEvaluator
@@ -1301,6 +1303,96 @@ async def get_wiki_stats(
         raise
     except Exception as e:
         logger.error(f"Stats query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===== Cross-Wiki Navigation =====
+
+@router.post("/{wiki_type}/cross-wiki/build")
+async def build_cross_wiki_index(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Build cross-wiki relationship index (LP <-> Project).
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID (required for project wiki)
+
+    Returns:
+        {
+            "status": "success" | "error",
+            "lp_to_projects": count,
+            "projects_to_lp": count,
+            "total_links": int,
+            "error": str (if failed)
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        result = _build_cross_wiki_relationships(wiki_type, project_id)
+
+        return {
+            "status": "success",
+            "lp_to_projects": len(result.get("lp_to_projects", {})),
+            "projects_to_lp": len(result.get("projects_to_lp", {})),
+            "total_links": result.get("total_links", 0),
+        }
+
+    except Exception as e:
+        logger.error(f"Cross-wiki index build failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{wiki_type}/cross-wiki/references/{page_id}")
+async def get_cross_wiki_references(
+    wiki_type: str,
+    page_id: str,
+    project_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get cross-wiki references for a page.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        page_id: Page ID
+        project_id: Project ID (for project wiki)
+
+    Returns:
+        {
+            "status": "success" | "error",
+            "page_id": str,
+            "wiki_type": str,
+            "incoming": [references],
+            "outgoing": [references],
+            "error": str (if failed)
+        }
+    """
+    if wiki_type not in ["leading_practice", "project"]:
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    try:
+        refs = _get_cross_wiki_references(wiki_type, page_id, project_id)
+
+        return {
+            "status": "success",
+            "page_id": page_id,
+            "wiki_type": wiki_type,
+            "incoming": refs.get("incoming", []),
+            "outgoing": refs.get("outgoing", []),
+        }
+
+    except Exception as e:
+        logger.error(f"Cross-wiki reference lookup failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
