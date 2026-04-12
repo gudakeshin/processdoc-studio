@@ -1,0 +1,6 @@
+{
+  "id": "branding_compliance_v1",
+  "dimension": "branding_compliance",
+  "description": "Validates presence of resolved branding context in generation and evaluation.",
+  "default_threshold": 0.75
+}

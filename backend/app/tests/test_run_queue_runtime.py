@@ -6,9 +6,18 @@ from app.services.run_queue.runtime import RunQueueRuntime
 
 def test_compute_backoff_sec_exponential_cap() -> None:
     rt = RunQueueRuntime(Settings())
-    assert rt.compute_backoff_sec(0) == 1.5
-    assert rt.compute_backoff_sec(1) == 3.0
-    assert rt.compute_backoff_sec(10) == 20.0
+    # Note: backoff includes random jitter (0-1.5 sec), so use range assertions
+    # Attempt 0: base=1.5, exp=1.5*(2^0)=1.5, + jitter(0-1.5) → 1.5-3.0
+    backoff_0 = rt.compute_backoff_sec(0)
+    assert 1.5 <= backoff_0 <= 3.0, f"Expected 1.5-3.0, got {backoff_0}"
+
+    # Attempt 1: exp=1.5*(2^1)=3.0, + jitter(0-1.5) → 3.0-4.5
+    backoff_1 = rt.compute_backoff_sec(1)
+    assert 3.0 <= backoff_1 <= 4.5, f"Expected 3.0-4.5, got {backoff_1}"
+
+    # Attempt 10: exp=1.5*(2^10)=1536, capped at max=20, + jitter(0-1.5) → 20.0-20.0 (capped)
+    backoff_10 = rt.compute_backoff_sec(10)
+    assert 20.0 <= backoff_10 <= 20.0, f"Expected 20.0 (capped), got {backoff_10}"
 
 
 def test_local_try_enqueue_idempotent_key() -> None:

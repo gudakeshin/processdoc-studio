@@ -29,16 +29,16 @@ def test_build_visual_qa_chat_message_body() -> None:
         run_id="run_x",
     )
     assert "run_x" in body
-    assert "fail" in body
+    assert "FAIL" in body
     assert "Bad layout" in body
-    assert "- A" in body
+    assert "→ A" in body
 
 
 def test_build_visual_qa_chat_message_body_pass_clean() -> None:
     body = build_visual_qa_chat_message_body({"status": "pass", "findings": []}, run_id="run_y")
     assert "run_y" in body
-    assert "pass" in body
-    assert "No layout" in body or "passed" in body.lower()
+    assert "PASS" in body
+    assert "No layout" in body or "No layout or image issues" in body
 
 
 def test_persist_visual_qa_assistant_message_inserts_row() -> None:
@@ -69,7 +69,7 @@ def test_persist_visual_qa_assistant_message_inserts_row() -> None:
         rows = db.scalars(
             select(ConversationMessage).where(ConversationMessage.conversation_id == conv_id)
         ).all()
-        assert any("Visual QA" in m.content and "run_test_vqa" in m.content for m in rows)
+        assert any("Visual Quality Check" in m.content and "run_test_vqa" in m.content for m in rows)
         meta = next(m for m in rows if "run_test_vqa" in m.content)
         assert "visual_qa_report" in (meta.metadata_json or "")
     finally:

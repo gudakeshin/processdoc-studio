@@ -59,8 +59,25 @@ export function DocumentUploader({ projectId, autoload = true }: { projectId: st
       if (!res.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Upload failed");
       }
-      setMessage(`Uploaded: ${data.filename ?? file.name}`);
+      const filename = data.filename ?? file.name;
+      setMessage(`Uploaded: ${filename}`);
       await loadDocuments();
+
+      // Ingest document into wiki
+      try {
+        await api("/api/wiki/project/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_type: "document",
+            source_data: { filename, project_id: projectId },
+            project_id: projectId,
+          }),
+        });
+      } catch (wikiErr) {
+        // Log wiki ingest error but don't block upload success
+        console.error("Failed to ingest document into wiki:", wikiErr);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed");
     } finally {

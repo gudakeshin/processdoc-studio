@@ -31,26 +31,52 @@ def build_visual_qa_chat_message_body(report: dict[str, Any], *, run_id: str) ->
             if t:
                 findings.append(t)
 
+    # Add personality based on status
+    status_emoji_map = {
+        "pass": "✨",
+        "skip": "⏭️",
+        "warn": "⚠️",
+        "fail": "🔧",
+    }
+    status_emoji = status_emoji_map.get(st, "📋")
+
+    # Status-specific tone
+    status_tone_map = {
+        "pass": "Great work! No layout or image issues flagged.",
+        "skip": "Visual QA skipped for this run.",
+        "warn": "A few visual polish opportunities found—see below.",
+        "fail": "Found some visual issues to fix—let's address them:",
+    }
+    status_tone = status_tone_map.get(st, "Visual QA report ready.")
+
     lines = [
-        f"## Visual QA — run `{run_id}`",
-        "",
-        f"**Status:** `{st}`",
+        f"{status_emoji} **Visual Quality Check: {st.upper()}**",
         "",
     ]
+
     if summary:
         lines.append(summary)
         lines.append("")
+
     if findings:
-        lines.append("### Findings")
+        lines.append(status_tone)
         lines.append("")
         for f in findings:
-            lines.append(f"- {f}")
+            lines.append(f"→ {f}")
     elif st in {"fail", "warn"}:
         lines.append("_No structured findings were returned; see the full report artifact if needed._")
         lines.append("")
     elif st in {"pass", "skip"}:
-        lines.append("_No layout or image issues were flagged for this run._")
+        lines.append(status_tone)
         lines.append("")
+
+    if st in {"fail", "warn"} and findings:
+        lines.append("")
+        lines.append("🚀 Next up: Quick refinements and we're golden!")
+
+    # Include run_id for tracking
+    lines.append("")
+    lines.append(f"_Run: {run_id}_")
 
     return "\n".join(lines).strip()
 
@@ -89,7 +115,7 @@ def persist_visual_qa_assistant_message(
             id=f"conv_{uuid.uuid4().hex[:10]}",
             project_id=project_id,
             user_id=uid,
-            title="Cowork Session",
+            title="Creative Studio",
         )
         db.add(conv)
         db.flush()

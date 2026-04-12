@@ -157,43 +157,44 @@ class TestCoordinatorE2EIntegration:
 
         emit_fn = self.emit_event(events_emitted)
 
-        # Mock process extraction
+        # Mock process extraction and hooks
         with patch('app.agents.coordinator.run_process_extraction') as mock_pe:
             mock_pe.return_value = mock_state
-            with patch.object(mock_coordinator, '_parallel_read_stages', return_value={}):
-                with patch.object(mock_coordinator, '_plan_with_reasoning') as mock_plan:
-                    mock_plan.return_value = (
-                        ["docx"],
-                        ExecutionPlan(
-                            ordered_output_types=["docx"],
-                            rationale="Single document requested",
-                            used_llm_plan=False,
-                        ),
-                    )
-                    with patch.object(mock_coordinator, '_load_project_custom_skills', return_value=[]):
-                        with patch.object(mock_coordinator, '_outputs_from_state', return_value={"docx": "Mock DOCX content"}):
-                            with patch.object(mock_coordinator, '_apply_worker_patch'):
-                                with patch.object(mock_coordinator, '_execute_worker_with_retry', return_value=({}, None)):
-                                    with patch.object(mock_coordinator, '_apply_qa_remediation', return_value={"docx": "Mock DOCX content"}):
+            with patch('app.agents.coordinator.run_hooks_sync', return_value=[]):
+                with patch.object(mock_coordinator, '_parallel_read_stages', return_value={}):
+                    with patch.object(mock_coordinator, '_plan_with_reasoning') as mock_plan:
+                        mock_plan.return_value = (
+                            ["docx"],
+                            ExecutionPlan(
+                                ordered_output_types=["docx"],
+                                rationale="Single document requested",
+                                used_llm_plan=False,
+                            ),
+                        )
+                        with patch.object(mock_coordinator, '_load_project_custom_skills', return_value=[]):
+                            with patch.object(mock_coordinator, '_outputs_from_state', return_value={"docx": "Mock DOCX content"}):
+                                with patch.object(mock_coordinator, '_apply_worker_patch'):
+                                    with patch.object(mock_coordinator, '_execute_worker_with_retry', return_value=({}, None)):
+                                        with patch.object(mock_coordinator, '_apply_qa_remediation', return_value={"docx": "Mock DOCX content"}):
 
-                                        # Run the event loop
-                                        result = mock_coordinator._run_event_loop(
-                                            mock_state,
-                                            emit_event=emit_fn,
-                                        )
+                                            # Run the event loop
+                                            result = mock_coordinator._run_event_loop(
+                                                mock_state,
+                                                emit_event=emit_fn,
+                                            )
 
-                                        # Verify event loop completed
-                                        assert result is not None
-                                        print(f"\n✅ Event loop completed successfully")
-                                        print(f"📊 Total events emitted: {len(events_emitted)}")
+                                            # Verify event loop completed
+                                            assert result is not None
+                                            print(f"\n✅ Event loop completed successfully")
+                                            print(f"📊 Total events emitted: {len(events_emitted)}")
 
-                                        # Verify events were emitted
-                                        event_types = [e["event_type"] for e in events_emitted]
-                                        print(f"📝 Event types: {set(event_types)}")
+                                            # Verify events were emitted
+                                            event_types = [e["event_type"] for e in events_emitted]
+                                            print(f"📝 Event types: {set(event_types)}")
 
-                                        # Should have state events
-                                        assert any("state" in et for et in event_types), "No state events emitted"
-                                        print("✅ State events emitted")
+                                            # Should have state events
+                                            assert any("state" in et for et in event_types), "No state events emitted"
+                                            print("✅ State events emitted")
 
     @patch('app.agents.coordinator.SessionLocal')
     @patch('app.agents.coordinator.settings')
@@ -224,30 +225,31 @@ class TestCoordinatorE2EIntegration:
 
         with patch('app.agents.coordinator.run_process_extraction') as mock_pe:
             mock_pe.return_value = mock_state
-            with patch.object(mock_coordinator, '_parallel_read_stages', return_value={}):
-                with patch.object(mock_coordinator, '_plan_with_reasoning') as mock_plan:
-                    mock_plan.return_value = (
-                        ["docx", "pptx"],
-                        ExecutionPlan(
-                            ordered_output_types=["docx", "pptx"],
-                            rationale="Multiple outputs requested",
-                            used_llm_plan=False,
-                        ),
-                    )
-                    with patch.object(mock_coordinator, '_load_project_custom_skills', return_value=[]):
-                        with patch.object(mock_coordinator, '_outputs_from_state', return_value={"docx": "Mock", "pptx": "Mock"}):
-                            with patch.object(mock_coordinator, '_apply_worker_patch'):
-                                with patch.object(mock_coordinator, '_execute_worker_with_retry', return_value=({}, None)):
-                                    with patch.object(mock_coordinator, '_apply_qa_remediation', return_value={"docx": "Mock", "pptx": "Mock"}):
+            with patch('app.agents.coordinator.run_hooks_sync', return_value=[]):
+                with patch.object(mock_coordinator, '_parallel_read_stages', return_value={}):
+                    with patch.object(mock_coordinator, '_plan_with_reasoning') as mock_plan:
+                        mock_plan.return_value = (
+                            ["docx", "pptx"],
+                            ExecutionPlan(
+                                ordered_output_types=["docx", "pptx"],
+                                rationale="Multiple outputs requested",
+                                used_llm_plan=False,
+                            ),
+                        )
+                        with patch.object(mock_coordinator, '_load_project_custom_skills', return_value=[]):
+                            with patch.object(mock_coordinator, '_outputs_from_state', return_value={"docx": "Mock", "pptx": "Mock"}):
+                                with patch.object(mock_coordinator, '_apply_worker_patch'):
+                                    with patch.object(mock_coordinator, '_execute_worker_with_retry', return_value=({}, None)):
+                                        with patch.object(mock_coordinator, '_apply_qa_remediation', return_value={"docx": "Mock", "pptx": "Mock"}):
 
-                                        result = mock_coordinator._run_event_loop(
-                                            mock_state,
-                                            emit_event=emit_fn,
-                                        )
+                                            result = mock_coordinator._run_event_loop(
+                                                mock_state,
+                                                emit_event=emit_fn,
+                                            )
 
-                                        assert result is not None
-                                        print(f"\n✅ Multi-output event loop completed")
-                                        print(f"📊 Total events: {len(events_emitted)}")
+                                            assert result is not None
+                                            print(f"\n✅ Multi-output event loop completed")
+                                            print(f"📊 Total events: {len(events_emitted)}")
 
     def test_state_manager_task_board_workflow(self):
         """Test task board workflow through complete execution."""

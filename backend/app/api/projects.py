@@ -29,13 +29,431 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.services.storage import ensure_workspace, workspace_path
-from app.services.proposal_policy import derive_proposal_skill_targets
+from app.services.proposal_policy import derive_proposal_skill_targets, generate_deck_outline_preview
 from app.api.formats import _load_output_types
 from app.api.runs import _recommend_output_types
 from app.services.run_worker import append_run_event
 from app.schemas.common import ProjectSummary
 
 router = APIRouter()
+
+
+def _is_contextual_followup(content: str, prior_messages: list[dict]) -> bool:
+    """Check if message is a follow-up question that should be answered contextually.
+
+    Rather than treating every message as a deliverable request, recognize when
+    a user is asking a follow-up question about recent context.
+    """
+    lowered = (content or "").lower().strip()
+
+    # Follow-up question patterns
+    followup_patterns = [
+        "what refinements",
+        "which should",
+        "how should",
+        "what should",
+        "should we",
+        "which of",
+        "how do we",
+        "what about",
+        "can we fix",
+        "fix the",
+        "address the",
+        "resolve the",
+        "improve the",
+        "tell me more",
+        "elaborate",
+        "expand on",
+        "more details",
+        "more information",
+    ]
+
+    # Check if message matches follow-up patterns
+    if any(pattern in lowered for pattern in followup_patterns):
+        # Check if there's recent context (messages in last 3 containing findings/issues)
+        recent = prior_messages[-3:] if len(prior_messages) >= 3 else prior_messages
+        for msg in recent:
+            msg_content = str(msg.get("content") or "").lower()
+            if any(
+                keyword in msg_content
+                for keyword in ["found", "issue", "fail", "deficien", "structural", "refined", "fix"]
+            ):
+                return True
+
+    return False
+
+
+def _is_vague_instruction(content: str) -> bool:
+    """Check if user message is too vague to generate a plan for.
+
+    Returns True if the message is just a greeting or asks about capabilities
+    without requesting something specific.
+    """
+    lowered = (content or "").lower().strip()
+
+    # Simple greetings that don't warrant a plan
+    vague_patterns = [
+        "hi",
+        "hello",
+        "hey",
+        "thanks",
+        "thank you",
+        "ok",
+        "okay",
+        "got it",
+        "thanks",
+        "what's up",
+        "what up",
+        "sup",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "good night",
+    ]
+
+    # Questions about capabilities without specific request
+    capability_questions = [
+        "what can you do",
+        "what can i do",
+        "how does this work",
+        "how do i use this",
+        "what is this",
+        "who are you",
+        "tell me about yourself",
+        "help",
+        "how does it work",
+        "what do you do",
+    ]
+
+    # Check if message is just a vague greeting
+    if lowered in vague_patterns:
+        return True
+
+    # Check if it's a capability question without specific request
+    for question in capability_questions:
+        if lowered.startswith(question) and len(lowered) < 50:
+            # Make sure it's not followed by specific request details
+            if not any(
+                keyword in lowered
+                for keyword in ["proposal", "create", "generate", "build", "make", "send", "give me", "need", "want"]
+            ):
+                return True
+
+    return False
+
+
+# ── Intent classification for natural conversation flow ──────────────────
+
+# Deliverable nouns that signal the user is talking about a specific output
+_DELIVERABLE_NOUNS = {
+    "proposal", "deck", "presentation", "pptx", "powerpoint", "ppt",
+    "document", "report", "docx", "word",
+    "model", "spreadsheet", "excel", "xlsx",
+    "process map", "process flow", "flowchart", "diagram",
+    "sop", "standard operating procedure",
+    "narrative", "brief", "memo", "analysis",
+    "raci", "matrix",
+}
+
+# Verbs that signal a clear creation request (commit intent)
+_COMMIT_VERBS = {
+    "create", "build", "generate", "make", "draft", "write", "produce",
+    "design", "prepare", "develop", "construct", "deliver",
+}
+
+# Phrases that indicate the user wants to proceed / confirm / execute
+_GO_AHEAD_PHRASES = [
+    "go ahead", "let's do it", "proceed", "let's build", "let's go",
+    "ship it", "let's make it", "do it", "yes build", "yes create",
+    "confirmed", "let's proceed", "start building", "start creating",
+    "kick it off", "let's roll", "get started", "begin",
+]
+
+# Hedging / exploratory phrases that signal the user is NOT committing yet
+_EXPLORATORY_PHRASES = [
+    "thinking about", "considering", "what if", "should i",
+    "should we", "could we", "what do you think", "what would",
+    "how should", "would it be", "is it possible", "can we discuss",
+    "let's discuss", "let's talk about", "i want to talk",
+    "i want to discuss", "help me think", "brainstorm",
+    "explore", "any suggestions", "what options", "what approach",
+    "how would you", "what's the best way", "advise", "recommend",
+    "your thoughts", "your opinion", "weigh in",
+    "not sure", "i'm unsure", "haven't decided",
+    "can you explain", "tell me about", "walk me through",
+    "what are the", "which would be", "pros and cons",
+]
+
+# Simple acknowledgments (responding to agent, not requesting anything)
+_ACKNOWLEDGMENT_PATTERNS = [
+    "that makes sense", "makes sense", "good point", "i see", "understood",
+    "interesting", "great", "nice", "perfect", "sounds good",
+    "fair enough", "agree", "i agree", "right", "exactly",
+    "yep", "yup", "yeah", "yes", "no", "nope",
+    "cool", "awesome", "love it", "works for me",
+    "hmm", "hm", "ah", "oh",
+]
+
+
+def _is_commit_intent(content: str) -> bool:
+    """Fast pattern check: Does user clearly want to create/build a specific deliverable?
+
+    Returns True only when there's a clear action verb + deliverable noun,
+    or an explicit go-ahead phrase. Designed to catch unambiguous commit signals
+    without false positives on exploratory language.
+    """
+    lowered = (content or "").lower().strip()
+    if not lowered:
+        return False
+
+    # Explicit go-ahead phrases
+    for phrase in _GO_AHEAD_PHRASES:
+        if phrase in lowered:
+            return True
+
+    # Redo requests are commits (user wants something rebuilt)
+    if _is_redo_followup(lowered):
+        return True
+
+    # Check for hedging language — if present, NOT a commit even if verb+noun match
+    for hedge in _EXPLORATORY_PHRASES:
+        if hedge in lowered:
+            return False
+
+    # Check for clear verb + noun pattern
+    has_commit_verb = any(verb in lowered for verb in _COMMIT_VERBS)
+    has_deliverable_noun = any(noun in lowered for noun in _DELIVERABLE_NOUNS)
+
+    if has_commit_verb and has_deliverable_noun:
+        return True
+
+    # Strong request patterns: "I need a ...", "Give me a ...", "I want a ..."
+    strong_request_starters = [
+        "i need a ", "i need you to ", "give me a ", "give me the ",
+        "i want a ", "i want you to ", "please create", "please build",
+        "please make", "please generate", "can you create", "can you build",
+        "can you make", "can you generate",
+    ]
+    for starter in strong_request_starters:
+        if lowered.startswith(starter) and has_deliverable_noun:
+            return True
+
+    return False
+
+
+def _is_acknowledgment(content: str) -> bool:
+    """Check if the message is a simple acknowledgment / response to agent."""
+    lowered = (content or "").lower().strip()
+    if not lowered:
+        return False
+    # Exact match or very short acknowledgments
+    if lowered in _ACKNOWLEDGMENT_PATTERNS:
+        return True
+    # Short messages that are just acknowledgments (under 20 chars)
+    if len(lowered) < 20:
+        for pattern in _ACKNOWLEDGMENT_PATTERNS:
+            if lowered == pattern or lowered == pattern + "!":
+                return True
+    return False
+
+
+def _persist_conversational_response(
+    db: Session, conv: Conversation, user_message: str, prior_messages: list[dict]
+) -> dict:
+    """Generate a natural, colleague-like conversational response.
+
+    Instead of jumping to plan generation, engage in genuine dialogue:
+    ask probing questions, suggest approaches, share insights, build understanding.
+    """
+    from app.services.claude import claude_generate
+
+    # Build conversation context from recent messages
+    recent_context = "\n".join(
+        f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:600]}"
+        for m in prior_messages[-8:]
+        if str(m.get("content") or "").strip()
+    )
+
+    system_prompt = """You are Sheldon, an energetic and insightful creative partner in a collaborative studio.
+You're having a natural back-and-forth conversation with your teammate about their project.
+
+Your role is to be a THOUGHTFUL COLLEAGUE — not a vending machine that produces plans on demand.
+
+CONVERSATION RULES:
+1. Ask probing questions to understand what they REALLY need — don't assume.
+2. If they share context about a project, engage with it: ask about audience, goals, constraints.
+3. If they ask "what approach" or "what options" — suggest 2-3 concrete approaches with brief trade-offs.
+4. If they mention a topic/domain — share a relevant insight or angle they might not have considered.
+5. Build understanding incrementally across messages — you're NOT in a rush to generate anything.
+6. Keep responses concise (3-5 sentences) unless they ask for detail.
+7. Use Sheldon's personality: energetic, strategic, supportive, occasionally witty.
+8. Use occasional emojis (1-2 per message max) — don't overdo it.
+
+CRITICAL: Do NOT say "Plan Ready" or offer to generate deliverables unless the user explicitly asks you to create/build/generate something.
+
+When the user seems ready to commit, you can say something like:
+"Sounds like we're aligned! When you're ready, just say the word and I'll put together a plan for [specific deliverable]."
+
+Your capabilities (for context, so you can discuss them naturally):
+- Proposals (PPT, Word)
+- Financial models (Excel)
+- Process maps and flowcharts
+- SOPs and documentation
+- Reports and analysis
+- RACI matrices"""
+
+    user_prompt = f"""Conversation so far:
+{recent_context}
+
+Latest message from user: {user_message}
+
+Respond naturally as a colleague. Do NOT generate a plan or say "Plan Ready"."""
+
+    try:
+        response_text = claude_generate(
+            system=system_prompt,
+            user=user_prompt,
+            temperature=0.7,
+            max_tokens=400
+        ).strip()
+    except Exception:
+        response_text = (
+            f"Great topic! Let me think about this with you. "
+            f"Can you tell me a bit more about the context? "
+            f"Who's the audience, and what's the main goal? "
+            f"That'll help me suggest the right approach. 🎯"
+        )
+
+    msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=response_text,
+        metadata_json=json.dumps({"kind": "conversational_response"}),
+    )
+    db.add(msg)
+    db.commit()
+
+    messages = _serialize_messages(db, conv.id)
+    return {
+        "conversation_id": conv.id,
+        "messages": messages,
+        "open_questions": [],
+        "ready_for_confirmation": False,
+        "plan_hash": None,
+    }
+
+
+def _persist_acknowledgment_response(
+    db: Session, conv: Conversation, user_message: str, prior_messages: list[dict]
+) -> dict:
+    """Generate a brief, natural response to a simple acknowledgment.
+
+    When user says "sounds good" or "makes sense", respond briefly and
+    guide them toward next steps without being pushy.
+    """
+    from app.services.claude import claude_generate
+
+    recent_context = "\n".join(
+        f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:400]}"
+        for m in prior_messages[-4:]
+        if str(m.get("content") or "").strip()
+    )
+
+    system_prompt = """You are Sheldon, an energetic creative partner.
+The user just sent a brief acknowledgment (like "sounds good", "makes sense", "great").
+
+Respond with 1-2 sentences that:
+1. Acknowledge their response warmly
+2. Either continue the discussion naturally OR gently ask what they'd like to do next
+3. Keep Sheldon's personality (energetic, supportive)
+
+Keep it SHORT — 1-2 sentences max. Don't be verbose."""
+
+    user_prompt = f"""Recent conversation:
+{recent_context}
+
+User's acknowledgment: {user_message}
+
+Respond briefly."""
+
+    try:
+        response_text = claude_generate(
+            system=system_prompt,
+            user=user_prompt,
+            temperature=0.7,
+            max_tokens=150
+        ).strip()
+    except Exception:
+        response_text = "Great! What would you like to tackle next? 🎯"
+
+    msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=response_text,
+        metadata_json=json.dumps({"kind": "acknowledgment_response"}),
+    )
+    db.add(msg)
+    db.commit()
+
+    messages = _serialize_messages(db, conv.id)
+    return {
+        "conversation_id": conv.id,
+        "messages": messages,
+        "open_questions": [],
+        "ready_for_confirmation": False,
+        "plan_hash": None,
+    }
+
+
+def _extract_user_name(email: str) -> str:
+    """Extract a friendly name from email address.
+
+    Examples:
+        john.doe@company.com → John Doe
+        jane_smith@company.co.uk → Jane Smith
+        user+tag@domain.com → User
+    """
+    if not email:
+        return "there"
+
+    # Get the part before @
+    local_part = email.split("@")[0].lower()
+
+    # Replace dots and underscores with spaces
+    name_part = local_part.replace(".", " ").replace("_", " ")
+
+    # Remove any +tag suffix
+    if "+" in name_part:
+        name_part = name_part.split("+")[0]
+
+    # Title case and clean up
+    words = [w for w in name_part.split() if w]
+    if not words:
+        return "there"
+
+    # Capitalize first word
+    return words[0].capitalize()
+
+
+def _generate_greeting_message(user_name: str) -> str:
+    """Generate a personalized greeting message using Sheldon's personality.
+
+    Args:
+        user_name: First name of the user
+
+    Returns:
+        Personalized greeting message with personality
+    """
+    return f"""👋 Hey {user_name}! Welcome to **Creative Studio**.
+
+I'm Sheldon — think of me as your strategic thought partner. Not a vending machine that spits out decks, but a colleague who'll actually think through the problem with you.
+
+**How I work best:**
+💬 **Tell me about your project** — context, audience, goals. The more I understand, the sharper the output.
+🎯 **We'll figure out the approach together** — I'll ask questions, suggest angles, debate trade-offs.
+🚀 **When you're ready, say the word** — I'll build exactly what you need with quality checks built in.
+
+So — what are you working on? I'm all ears."""
 
 
 class CreateProjectRequest(BaseModel):
@@ -185,7 +603,7 @@ def _build_decision_prompts(
     prompts.append(
         {
             "id": "primary_deliverable",
-            "label": "Select the primary deliverable type",
+            "label": "🎯 What's the primary deliverable?",
             "mode": "single_select",
             "required": True,
             "options": deliverable_opts,
@@ -195,7 +613,7 @@ def _build_decision_prompts(
     if not selected_primary:
         unresolved.append("primary_deliverable")
         open_questions.append(
-            "Please confirm the primary deliverable type (for example proposal, report, SOP, or deck)."
+            "🎯 What's the primary deliverable? (This shapes everything—proposal, report, SOP, or deck?)"
         )
 
     if not template_ids and not custom_output_types:
@@ -210,7 +628,7 @@ def _build_decision_prompts(
         prompts.append(
             {
                 "id": "preferred_outputs",
-                "label": "Select one or more preferred outputs",
+                "label": "✨ Which formats should we deliver?",
                 "mode": "multi_select",
                 "required": True,
                 "options": format_opts,
@@ -220,10 +638,10 @@ def _build_decision_prompts(
         )
         if not selected_formats:
             unresolved.append("preferred_outputs")
-            open_questions.append("Which output formats should be prioritized for this run?")
+            open_questions.append("✨ Which output formats work best for you? (Pick one or more: slides, Word, spreadsheet, PDF, or process map)")
 
     if len(content.split()) < 8:
-        soft_hints.append("Could you add more detail on deliverable scope, audience, and level of depth?")
+        soft_hints.append("💡 Quick tip: More detail on scope, audience, and depth = better results. Worth adding?")
 
     return prompts, unresolved, open_questions, soft_hints
 
@@ -263,8 +681,11 @@ def _derive_content_skill_targets(
     instruction: str,
     template_ids: list[str],
     prior_plan_meta: dict | None = None,
+    llm_skill_hint: dict | None = None,
 ) -> dict[str, str]:
-    targets = derive_proposal_skill_targets(instruction=instruction, output_types=template_ids, base_targets=None)
+    targets = derive_proposal_skill_targets(
+        instruction=instruction, output_types=template_ids, base_targets=None, llm_skill_hint=llm_skill_hint
+    )
     if prior_plan_meta and _is_redo_followup(instruction):
         prior_targets = prior_plan_meta.get("content_skill_targets")
         if isinstance(prior_targets, dict):
@@ -283,6 +704,164 @@ def _build_regeneration_directive(content: str) -> str:
         "Change at least three dimensions: (1) storyline framing, (2) value-case structure and levers, "
         "(3) risk/mitigation articulation. Avoid near-verbatim reuse of prior section wording."
     )
+
+
+def _persist_contextual_response(db: Session, conv: Conversation, user_message: str, prior_context: str) -> dict:
+    """Generate a contextual response to a follow-up question based on prior messages.
+
+    Instead of generating a plan, provide a direct answer to the user's question
+    using the conversation history for context.
+    """
+    from app.services.claude import claude_generate
+
+    system_prompt = """You are Sheldon, a helpful execution partner in an active project discussion.
+The user has asked a follow-up question about previous context in the conversation.
+
+Provide a direct, helpful response that:
+1. References the recent context/findings mentioned
+2. Answers their specific question directly
+3. Offers next steps or recommendations if appropriate
+4. Maintains Sheldon's personality (helpful, strategic, professional)
+
+Keep it concise (2-3 sentences) unless the question requires more detail.
+Do NOT offer generic recommendations - be specific to what was just discussed.
+"""
+
+    user_prompt = f"""Prior context from conversation:
+{prior_context}
+
+User's follow-up question: {user_message}
+
+Provide a direct, contextual response to their question based on what was just discussed."""
+
+    try:
+        response_text = claude_generate(
+            system=system_prompt,
+            user=user_prompt,
+            temperature=0.6,
+            max_tokens=300
+        ).strip()
+    except Exception:
+        # Fallback response
+        response_text = (
+            f"Great question! Based on what we just discussed, let me help you tackle "
+            f"the key issues. Which area would you like to address first?"
+        )
+
+    msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=response_text,
+        metadata_json=json.dumps({"kind": "contextual_response"}),
+    )
+    db.add(msg)
+    db.commit()
+
+    messages = _serialize_messages(db, conv.id)
+    return {
+        "conversation_id": conv.id,
+        "messages": messages,
+        "open_questions": [],
+        "ready_for_confirmation": False,
+        "plan_hash": None,
+    }
+
+
+def _persist_out_of_scope_message(db: Session, conv: Conversation, user_request: str) -> dict:
+    """Generate an LLM-based response for out-of-scope requests.
+
+    Creates a funny yet professional message saying we don't support this yet,
+    but they can log feedback for future features.
+    """
+    from app.services.claude import claude_generate
+
+    system_prompt = """You are Sheldon, a helpful and witty digital teammate.
+A user has asked for something outside your current capabilities.
+
+Generate a SHORT (2-3 sentences max) response that:
+1. Acknowledges what they asked for with humor and understanding
+2. Explains it's not in your wheelhouse today in a funny, professional way
+3. Suggests they log feedback for future features
+4. Offers what you CAN help with (proposals, models, reports, documentation, etc.)
+
+Keep it light and entertaining while maintaining professionalism. Use personality and wit.
+Do NOT be apologetic or negative - be confident and fun about it.
+
+Examples of great tone:
+- "Love the ambition! 🚀 Flight booking isn't our jam yet, but we'd love to add it someday.
+  For now, I'm your go-to for proposals, reports, and process documentation—log your feature request and we'll get working on it!"
+- "That's a creative one! 😄 We're still building that superpower. How about I help you with something in our current toolkit instead—proposals, models, documentation?"
+"""
+
+    user_prompt = f"User request: {user_request}\n\nGenerate a short, witty response acknowledging this request is out of scope (no quotes, just the message):"
+
+    try:
+        response_text = claude_generate(
+            system=system_prompt,
+            user=user_prompt,
+            temperature=0.7,
+            max_tokens=200
+        ).strip()
+    except Exception:
+        # Fallback if LLM unavailable
+        response_text = (
+            f"That's a creative request! 😄 We don't support that just yet, but we'd love to hear your feedback. "
+            f"For now, I specialize in creating proposals, financial models, process documentation, and reports. "
+            f"What can I help you build today?"
+        )
+
+    msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=response_text,
+        metadata_json=json.dumps({"kind": "out_of_scope_response"}),
+    )
+    db.add(msg)
+    db.commit()
+
+    messages = _serialize_messages(db, conv.id)
+    return {
+        "conversation_id": conv.id,
+        "messages": messages,
+        "open_questions": [],
+        "ready_for_confirmation": False,
+        "plan_hash": None,
+    }
+
+
+def _persist_clarification_message(db: Session, conv: Conversation, user_message: str) -> dict:
+    """Return a friendly clarification request without generating a plan."""
+    from app.services.agent_personality import AgentPersonality
+
+    clarification_content = f"""Hey! 👋 Looks like you're just getting warmed up.
+
+I'm ready to dive into whatever you're working on. Just give me some context — for example:
+
+💬 *"We're pitching a finance transformation to a mid-size bank"*
+💬 *"I need to document our procurement process for an audit"*
+💬 *"The CFO wants a cost-benefit analysis for the new ERP"*
+
+Or if you already know what you want built, just say the word — *"Create a proposal in PPT"* and I'll get straight to it.
+
+What's on your plate?"""
+
+    msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=clarification_content,
+        metadata_json=json.dumps({"kind": "clarification_request"}),
+    )
+    db.add(msg)
+    db.commit()
+
+    messages = _serialize_messages(db, conv.id)
+    return {
+        "conversation_id": conv.id,
+        "messages": messages,
+        "open_questions": [],
+        "ready_for_confirmation": False,
+        "plan_hash": None,
+    }
 
 
 def _persist_assistant_plan_message(
@@ -344,6 +923,19 @@ def _persist_assistant_plan_message(
     # When decision prompts are disabled, always ready — the LLM handles clarification via conversation.
     ready_for_confirmation = True if not settings.instruction_decision_prompts_enabled else len(unresolved_prompt_ids) == 0
     display_open_questions = open_questions + soft_hints
+    # ── Deck outline preview (lightweight Claude call for PPTX proposals) ──
+    deck_outline_preview: dict | None = None
+    pptx_skill = (content_skill_targets or {}).get("pptx", "")
+    if "pptx" in {str(t).strip().lower() for t in template_ids} and pptx_skill:
+        try:
+            deck_outline_preview = generate_deck_outline_preview(
+                instruction=instruction,
+                output_type="pptx",
+                skill_id=pptx_skill or None,
+            )
+        except Exception:
+            deck_outline_preview = None
+
     plan_hash = _build_plan_hash(
         instruction=instruction,
         template_ids=template_ids,
@@ -353,6 +945,17 @@ def _persist_assistant_plan_message(
         regeneration_directive=regeneration_directive,
     )
     approval_reason = "Plan is ready for confirmation." if ready_for_confirmation else "Clarification required before confirmation."
+
+    # Format plan with personality
+    from app.services.agent_personality import format_plan_with_personality
+    plan_with_personality = format_plan_with_personality(
+        plan_summary=rationale,
+        outputs=template_ids,
+        custom_outputs=custom_output_types if custom_output_types else None,
+        rationale=None,  # rationale already in plan_summary
+    )
+
+    # Keep technical plan_summary for metadata
     plan_summary = (
         f"Draft plan: {rationale} | outputs={', '.join(template_ids) if template_ids else 'none'} | "
         f"custom={', '.join(custom_output_types) if custom_output_types else 'none'}"
@@ -362,18 +965,29 @@ def _persist_assistant_plan_message(
         from app.services.strategy_plan import format_strategy_dossier_markdown
 
         strategy_md = "\n\n" + format_strategy_dossier_markdown(strategy_dossier)
+
+    # Use personality-infused plan for display, with technical details below
     assistant_content = (
-        f"{plan_summary}\n"
+        f"{plan_with_personality}\n\n"
+        f"**Technical Details:**\n"
         f"Template outputs: {', '.join(template_ids) if template_ids else 'none'}\n"
         f"Custom outputs: {', '.join(custom_output_types) if custom_output_types else 'none'}\n"
         f"Proposed representations: {json.dumps(output_type_representations)}\n"
         + (
-            "Open questions:\n- " + "\n- ".join(display_open_questions)
+            "\n**Open questions:**\n- " + "\n- ".join(display_open_questions)
             if display_open_questions
-            else "No open questions. Confirm plan to continue to execution."
+            else "\n✓ No open questions. Confirm plan to continue to execution."
         )
         + strategy_md
     )
+    # Append deck outline preview to assistant content if available
+    if isinstance(deck_outline_preview, dict) and deck_outline_preview.get("slides"):
+        outline_lines = []
+        for i, sl in enumerate(deck_outline_preview["slides"], 1):
+            if isinstance(sl, dict):
+                outline_lines.append(f"  {i}. [{sl.get('slide_type', 'bullets')}] {sl.get('title', '')} — {sl.get('purpose', '')}")
+        if outline_lines:
+            assistant_content += "\n\nProposed deck outline:\n" + "\n".join(outline_lines)
     metadata_obj = {
         "template_output_types": template_ids,
         "custom_output_types": custom_output_types,
@@ -396,6 +1010,7 @@ def _persist_assistant_plan_message(
         "requires_confirmation": True,
         "plan_hash": plan_hash,
         "strategy_dossier": strategy_dossier,
+        "deck_outline_preview": deck_outline_preview,
     }
     assistant_msg = ConversationMessage(
         conversation_id=conv.id,
@@ -427,11 +1042,12 @@ def _persist_assistant_plan_message(
         "ready_for_confirmation": ready_for_confirmation,
         "requires_confirmation": True,
         "plan_hash": plan_hash,
+        "deck_outline_preview": deck_outline_preview,
         "messages": _serialize_messages(db, conv.id),
     }
 
 
-def _get_or_create_conversation(db: Session, *, pid: str, user_id: str) -> Conversation:
+def _get_or_create_conversation(db: Session, *, pid: str, user_id: str, user: User | None = None) -> Conversation:
     conv = db.scalar(
         select(Conversation)
         .where(Conversation.project_id == pid, Conversation.user_id == user_id)
@@ -440,13 +1056,32 @@ def _get_or_create_conversation(db: Session, *, pid: str, user_id: str) -> Conve
     )
     if conv:
         return conv
+
+    # Create new conversation with greeting
     conv = Conversation(
         id=f"conv_{uuid.uuid4().hex[:10]}",
         project_id=pid,
         user_id=user_id,
-        title="Cowork Session",
+        title="Creative Studio",
     )
     db.add(conv)
+    db.flush()
+
+    # Add greeting message
+    if user:
+        user_name = _extract_user_name(user.email)
+        greeting_content = _generate_greeting_message(user_name)
+    else:
+        # Fallback if user not provided
+        greeting_content = _generate_greeting_message("there")
+
+    greeting_msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=greeting_content,
+        metadata_json=json.dumps({"kind": "greeting", "greeting_type": "initial"}),
+    )
+    db.add(greeting_msg)
     db.commit()
     db.refresh(conv)
     return conv
@@ -620,7 +1255,7 @@ def get_project_conversation(
     db: Session = Depends(get_db),
 ) -> dict:
     require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
-    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id)
+    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id, user=user)
     return {"conversation_id": conv.id, "messages": _serialize_messages(db, conv.id)}
 
 
@@ -635,7 +1270,7 @@ def post_project_conversation_message(
     content = (body.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content must not be empty")
-    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id)
+    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id, user=user)
 
     user_msg = ConversationMessage(
         conversation_id=conv.id,
@@ -646,11 +1281,41 @@ def post_project_conversation_message(
     db.add(user_msg)
     db.flush()
 
+    # ── Layer 1: Greetings & vague messages ────────────────────────────
+    if _is_vague_instruction(content):
+        return _persist_clarification_message(db, conv, content)
+
+    # Load conversation context (needed by all subsequent layers)
+    prior_messages = _serialize_messages(db, conv.id)
+    prior_plan_meta = _latest_assistant_plan_metadata(prior_messages)
+
+    # ── Layer 2: Simple acknowledgments ("sounds good", "makes sense") ─
+    if _is_acknowledgment(content):
+        return _persist_acknowledgment_response(db, conv, content, prior_messages)
+
+    # ── Layer 3: Contextual follow-ups about recent findings/issues ────
+    if _is_contextual_followup(content, prior_messages):
+        recent_context = "\n".join(
+            f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:500]}"
+            for m in prior_messages[-4:]
+            if str(m.get("content") or "").strip()
+        )
+        return _persist_contextual_response(db, conv, content, recent_context)
+
+    # ── Layer 4: Intent classification — COMMIT vs CONVERSATION ────────
+    # Only proceed to plan generation if user clearly wants to build something.
+    # Otherwise, engage in natural dialogue like a colleague would.
+    if not _is_commit_intent(content):
+        # User is exploring, discussing, brainstorming, or asking questions.
+        # Engage conversationally — don't jump to "Plan Ready".
+        return _persist_conversational_response(db, conv, content, prior_messages)
+
+    # ── Layer 5: COMMIT path — user explicitly wants to build something ─
+    # From here on, we know the user wants a specific deliverable created.
     available_output_types = [
         item for item in _load_output_types() if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
     ]
-    prior_messages = _serialize_messages(db, conv.id)
-    prior_plan_meta = _latest_assistant_plan_metadata(prior_messages)
+
     history_prompt = "\n".join(
         f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
         for m in prior_messages[-12:]
@@ -661,13 +1326,25 @@ def post_project_conversation_message(
         combined_instruction = f"{base_instruction}\n\nUser follow-up: {content}".strip()
     else:
         combined_instruction = f"{history_prompt}\nuser: {content}".strip()
-    template_ids, custom_output_types, output_type_representations, rationale = _recommend_output_types(
-        combined_instruction, available_output_types
-    )
+
+    # Get deliverable recommendations from LLM
+    try:
+        template_ids, custom_output_types, output_type_representations, rationale, content_skill_hint = _recommend_output_types(
+            combined_instruction, available_output_types
+        )
+    except Exception:
+        template_ids, custom_output_types, output_type_representations, rationale, content_skill_hint = [], [], {}, "Unable to process", None
+
+    # If no deliverables recommended even on a commit intent, try conversational response
+    if not template_ids and content.strip():
+        out_of_scope_response = _persist_out_of_scope_message(db, conv, content)
+        return out_of_scope_response
+
     content_skill_targets = _derive_content_skill_targets(
         instruction=combined_instruction,
         template_ids=template_ids,
         prior_plan_meta=prior_plan_meta if isinstance(prior_plan_meta, dict) else None,
+        llm_skill_hint=content_skill_hint,
     )
     regeneration_directive = _build_regeneration_directive(content)
     response = _persist_assistant_plan_message(
@@ -698,7 +1375,7 @@ def post_project_conversation_decisions(
     db: Session = Depends(get_db),
 ) -> dict:
     require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
-    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id)
+    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id, user=user)
     if body.conversation_id and body.conversation_id != conv.id:
         raise HTTPException(
             status_code=400,
@@ -752,7 +1429,7 @@ def post_project_conversation_decisions(
     available_output_types = [
         item for item in _load_output_types() if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
     ]
-    template_ids, custom_output_types, output_type_representations, rationale = _recommend_output_types(
+    template_ids, custom_output_types, output_type_representations, rationale, _skill_hint = _recommend_output_types(
         enriched_instruction, available_output_types
     )
 
@@ -814,7 +1491,7 @@ def confirm_project_conversation_plan(
     db: Session = Depends(get_db),
 ) -> dict:
     require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
-    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id)
+    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id, user=user)
     if body.conversation_id and body.conversation_id != conv.id:
         raise HTTPException(
             status_code=400,

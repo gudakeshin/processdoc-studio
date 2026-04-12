@@ -1,0 +1,6 @@
+{
+  "id": "narrative_coherence_v1",
+  "dimension": "narrative_coherence",
+  "description": "Checks narrative progression and structural cohesion.",
+  "default_threshold": 0.75
+}

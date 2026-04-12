@@ -1,0 +1,31 @@
+{
+  "id": "cnf_cfaff6e7aa",
+  "sheet": "Assumptions",
+  "cell_ref": "B2",
+  "type": "formula_changed",
+  "severity": "high",
+  "status": "resolved",
+  "base": {
+    "value": 0.1
+  },
+  "local": {
+    "value": "=B1*2"
+  },
+  "remote": {
+    "value": "=B1*3"
+  },
+  "created_at": "2026-04-10T18:51:06.450791+00:00",
+  "updated_at": "2026-04-10T18:51:06.467312+00:00",
+  "created_by": "conflicts@example.com",
+  "resolution": {
+    "chosen_side": "policy",
+    "rationale": "bulk policy",
+    "actor": "conflicts@example.com",
+    "timestamp": "2026-04-10T18:51:06.467315+00:00"
+  },
+  "reopen": {
+    "actor": "conflicts@example.com",
+    "reason": "new upstream revision",
+    "timestamp": "2026-04-10T18:51:06.464030+00:00"
+  }
+}

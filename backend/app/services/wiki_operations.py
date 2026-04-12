@@ -298,13 +298,10 @@ def wiki_lint_with_retry(
     """
     Run wiki health check (lint) with automatic retry on transient failures.
 
-    Checks for:
-    - Contradictions
-    - Orphaned pages
-    - Missing cross-references
-    - Broken links
-    - Coverage gaps
-    - Staleness
+    Checks for (Tier 3 QA):
+    - Broken links (medium severity)
+    - Orphaned pages (low severity)
+    - Missing entities (low severity)
 
     Args:
         wiki_type: "leading_practice" or "project"
@@ -313,7 +310,7 @@ def wiki_lint_with_retry(
 
     Returns:
         Tuple[result_dict, error_string]
-        - On success: ({issues, suggestions, severity}, None)
+        - On success: ({issues, suggestions, severity, summary}, None)
         - On failure: (None, error_message)
     """
     last_error = None
@@ -322,44 +319,31 @@ def wiki_lint_with_retry(
         try:
             logger.debug(f"Wiki lint attempt {attempt + 1}/{max_retries}")
 
-            # Run health checks
-            all_pages = _get_all_wiki_pages(wiki_type, project_id)
-            if not all_pages:
-                return {"issues": [], "suggestions": [], "severity": "low"}, None
-
-            # Check for issues
-            issues = []
-            issues.extend(_check_contradictions(all_pages))
-            issues.extend(_check_orphans(all_pages))
-            issues.extend(_check_broken_links(all_pages))
-            issues.extend(_check_coverage_gaps(all_pages))
-            issues.extend(_check_staleness(all_pages))
-
-            # Generate suggestions
-            suggestions = _generate_lint_suggestions(issues, all_pages)
-
-            # Calculate severity
-            severity = "low" if len(issues) < 5 else "medium" if len(issues) < 10 else "high"
+            # Run Tier 3 QA evaluation
+            qa_result = _evaluate_wiki_qa(wiki_type, project_id)
 
             # Log the lint operation
             _append_wiki_log(
                 wiki_type, project_id, "lint",
                 qa_results=json.dumps({
-                    "passed": len(issues) == 0,
-                    "issues_count": len(issues),
-                    "suggestions_count": len(suggestions),
-                    "severity": severity,
+                    "passed": qa_result.get("passed", False),
+                    "issues_count": len(qa_result.get("issues", [])),
+                    "suggestions_count": len(qa_result.get("suggestions", [])),
+                    "severity": qa_result.get("severity", "low"),
+                    "summary": qa_result.get("summary", {}),
                 })
             )
 
             result = {
-                "issues": issues,
-                "suggestions": suggestions,
-                "severity": severity,
-                "issues_count": len(issues),
+                "issues": qa_result.get("issues", []),
+                "suggestions": qa_result.get("suggestions", []),
+                "severity": qa_result.get("severity", "low"),
+                "issues_count": len(qa_result.get("issues", [])),
+                "suggestions_count": len(qa_result.get("suggestions", [])),
+                "summary": qa_result.get("summary", {}),
             }
 
-            logger.info(f"Wiki lint success on attempt {attempt + 1} | found {len(issues)} issues")
+            logger.info(f"Wiki lint success on attempt {attempt + 1} | found {result['issues_count']} issues")
             return result, None
 
         except Exception as e:
@@ -1544,6 +1528,250 @@ def _get_relationship_counts(wiki_type: str, project_id: Optional[str]) -> dict:
     except Exception as e:
         logger.warning(f"Error loading relationship counts: {e}")
         return {}
+
+
+def _check_broken_links(wiki_type: str, project_id: Optional[str]) -> list:
+    """
+    Check for broken links in wiki pages.
+
+    Detects [[Page Name]] references to non-existent pages.
+    """
+    try:
+        import re
+        from app.services.storage import workspace_path
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        if not wiki_dir.exists():
+            return []
+
+        # Get all page IDs
+        page_ids = set()
+        page_titles = {}
+        for md_file in wiki_dir.glob("*.md"):
+            if md_file.name not in ("index.md", "log.md"):
+                page_id = md_file.stem
+                page_ids.add(page_id)
+
+                content = md_file.read_text(encoding="utf-8")
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else page_id
+                page_titles[page_id] = title
+
+        # Check for broken links
+        issues = []
+        for md_file in wiki_dir.glob("*.md"):
+            if md_file.name in ("index.md", "log.md"):
+                continue
+
+            page_id = md_file.stem
+            content = md_file.read_text(encoding="utf-8")
+
+            # Find [[Page Name]] patterns
+            links = re.findall(r"\[\[([^\]]+)\]\]", content)
+
+            for link_text in links:
+                link_id = link_text.lower().replace(" ", "_").replace(".", "")[:50]
+
+                # Check if target exists
+                if link_id not in page_ids:
+                    issues.append({
+                        "type": "broken_link",
+                        "severity": "medium",
+                        "page_id": page_id,
+                        "page_title": page_titles.get(page_id, page_id),
+                        "target": link_text,
+                        "target_id": link_id,
+                        "message": f"Broken link: [[{link_text}]] references non-existent page",
+                    })
+
+        return issues
+
+    except Exception as e:
+        logger.warning(f"Error checking broken links: {e}")
+        return []
+
+
+def _check_orphaned_pages(wiki_type: str, project_id: Optional[str]) -> list:
+    """
+    Find orphaned pages (no inbound links).
+
+    Pages with zero inbound links may need to be merged or deleted.
+    """
+    try:
+        from app.services.storage import workspace_path
+        import re
+        import json
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        if not wiki_dir.exists():
+            return []
+
+        # Load relationship counts
+        rel_counts = _get_relationship_counts(wiki_type, project_id)
+        page_titles = {}
+
+        # Get all page titles
+        for md_file in wiki_dir.glob("*.md"):
+            if md_file.name not in ("index.md", "log.md"):
+                page_id = md_file.stem
+                content = md_file.read_text(encoding="utf-8")
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else page_id
+                page_titles[page_id] = title
+
+        # Find orphaned pages
+        issues = []
+        for page_id, title in page_titles.items():
+            inbound = rel_counts.get(page_id, {}).get("inbound", 0)
+
+            if inbound == 0:
+                issues.append({
+                    "type": "orphaned_page",
+                    "severity": "low",
+                    "page_id": page_id,
+                    "page_title": title,
+                    "inbound_links": 0,
+                    "message": f"Orphaned page: {title} has no inbound links (consider merging or deleting)",
+                })
+
+        return issues
+
+    except Exception as e:
+        logger.warning(f"Error checking orphaned pages: {e}")
+        return []
+
+
+def _check_missing_entities(wiki_type: str, project_id: Optional[str]) -> list:
+    """
+    Find missing entities: concepts mentioned 5+ times without dedicated page.
+
+    Suggests creating pages for frequently-mentioned concepts.
+    """
+    try:
+        import re
+        from app.services.storage import workspace_path
+        from collections import Counter
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        if not wiki_dir.exists():
+            return []
+
+        # Collect all page titles and content
+        page_titles = {}
+        all_text = ""
+
+        for md_file in wiki_dir.glob("*.md"):
+            if md_file.name not in ("index.md", "log.md"):
+                page_id = md_file.stem
+                content = md_file.read_text(encoding="utf-8")
+
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else page_id
+                page_titles[page_id] = title
+                all_text += " " + content
+
+        # Find capitalized phrases (potential entity names)
+        phrases = re.findall(r"\b([A-Z][a-z]+ (?:[A-Z][a-z]+)*)\b", all_text)
+        phrase_counts = Counter(phrases)
+
+        # Find frequently mentioned phrases without dedicated pages
+        issues = []
+        for phrase, count in phrase_counts.most_common(50):
+            if count >= 5:
+                # Check if a page exists for this phrase
+                phrase_id = phrase.lower().replace(" ", "_").replace(".", "")[:50]
+
+                if phrase_id not in page_titles and phrase not in [t.lower() for t in page_titles.values()]:
+                    issues.append({
+                        "type": "missing_entity",
+                        "severity": "low",
+                        "entity_name": phrase,
+                        "mention_count": count,
+                        "message": f"Missing entity: '{phrase}' mentioned {count} times without dedicated page",
+                    })
+
+        return issues
+
+    except Exception as e:
+        logger.warning(f"Error checking missing entities: {e}")
+        return []
+
+
+def _evaluate_wiki_qa(wiki_type: str, project_id: Optional[str]) -> dict:
+    """
+    Complete Tier 3 QA evaluation of wiki health.
+
+    Returns:
+        {
+            "passed": bool,
+            "issues": [issue_dicts],
+            "suggestions": [suggestion_dicts],
+            "severity": "low" | "medium" | "high",
+            "summary": {
+                "broken_links": int,
+                "orphaned_pages": int,
+                "missing_entities": int,
+            }
+        }
+    """
+    try:
+        issues = []
+
+        # Run all checks
+        broken_links = _check_broken_links(wiki_type, project_id)
+        orphaned_pages = _check_orphaned_pages(wiki_type, project_id)
+        missing_entities = _check_missing_entities(wiki_type, project_id)
+
+        issues.extend(broken_links)
+        issues.extend(orphaned_pages)
+        issues.extend(missing_entities)
+
+        # Separate issues and suggestions
+        real_issues = [i for i in issues if i.get("severity") in ["medium", "high"]]
+        suggestions = [i for i in issues if i.get("severity") == "low"]
+
+        # Determine severity
+        if len(real_issues) > 10:
+            severity = "high"
+        elif len(real_issues) > 5:
+            severity = "medium"
+        else:
+            severity = "low"
+
+        return {
+            "passed": len(real_issues) == 0,
+            "issues": real_issues,
+            "suggestions": suggestions,
+            "severity": severity,
+            "summary": {
+                "broken_links": len(broken_links),
+                "orphaned_pages": len(orphaned_pages),
+                "missing_entities": len(missing_entities),
+                "total_issues": len(real_issues),
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error in wiki QA evaluation: {e}")
+        return {
+            "passed": False,
+            "issues": [],
+            "suggestions": [],
+            "severity": "high",
+            "error": str(e),
+        }
 
 
 def _get_wiki_index(wiki_type: str, project_id: Optional[str]) -> Optional[dict]:

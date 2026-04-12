@@ -45,42 +45,42 @@ class GuardrailPipeline:
 
         if gate_key == "gate_1_source_grounding":
             if self._contains_reference(text):
-                return "pass", "Local deterministic check: at least one source reference found."
-            return "fail", "Local deterministic check failed: no source reference found."
+                return "pass", "✓ Source grounding: Solid! References are clear."
+            return "fail", "⚠️ Source grounding: No source references found. Add citations or source markers to ground claims."
 
         if gate_key == "gate_2_hallucination_check":
             claim_markers = ("according to", "research shows", "study found", "%", "percent")
             has_claim = any(marker in lowered for marker in claim_markers)
             if has_claim and not self._contains_reference(text):
-                return "fail", "Local deterministic check failed: claim-like statements without references."
-            return "pass", "Local deterministic check: no unsupported claim patterns detected."
+                return "fail", "⚠️ Hallucination check: Claims made without supporting references. Back them up with sources."
+            return "pass", "✓ Hallucination check: No unsupported claim patterns detected."
 
         if gate_key == "gate_3_brand_compliance":
             if any(phrase in lowered for phrase in self._PROMO_PATTERNS):
-                return "fail", "Local deterministic check failed: promotional/sales language detected."
-            return "pass", "Local deterministic check: tone appears consulting-neutral."
+                return "fail", "⚠️ Brand tone: One phrase feels off-brand. Suggestion: Use consulting language instead of promotional tone."
+            return "pass", "✓ Brand tone: Consulting-neutral and on-brand. Perfect!"
 
         if gate_key == "gate_4_reference_validation":
             if self._contains_reference(text):
-                return "pass", "Local deterministic check: reference syntax present."
-            return "fail", "Local deterministic check failed: references are required but not present."
+                return "pass", "✓ Reference format: Citations are properly formatted."
+            return "fail", "⚠️ Reference format: References needed but not present. Add [1], (source:...), or URLs."
 
         if gate_key == "gate_5_plagiarism_advisory":
             if word_count < 30:
-                return "pass", "Local deterministic check: short output, low duplication risk."
+                return "pass", "✓ Plagiarism check: Short output, low duplication risk."
             lines = [ln.strip().lower() for ln in text.splitlines() if ln.strip()]
             duplicated = len(lines) != len(set(lines))
             if duplicated:
-                return "fail", "Local deterministic check failed: repeated lines suggest copy risk."
-            return "pass", "Local deterministic check: no repeated-line duplication signal."
+                return "fail", "⚠️ Plagiarism advisory: Repeated lines detected. Ensure unique, original phrasing."
+            return "pass", "✓ Plagiarism check: No repeated-line duplication signal. Looks original."
 
         if gate_key == "gate_6_style_enforcer":
             has_bullets = "- " in text or "* " in text
             has_heading = "# " in text or "## " in text
             has_long_sentence = any(len(s.split()) > 45 for s in re.split(r"[.!?]\s+", text) if s.strip())
             if (has_bullets or has_heading) and not has_long_sentence:
-                return "pass", "Local deterministic check: output follows readable structure conventions."
-            return "fail", "Local deterministic check failed: missing structure or readability constraints."
+                return "pass", "✓ Readability: Structure and formatting are clear and scannable."
+            return "fail", "⚠️ Readability: Add structure (headings, bullets) or break up long sentences for better clarity."
 
         return "fail", f"Unknown guardrail key: {gate_key}"
 

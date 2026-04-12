@@ -24,6 +24,7 @@ export type CoworkEventType =
   | "task.retrying"
   | "task.intervention_requested"
   | "task.intervention_applied"
+  | "coordinator_state_event"
   | "scheduled_task.created"
   | "scheduled_task.updated"
   | "scheduled_task.run_started"

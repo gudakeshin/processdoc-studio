@@ -37,7 +37,8 @@ def generate_strategy_options(*, instruction: str) -> dict[str, Any] | None:
         return None
     catalog = _trim_skill_catalog()
     system = (
-        "You are a senior analyst planning how ProcessDoc Studio should execute a user request. "
+        "You are a helpful digital teammate and consulting expert for ProcessDoc Studio—clear, "
+        "collaborative, and grounded in the user's goal—planning how the run should execute. "
         "The runtime has the listed skills (tools are implemented inside those skills). "
         "Return ONLY a JSON object (no markdown) with keys:\n"
         '- "problem_summary" (short string)\n'
@@ -147,19 +148,34 @@ def resolve_selected_strategy(
 
 
 def format_strategy_dossier_markdown(d: dict[str, Any]) -> str:
+    from app.services.agent_personality import AgentPersonality
+
     lines = [
         "### Approaches",
-        "",
-        str(d.get("problem_summary") or "").strip(),
+        f"Here's what I'm seeing: {str(d.get('problem_summary') or '').strip()}",
         "",
     ]
     if d.get("comparison"):
-        lines.extend(["**Comparison:**", str(d["comparison"]), ""])
-    for o in d.get("options") or []:
+        lines.extend(["**Trade-offs:**", str(d["comparison"]), ""])
+
+    options = d.get("options") or []
+    if options:
+        lines.append("**Each approach has merit:**")
+        lines.append("")
+
+    for i, o in enumerate(options, 1):
         if not isinstance(o, dict):
             continue
-        lines.append(f"- **{o.get('title')}** (`{o.get('id')}`): {str(o.get('summary') or '')[:400]}")
+        emoji = AgentPersonality.PROGRESS_MARKERS.get("phase_start", "→")
+        lines.append(f"{emoji} **{o.get('title')}** (`{o.get('id')}`): {str(o.get('summary') or '')[:400]}")
+
     rec = d.get("model_recommendation")
     if rec:
-        lines.extend(["", f"_Suggested default: `{rec}`_", ""])
+        lines.extend(
+            [
+                "",
+                f"💡 **My recommendation:** Start with `{rec}` — it balances your constraints well.",
+                "",
+            ]
+        )
     return "\n".join(lines).strip()

@@ -159,7 +159,7 @@ def _infer_output_types_for_confirmation(
     try:
         return _recommend_output_types(instruction, available_output_types)
     except Exception:
-        return [], [], {}, "Unable to infer outputs automatically. Please select output types."
+        return [], [], {}, "Unable to infer outputs automatically. Please select output types.", None
 
 
 def _build_plan_payload(
@@ -310,6 +310,7 @@ def _load_confirmed_plan(
             "decision_answers": metadata.get("decision_answers") if isinstance(metadata.get("decision_answers"), dict) else {},
             "strategy_dossier": metadata.get("strategy_dossier") if isinstance(metadata.get("strategy_dossier"), dict) else None,
             "selected_strategy": metadata.get("selected_strategy") if isinstance(metadata.get("selected_strategy"), dict) else None,
+            "deck_outline_preview": metadata.get("deck_outline_preview") if isinstance(metadata.get("deck_outline_preview"), dict) else None,
         }
     raise HTTPException(
         status_code=409,
@@ -353,7 +354,7 @@ class RecommendOutputTypesRequest(BaseModel):
 
 def _recommend_output_types(
     instruction: str, available_output_types: list[dict]
-) -> tuple[list[str], list[str], dict[str, str], str]:
+) -> tuple[list[str], list[str], dict[str, str], str, dict | None]:
     if not is_claude_enabled():
         raise HTTPException(status_code=503, detail="LLM recommendations unavailable: missing ANTHROPIC_API_KEY")
     catalog = [
@@ -368,8 +369,18 @@ def _recommend_output_types(
     system = (
         "You are an output-type recommender for process deliverables. "
         "Return only JSON with keys: template_output_types (string[]), custom_output_types (string[]), "
-        "output_type_representations (object), rationale (string). "
-        "Only choose template_output_types from the provided catalog."
+        "output_type_representations (object), rationale (string), "
+        "content_skill_hint (object|null). "
+        "Only choose template_output_types from the provided catalog.\n\n"
+        "content_skill_hint: If the instruction indicates a specific deliverable domain, "
+        "return {\"domain\": <domain_label>, \"confidence\": <0.0-1.0>} where domain_label "
+        "is one of: \"proposal_finance_transformation\", \"proposal_operations\", "
+        "\"proposal_product\", \"proposal_generic\", \"approach_note\", \"process_documentation\", "
+        "\"training\", or null if no clear domain. confidence is your certainty (0.0-1.0). "
+        "Use proposal_finance_transformation for finance, CFO, FP&A, close acceleration, "
+        "treasury, controllership, record-to-report, order-to-cash, procure-to-pay topics. "
+        "Use proposal_operations for supply chain, logistics, manufacturing, quality. "
+        "Use proposal_generic for proposals without a clear domain specialization."
     )
     deliverable_keyword_map = {
         # Maps deliverables to canonical output formats only.
@@ -389,27 +400,112 @@ def _recommend_output_types(
     lowered = (instruction or "").lower()
     desired_types: list[str] = []
 
-    # Use specific phrases/keywords to avoid over-triggering the recommendation constraints.
-    if "proposal" in lowered:
-        desired_types.extend(deliverable_keyword_map["proposal"]["types"])
-    if "approach note" in lowered or "approach" in lowered and "note" in lowered:
-        desired_types.extend(deliverable_keyword_map["approach_note"]["types"])
-    if "process flow" in lowered:
-        desired_types.extend(deliverable_keyword_map["process_flow"]["types"])
-    if "narratives" in lowered or "narrative" in lowered:
-        desired_types.extend(deliverable_keyword_map["narrative"]["types"])
-    if "raci" in lowered:
-        desired_types.extend(deliverable_keyword_map["raci"]["types"])
-    if "sop" in lowered:
-        desired_types.extend(deliverable_keyword_map["sop"]["types"])
-    if "business requirement document" in lowered or "brd" in lowered:
-        desired_types.extend(deliverable_keyword_map["brd"]["types"])
-    if "improvement report" in lowered:
-        desired_types.extend(deliverable_keyword_map["improvement_report"]["types"])
-    if "financial model" in lowered:
-        desired_types.extend(deliverable_keyword_map["financial_model"]["types"])
-    if "training deck" in lowered:
-        desired_types.extend(deliverable_keyword_map["training_deck"]["types"])
+    # ── Detect explicit output format constraints (user saying "only pptx", "just slides", etc.) ──
+    # These explicit constraints override the keyword-based recommendations.
+    explicit_output_constraints = {
+        "pptx": [
+            "only pptx",
+            "only slides",
+            "only slide",
+            "just pptx",
+            "just slides",
+            "pptx only",
+            "slides only",
+            "slide only",
+            "in pptx",
+            "in slides",
+            "in slide",
+            "presentation format",
+            "presentation only",
+            "ppt only",
+            "ppt format",
+            "powerpoint only",
+            "powerpoint format",
+            "in powerpoint",
+            "as ppt",
+            "as pptx",
+            "in ppt",
+        ],
+        "docx": [
+            "only docx",
+            "only word",
+            "only doc",
+            "just docx",
+            "just word",
+            "docx only",
+            "word only",
+            "doc only",
+            "in docx",
+            "in word",
+            "document format",
+            "document only",
+            "word format",
+            "word document only",
+            "as word",
+            "as docx",
+        ],
+        "xlsx": [
+            "only xlsx",
+            "only excel",
+            "only spreadsheet",
+            "just xlsx",
+            "just excel",
+            "xlsx only",
+            "excel only",
+            "spreadsheet only",
+            "in xlsx",
+            "in excel",
+            "spreadsheet format",
+            "excel format",
+            "as excel",
+            "as xlsx",
+        ],
+        "process_map": [
+            "only process map",
+            "only process_map",
+            "only diagram",
+            "just process map",
+            "process map only",
+            "diagram only",
+            "flowchart only",
+            "as process map",
+            "in drawio",
+        ],
+    }
+
+    explicit_formats_requested = []
+    for output_type, constraint_phrases in explicit_output_constraints.items():
+        for phrase in constraint_phrases:
+            if phrase in lowered:
+                explicit_formats_requested.append(output_type)
+                break
+
+    # If explicit output format constraints found, ONLY use those (override deliverable defaults)
+    if explicit_formats_requested:
+        desired_types = explicit_formats_requested
+    # Otherwise use keyword-based recommendations
+    else:
+        # Use specific phrases/keywords to avoid over-triggering the recommendation constraints.
+        if "proposal" in lowered:
+            desired_types.extend(deliverable_keyword_map["proposal"]["types"])
+        if "approach note" in lowered or "approach" in lowered and "note" in lowered:
+            desired_types.extend(deliverable_keyword_map["approach_note"]["types"])
+        if "process flow" in lowered:
+            desired_types.extend(deliverable_keyword_map["process_flow"]["types"])
+        if "narratives" in lowered or "narrative" in lowered:
+            desired_types.extend(deliverable_keyword_map["narrative"]["types"])
+        if "raci" in lowered:
+            desired_types.extend(deliverable_keyword_map["raci"]["types"])
+        if "sop" in lowered:
+            desired_types.extend(deliverable_keyword_map["sop"]["types"])
+        if "business requirement document" in lowered or "brd" in lowered:
+            desired_types.extend(deliverable_keyword_map["brd"]["types"])
+        if "improvement report" in lowered:
+            desired_types.extend(deliverable_keyword_map["improvement_report"]["types"])
+        if "financial model" in lowered:
+            desired_types.extend(deliverable_keyword_map["financial_model"]["types"])
+        if "training deck" in lowered:
+            desired_types.extend(deliverable_keyword_map["training_deck"]["types"])
 
     # De-dup while preserving order.
     desired_types = list(dict.fromkeys(desired_types))
@@ -473,6 +569,18 @@ def _recommend_output_types(
                 if t not in chosen:
                     chosen.append(t)
 
+    # CRITICAL: If explicit format constraints were detected, FORCE output to be only those formats
+    # This overrides any LLM recommendations that tried to add additional formats
+    if explicit_formats_requested:
+        allowed_explicit = [t for t in explicit_formats_requested if t in allowed]
+        if allowed_explicit:
+            # Remove any formats not in the explicit constraint list
+            chosen = [t for t in chosen if t in set(allowed_explicit)]
+            # Add explicit formats that should be included
+            for t in allowed_explicit:
+                if t not in chosen:
+                    chosen.append(t)
+
     normalized_prefs = {k: v for k, v in normalized_prefs.items() if k in set(chosen)}
     if "process_map" in chosen and "process_map" not in normalized_prefs:
         normalized_prefs["process_map"] = "drawio_xml"
@@ -484,7 +592,20 @@ def _recommend_output_types(
         normalized_prefs["xlsx"] = "xlsx"
     if "pdf" in chosen and "pdf" not in normalized_prefs:
         normalized_prefs["pdf"] = "pdf"
-    return chosen, out_custom, normalized_prefs, rationale
+
+    # Extract LLM-based skill classification hint (folded into same call — zero extra cost)
+    content_skill_hint = payload.get("content_skill_hint")
+    if isinstance(content_skill_hint, dict):
+        domain = str(content_skill_hint.get("domain") or "").strip()
+        confidence = float(content_skill_hint.get("confidence") or 0)
+        if domain and confidence >= 0.6:
+            content_skill_hint = {"domain": domain, "confidence": confidence}
+        else:
+            content_skill_hint = None
+    else:
+        content_skill_hint = None
+
+    return chosen, out_custom, normalized_prefs, rationale, content_skill_hint
 
 
 @router.get("", response_model=dict[str, list[RunSummary]])
@@ -571,7 +692,7 @@ def recommend_output_types(
         for item in _load_output_types()
         if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
     ]
-    template_ids, custom_output_types, output_type_representations, rationale = _recommend_output_types(
+    template_ids, custom_output_types, output_type_representations, rationale, _skill_hint = _recommend_output_types(
         body.instruction, available_output_types
     )
     return {
@@ -618,7 +739,7 @@ def start_run(
     if not body.output_types:
         body.output_types = [str(x) for x in confirmed_plan.get("template_output_types") or [] if str(x).strip()]
     if not body.output_types:
-        inferred_types, inferred_custom, inferred_reps, inferred_rationale = _infer_output_types_for_confirmation(
+        inferred_types, inferred_custom, inferred_reps, inferred_rationale, _hint = _infer_output_types_for_confirmation(
             instruction=str(body.instruction or confirmed_plan.get("instruction") or ""),
             available_output_types=available_output_types,
         )
@@ -690,6 +811,9 @@ def start_run(
     sel = confirmed_plan.get("selected_strategy")
     if isinstance(sel, dict) and sel.get("option_id"):
         plan["selected_strategy"] = sel
+    deck_outline = confirmed_plan.get("deck_outline_preview")
+    if isinstance(deck_outline, dict) and deck_outline.get("slides"):
+        plan["deck_outline_preview"] = deck_outline
     if body.conversation_id and str(body.conversation_id).strip():
         plan["conversation_id"] = str(body.conversation_id).strip()
     if body.plan_hash and str(body.plan_hash).strip():

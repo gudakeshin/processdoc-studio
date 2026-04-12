@@ -34,6 +34,10 @@ def charge_llm_usage(*, input_tokens: int, output_tokens: int) -> None:
     _remaining.set(new_val)
 
 
+def get_remaining_token_budget() -> int | None:
+    return _remaining.get()
+
+
 def extract_usage_counts(message: Any) -> tuple[int, int]:
     usage = getattr(message, "usage", None)
     if usage is None:

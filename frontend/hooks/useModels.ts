@@ -150,7 +150,15 @@ export function useModelDashboard(projectId: string, modelId: string) {
       const { data: parsed, rawText } = await parseResponseBodyLoose(res);
       const data = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
       if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Load dashboard failed"));
-      return data;
+      return {
+        kpis: Array.isArray(data.kpis) ? data.kpis : [],
+        charts: Array.isArray(data.charts) ? data.charts : [],
+        tables: Array.isArray(data.tables) ? data.tables : [],
+      } as {
+        kpis: Array<{ id: string; label: string; value: string | number }>;
+        charts: Array<{ id: string; title: string; labels: string[]; datasets: Array<{ label: string; data: number[] }> }>;
+        tables: Array<{ id: string; title: string; columns: string[]; rows: Array<Array<string | number | boolean>> }>;
+      };
     },
   });
 }

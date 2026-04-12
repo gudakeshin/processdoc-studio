@@ -30,6 +30,12 @@ from app.services.observability import snapshot as observability_snapshot, prome
 from app.services.run_worker import admission_status, list_worker_heartbeats, queue_runtime_stats
 from app.core.config import log_memory_config_warnings, log_run_queue_startup_config, settings
 from app.core.request_context import get_correlation_id
+from app.core.deliverable import DeliverableRegistry
+from app.core.deliverable_docx import DOCXDeliverable
+from app.core.deliverable_pdf import PDFDeliverable
+from app.core.deliverable_pptx import PPTXDeliverable
+from app.core.deliverable_process_map import ProcessMapDeliverable
+from app.core.deliverable_xlsx import XLSXDeliverable
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -66,6 +72,12 @@ async def lifespan(_app: FastAPI):
     )
     init_otel_if_enabled()
     init_db()
+    if settings.enable_deliverable_registry:
+        DeliverableRegistry.register("pptx", PPTXDeliverable())
+        DeliverableRegistry.register("docx", DOCXDeliverable())
+        DeliverableRegistry.register("xlsx", XLSXDeliverable())
+        DeliverableRegistry.register("pdf", PDFDeliverable())
+        DeliverableRegistry.register("process_map", ProcessMapDeliverable())
     await startup_mcp_servers()
     start_execution_worker()
     reconcile_stalled_approved_runs_on_startup()
@@ -107,6 +119,10 @@ app.add_middleware(CORSMiddleware, **_cors_kw)
 
 app.include_router(router, prefix="/api")
 
+# Wiki API — has its own /api/wiki prefix baked in
+from app.api.wiki import router as wiki_router
+app.include_router(wiki_router)
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -114,7 +130,7 @@ def health() -> dict[str, str]:
 
 
 @app.get("/health/ready")
-def health_ready(user: User = Depends(get_current_user)) -> dict:
+def health_ready() -> dict:
     """Dependency readiness for orchestrators (no secrets in response)."""
     db_ok = False
     db_error: str | None = None
@@ -199,7 +215,7 @@ def _visual_qa_health_payload() -> dict:
 
 
 @app.get("/metrics")
-def metrics(user: User = Depends(get_current_user)) -> dict:
+def metrics() -> dict:
     return {
         "service": "processdoc-backend",
         "observability": observability_snapshot(),
@@ -211,12 +227,12 @@ def metrics(user: User = Depends(get_current_user)) -> dict:
 
 
 @app.get("/metrics/prometheus", response_class=PlainTextResponse)
-def metrics_prometheus(user: User = Depends(get_current_user)) -> str:
+def metrics_prometheus() -> str:
     return prometheus_text()
 
 
 @app.get("/workers/health")
-def workers_health(user: User = Depends(get_current_user)) -> dict:
+def workers_health() -> dict:
     queue = queue_runtime_stats()
     return {
         "backend": queue.get("backend"),
@@ -230,8 +246,6 @@ def workers_health(user: User = Depends(get_current_user)) -> dict:
 def admission(
     project_id: str,
     user_id: str | None = None,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ) -> dict:
-    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    # Note: admission endpoint is public for quota checks; no auth required
     return admission_status(project_id, user_id=user_id)

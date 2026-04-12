@@ -1,0 +1,10 @@
+{
+  "id": "model_bd83da67",
+  "name": "Sync Model",
+  "description": "Graph loop",
+  "assumptions": {},
+  "created_at": "2026-04-10T18:51:06.226562+00:00",
+  "updated_at": "2026-04-10T18:51:06.226565+00:00",
+  "created_by": "sync@example.com",
+  "status": "draft"
+}

@@ -70,11 +70,21 @@ class Settings(BaseSettings):
     anthropic_claude_model: str = "claude-haiku-4-5"
     anthropic_temperature: float = 0.2
     anthropic_max_tokens: int = 4096
-    # 0 = no aggregate cap per run (only per-request max_tokens apply).
-    anthropic_max_tokens_per_run: int = 0
+    # Per-run token budget: set to 0 to disable (was 0 = disabled, now 50000 = ~$2-3 worth)
+    anthropic_max_tokens_per_run: int = 50000
     coordinator_llm_planning_enabled: bool = True
     anthropic_thinking_budget_tokens: int = 8000
     anthropic_coordinator_plan_max_tokens: int = 8192
+    # Token budget & compression settings
+    token_estimate_ratio: float = 3.5  # empirical: chars per token
+    token_budget_safety_margin_tokens: int = 500  # reserve tokens for estimation errors
+    prompt_compression_enabled: bool = True
+    prompt_compression_strategy: str = "aggressive"  # "conservative" or "aggressive"
+    prompt_compression_log_verbose: bool = True
+    # Per-call budget limits (in tokens)
+    subagent_max_prompt_tokens: int = 6000  # max prompt tokens for subagent calls
+    coordinator_max_prompt_tokens: int = 12000  # max prompt tokens for coordinator planning
+    proposal_max_prompt_tokens: int = 8000  # max prompt tokens for proposal generation
     # Cowork-style context: conversation digest + planner retrieval excerpt caps.
     conversation_digest_max_chars: int = 12000
     conversation_digest_message_limit: int = 45
@@ -207,6 +217,10 @@ class Settings(BaseSettings):
     quality_contracts_dir: str = ""
     deliverable_quality_enabled: bool = True
     deliverable_quality_max_revision_rounds: int = 2
+    # Framework-level deliverable architecture rollout flags.
+    enable_deliverable_registry: bool = True
+    enable_unified_quality_framework: bool = True
+    enable_content_enrichment_engine: bool = True
 
     upload_max_bytes: int = 50 * 1024 * 1024
 
@@ -234,12 +248,17 @@ class Settings(BaseSettings):
         "cache_allow_memory_fallback",
         "langfuse_enabled",
         "deliverable_quality_enabled",
+        "enable_deliverable_registry",
+        "enable_unified_quality_framework",
+        "enable_content_enrichment_engine",
         "structured_logging_enabled",
         "run_queue_embed_redis_consumer",
         "run_queue_startup_reconcile",
         "swarm_git_worktrees_enabled",
         "swarm_execute_custom_tasks_enabled",
         "subagent_narrative_thinking_enabled",
+        "prompt_compression_enabled",
+        "prompt_compression_log_verbose",
         mode="before",
     )
     @classmethod

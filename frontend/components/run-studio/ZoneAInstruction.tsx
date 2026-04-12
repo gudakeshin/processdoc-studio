@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import type { ChatMessage } from "@/hooks/useRunStudio";
-import { showGuidedDecisionsSection } from "@/lib/instructionChatCowork";
+import { CoordinatorWikiContext } from "@/components/wiki/CoordinatorWikiContext";
 
 type DecisionPrompt = {
   id: string;
@@ -25,11 +25,11 @@ function AssistantAvatar() {
   return (
     <div
       className="mb-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-[var(--primary-800)]"
-      aria-label="Digital Teammate assistant"
+      aria-label="Sheldon — your creative partner"
       role="img"
     >
       <span className="text-2xs font-bold text-white" aria-hidden>
-        DT
+        S
       </span>
     </div>
   );
@@ -176,8 +176,10 @@ export function ZoneAInstruction({
   thinkingTrace = [],
   thinkingExpanded = false,
   onToggleThinkingTrace = () => {},
+  projectId,
   showGuidedDecisions = true,
 }: {
+  projectId?: string;
   recommendationNote: string | null;
   chatMessages: ChatMessage[];
   chatInput: string;
@@ -198,7 +200,14 @@ export function ZoneAInstruction({
   showGuidedDecisions?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [draftAnswers, setDraftAnswers] = useState<Record<string, string[]>>({});
+
+  // Derive run objective from the latest user message for wiki context
+  const runObjective = useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      if (chatMessages[i].role === "user") return chatMessages[i].content;
+    }
+    return "";
+  }, [chatMessages]);
 
   // Auto-scroll to bottom when messages change or thinking indicator appears
   useEffect(() => {
@@ -213,35 +222,14 @@ export function ZoneAInstruction({
     }
   }
 
-  function toggleOption(prompt: DecisionPrompt, value: string) {
-    setDraftAnswers((prev) => {
-      const current = prev[prompt.id] ?? prompt.selected_values ?? [];
-      if (prompt.mode === "single_select") {
-        return { ...prev, [prompt.id]: [value] };
-      }
-      const has = current.includes(value);
-      const next = has ? current.filter((v) => v !== value) : [...current, value];
-      return { ...prev, [prompt.id]: next };
-    });
-  }
-
-  async function submitDecisions() {
-    const payload: Record<string, string[]> = {};
-    for (const prompt of decisionPrompts) {
-      const chosen = draftAnswers[prompt.id] ?? prompt.selected_values ?? [];
-      if (chosen.length) payload[prompt.id] = chosen;
-    }
-    if (Object.keys(payload).length === 0) return;
-    await onSubmitDecisions(payload);
-  }
 
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-[var(--surface-border)] bg-white shadow-sm">
       {/* ── Header ── */}
       <div className="border-b border-[var(--surface-border)] px-4 py-3">
-        <h3 className="text-sm font-semibold text-[var(--text-default)]">Instruction Chat</h3>
+        <h3 className="text-sm font-semibold text-[var(--text-default)]">Creative Studio</h3>
         <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-          Describe what to generate — your Digital Teammate will plan deliverables and ask clarifying questions.
+          Chat with Sheldon — brainstorm ideas, explore approaches, and build deliverables together.
         </p>
       </div>
 
@@ -252,7 +240,7 @@ export function ZoneAInstruction({
       >
         {chatMessages.length === 0 && !chatBusy ? (
           <p className="py-8 text-center text-xs text-[var(--text-muted)]">
-            No conversation yet. Send a message to start planning.
+            Start a conversation — tell Sheldon about your project.
           </p>
         ) : (
           chatMessages.map((m, idx) => (
@@ -324,55 +312,6 @@ export function ZoneAInstruction({
           </div>
         ) : null}
 
-        {showGuidedDecisionsSection(showGuidedDecisions, decisionPrompts.length) ? (
-          <div className="flex items-end justify-start gap-2">
-            <AssistantAvatar />
-            <div className="max-w-[82%] rounded-lg rounded-bl-sm border border-[var(--surface-border)] bg-[var(--surface-muted)] px-3 py-2">
-              <p className="text-xs font-semibold text-[var(--text-default)]">
-                Guided decisions ({decisionPrompts.length})
-              </p>
-              <div className="mt-1.5 space-y-1.5">
-                {decisionPrompts.map((prompt) => {
-                  const selected = draftAnswers[prompt.id] ?? prompt.selected_values ?? [];
-                  const isUnresolved = unresolvedPromptIds.includes(prompt.id);
-                  return (
-                    <div
-                      key={prompt.id}
-                      className={`rounded border p-1.5 ${isUnresolved ? "border-[color:color-mix(in_srgb,var(--warning)_32%,white)] bg-[var(--warning-light)]" : "border-[var(--surface-border)] bg-white"}`}
-                    >
-                      <p className="text-2xs font-medium text-[var(--text-default)]">{prompt.label}</p>
-                      <ul className="mt-1 list-disc space-y-1 pl-4">
-                        {prompt.options.map((opt) => {
-                          const active = selected.includes(opt.value);
-                          return (
-                            <li key={`${prompt.id}-${opt.value}`}>
-                              <button
-                                type="button"
-                                onClick={() => toggleOption(prompt, opt.value)}
-                                disabled={decisionBusy}
-                                className={`text-left text-2xs underline ${
-                                  active ? "font-semibold text-[var(--accent-blue)]" : "text-[var(--text-default)]"
-                                }`}
-                              >
-                                {opt.label}
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="mt-2">
-                <Button type="button" onClick={() => void submitDecisions()} disabled={decisionBusy} className="text-xs">
-                  {decisionBusy ? "Updating..." : "Apply selected decisions"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
         {/* ── Thinking indicator ── */}
         {chatBusy && (
           <div className="flex items-end gap-2 justify-start">
@@ -429,6 +368,23 @@ export function ZoneAInstruction({
         ) : null}
       </div>
 
+      {/* ── Wiki Context (Option D) ── */}
+      {projectId && runObjective.trim() && (
+        <div className="border-t border-[var(--surface-border)] px-4 py-3">
+          <details className="group">
+            <summary className="cursor-pointer text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-default)]">
+              Relevant Wiki Context
+            </summary>
+            <div className="mt-2 max-h-[200px] overflow-y-auto">
+              <CoordinatorWikiContext
+                projectId={projectId}
+                runObjective={runObjective}
+              />
+            </div>
+          </details>
+        </div>
+      )}
+
       {/* ── Input area ── */}
       <div className="border-t border-[var(--surface-border)] px-4 py-3">
         <div className="flex items-end gap-2">
@@ -437,7 +393,7 @@ export function ZoneAInstruction({
             value={chatInput}
             onChange={(e) => setChatInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Describe what to generate… (Enter to send · Shift+Enter for newline)"
+            placeholder="Chat with Sheldon… (Enter to send · Shift+Enter for newline)"
             disabled={chatBusy}
             className="flex-1 resize-none text-xs"
           />
@@ -452,7 +408,7 @@ export function ZoneAInstruction({
         </div>
         <div className="mt-1.5 flex items-center justify-between">
           <p className="text-2xs text-[var(--text-muted)]">
-            Deliverables are planned automatically when you approve.
+            Say &quot;create&quot; or &quot;build&quot; when you&apos;re ready to generate deliverables.
           </p>
           {conversationId && (
             <p className="text-2xs text-[var(--text-muted)]">Conv: {conversationId.slice(-8)}</p>

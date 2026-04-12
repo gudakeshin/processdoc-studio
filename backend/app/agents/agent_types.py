@@ -26,8 +26,38 @@ class AgentContext:
     plan_payload: dict[str, Any]
     prior_artifacts_excerpt: str = ""
     conversation_digest: str = ""
+    enrichment: Any | None = None
+    branding: Any | None = None
+    deliverable_metadata: Any | None = None
     emit_event: Callable[[str, dict[str, Any]], None] | None = None
     swarm_teammate_id: str | None = None
+
+    def get_intent_for_narrative(self) -> str:
+        intent = getattr(self.enrichment, "user_intent", None)
+        return str(getattr(intent, "value", intent or "general"))
+
+    def get_audience_hints(self) -> str:
+        audience = str(getattr(self.enrichment, "audience_type", "general") or "general")
+        if audience == "executive":
+            return "Your audience is senior executives prioritizing strategic impact and ROI."
+        if audience == "operational":
+            return "Your audience is operations teams prioritizing clarity, roles, and execution details."
+        return "Your audience is mixed; balance strategic framing and practical details."
+
+    def get_risk_focus(self) -> str:
+        rp = getattr(self.enrichment, "risk_profile", None)
+        risks = getattr(rp, "risks", []) if rp is not None else []
+        if isinstance(risks, list) and risks:
+            names = [str((r or {}).get("name") or r) for r in risks[:3]]
+            return "Key risks to address: " + ", ".join(n for n in names if n)
+        return ""
+
+    def get_value_emphasis(self) -> str:
+        drivers = getattr(self.enrichment, "value_drivers", [])
+        if isinstance(drivers, list) and drivers:
+            names = [str((d or {}).get("name") or d) for d in drivers[:3]]
+            return "Value drivers to emphasize: " + ", ".join(n for n in names if n)
+        return ""
 
 
 @dataclass
@@ -77,6 +107,11 @@ def build_agent_context(state: ProcessDocState, output_type: str) -> AgentContex
         plan_payload=plan_payload,
         prior_artifacts_excerpt=prior_artifacts_excerpt,
         conversation_digest=str(state.get("conversation_digest") or ""),
+        enrichment=state.get("content_enrichment"),
+        branding=state.get("branding_context"),
+        deliverable_metadata=state.get("deliverable_metadata_by_output_type", {}).get(output_type)
+        if isinstance(state.get("deliverable_metadata_by_output_type"), dict)
+        else None,
         emit_event=state.get("_emit_run_event"),
         swarm_teammate_id=swarm_teammate_id,
     )

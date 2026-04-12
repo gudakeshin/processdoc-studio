@@ -1,0 +1,43 @@
+{
+  "branding_name": "deloitte_default",
+  "organization": "Deloitte",
+  "version": "1.0",
+  "colors": {
+    "primary": "#86BC25",
+    "accent": "#1565C0",
+    "warning": "#F57C00",
+    "dark": "#1A1A1A",
+    "mid_dark": "#2D2D2D",
+    "mid": "#3D3D3D",
+    "dark_green": "#5A8A00",
+    "gray": "#757B7B",
+    "light_gray": "#AAAAAA",
+    "white": "#FFFFFF",
+    "light_green": "#EBF5D3",
+    "e8": "#E8E8E8"
+  },
+  "fonts": {
+    "heading": "Calibri",
+    "body": "Calibri",
+    "mono": "Courier New"
+  },
+  "company_name": "Deloitte.",
+  "favicon": null,
+  "logos": {},
+  "pptx_theme": {
+    "title_slide_bg": "green",
+    "accent_color": "dark_green"
+  },
+  "docx_styles": {
+    "heading_font": "Calibri",
+    "body_font": "Calibri"
+  },
+  "pdf_styles": {
+    "header_bg": "primary",
+    "text_color": "dark"
+  },
+  "xlsx_styles": {
+    "header_bg": "primary",
+    "header_text": "white"
+  }
+}

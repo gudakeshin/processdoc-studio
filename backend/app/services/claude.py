@@ -122,6 +122,42 @@ def claude_generate(
     if not is_claude_enabled():
         raise RuntimeError("Claude disabled: missing ANTHROPIC_API_KEY")
 
+    # Pre-call budget checking and compression
+    if getattr(settings, "prompt_compression_enabled", True):
+        from app.services.token_budgets import TokenBudgetChecker, TokenBudgetExceeded
+
+        needed_output = max_tokens or settings.anthropic_max_tokens
+        fits, budget_info = TokenBudgetChecker.check_budget(system, user, needed_output)
+
+        if not fits and budget_info.get("remaining_budget", 0) > 1000:
+            # Compress to fit remaining budget
+            target_tokens = max(
+                500,
+                budget_info["remaining_budget"] - 200,  # safety margin
+            )
+            system, user, compression_info = TokenBudgetChecker.compress_prompt_for_budget(
+                system=system,
+                user=user,
+                target_tokens=target_tokens,
+                compression_strategy=getattr(settings, "prompt_compression_strategy", "aggressive"),
+            )
+            if getattr(settings, "prompt_compression_log_verbose", True):
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    f"Compressed prompt: {compression_info['original_tokens']} → "
+                    f"{compression_info['compressed_tokens']} tokens "
+                    f"({compression_info['compression_ratio']:.1%}), "
+                    f"tiers: {', '.join(compression_info['tiers_applied'])}"
+                )
+        elif not fits:
+            # Budget exceeded and can't compress enough
+            raise TokenBudgetExceeded(
+                f"Prompt requires {budget_info['prompt_tokens']} tokens but only "
+                f"{budget_info['remaining_budget']} remaining (output needs {needed_output})"
+            )
+
     # Lazy import so unit tests can run without the dependency installed/configured.
     from anthropic import Anthropic  # type: ignore
 

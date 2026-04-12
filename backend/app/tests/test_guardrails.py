@@ -25,7 +25,8 @@ def test_local_mode_fails_when_references_missing(monkeypatch) -> None:
     assert result["status"] == "fail"
     assert result["failed_gate"] in {"gate_1_source_grounding", "gate_2_hallucination_check"}
     first_event = result["guardrail_events"][0]
-    assert "Local deterministic check" in first_event["reason"]
+    # Check for updated personality-formatted message
+    assert "Source grounding" in first_event["reason"] or "Hallucination check" in first_event["reason"]
 
 
 def test_local_mode_passes_and_respects_gate7(monkeypatch) -> None:

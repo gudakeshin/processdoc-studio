@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import asyncio
 import logging
@@ -46,12 +47,15 @@ from app.services.run_todo_snapshot import (
     todo_bulk_set,
     todo_set_status,
 )
-from app.services.deliverable_quality import run_deliverable_quality_loop
 from app.services.proposal_policy import derive_proposal_skill_targets
 from app.services.hooks import run_hooks_sync
 from app.services.run_events import build_event_payload
 from app.services.observability import increment
 from app.schemas.llm_contracts import CoordinatorPlanResponse
+from app.services.branding_service import BrandingService
+from app.services.content_enrichment import ContentEnrichmentEngine
+from app.core.deliverable import DeliverableRegistry
+from app.core.quality_framework import UnifiedQualityFramework
 
 _OUTPUT_AGENTS: dict[str, object] = {
     "process_map": run_drawio_agent,
@@ -364,6 +368,8 @@ class Coordinator:
         self.qa_loop = QAAgentLoop()
         self.guardrails = GuardrailPipeline()
         self.dpdp = DPDPService()
+        self.enrichment_engine = ContentEnrichmentEngine()
+        self.quality_framework = UnifiedQualityFramework()
         self.skill_registry = self._load_skill_registry()
         self.output_requirements = self._load_output_requirements()
 
@@ -505,10 +511,21 @@ class Coordinator:
             # Quality remediation must flow into *generation context*.
             # Many sub-agents (including proposal DOCX) only consume `assembled_context`,
             # so updating `user_instruction`/`raw_text` alone may not change outputs.
+            # PREPEND remediation (not append) so it's never truncated by the 12K cap
+            # and the model sees it first — the tail of assembled_context is expendable
+            # context, but remediation instructions are critical for convergence.
             ac = str(state.get("assembled_context") or "")
-            feedback_block = f"\n\n[Quality Remediation]\n{state['qa_remediation_notes']}".strip()
+
+            # Format remediation with personality for collaborative feedback
+            from app.services.agent_personality import format_remediation_with_personality
+            action_items = remediation_texts
+            feedback_block = format_remediation_with_personality(
+                issues=[],  # Issues summary is in action_items
+                action_items=action_items
+            ) + "\n\n"
+
             if ac.strip():
-                state["assembled_context"] = (ac + feedback_block)[:12000]
+                state["assembled_context"] = (feedback_block + ac)[:12000]
             else:
                 state["assembled_context"] = feedback_block[:12000]
 
@@ -519,6 +536,57 @@ class Coordinator:
             fn = _OUTPUT_AGENTS.get(output_type)
             if not fn:
                 continue
+
+            # ── PPTX targeted repair: use existing repair mode infrastructure ──
+            # Instead of regenerating all slides from scratch, inject prior slides
+            # and remediation actions as visual_feedback so the agent only fixes
+            # the slides that failed QA (same mechanism as Visual QA repair).
+            if out_key == "pptx_slides" and state.get("pptx_slides") is not None:
+                prior_slides = state.get("pptx_slides")
+                # Parse prior slides if stored as string
+                if isinstance(prior_slides, str):
+                    try:
+                        parsed = json.loads(prior_slides)
+                        if isinstance(parsed, dict) and isinstance(parsed.get("slides"), list):
+                            prior_slides = parsed["slides"]
+                        elif isinstance(parsed, list):
+                            prior_slides = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        prior_slides = None
+
+                instruction = remediation_instructions.get(out_key, {})
+                actions = instruction.get("actions", []) if isinstance(instruction, dict) else []
+
+                if isinstance(prior_slides, list) and prior_slides and actions:
+                    # Build visual feedback entries targeting slides with issues
+                    visual_feedback: list[dict] = []
+                    for action_text in actions:
+                        action_str = str(action_text).strip()
+                        if not action_str:
+                            continue
+                        # Try to extract slide index from action text (e.g., "Slide 3 (...)")
+                        slide_match = re.search(r"Slide\s+(\d+)", action_str, re.IGNORECASE)
+                        if slide_match:
+                            visual_feedback.append({
+                                "slide_index": int(slide_match.group(1)),
+                                "instruction": action_str,
+                            })
+                        else:
+                            # Section-level action: target all slides as candidates
+                            # The agent will determine which slides need updates
+                            visual_feedback.append({
+                                "slide_index": 0,  # 0 = global instruction
+                                "instruction": action_str,
+                            })
+
+                    # Inject into plan_payload so the PPTX agent enters repair mode
+                    pp = state.get("plan_payload")
+                    if not isinstance(pp, dict):
+                        pp = {}
+                        state["plan_payload"] = pp
+                    pp["prior_pptx_slides"] = prior_slides
+                    pp["pptx_visual_feedback"] = visual_feedback
+
             ctx = build_agent_context(state, output_type)
             merge_agent_output(state, fn(ctx))  # type: ignore[arg-type]
 
@@ -543,6 +611,126 @@ class Coordinator:
             import json as _json
             outputs["pptx_slides"] = _json.dumps(state.get("pptx_slides") or [])
         return outputs
+
+    def _initialize_framework_context(self, state: ProcessDocState, wanted: list[str]) -> None:
+        if not (
+            settings.enable_deliverable_registry
+            or settings.enable_content_enrichment_engine
+            or settings.enable_unified_quality_framework
+        ):
+            return
+        db = SessionLocal()
+        try:
+            branding = BrandingService(db).get_branding_for_run(
+                project_id=state.get("project_id"),
+                skill_card=state.get("skill_card") if isinstance(state.get("skill_card"), dict) else None,
+                run_config=state.get("run_config") if isinstance(state.get("run_config"), dict) else None,
+            )
+            state["branding_context"] = branding
+        finally:
+            db.close()
+        if settings.enable_content_enrichment_engine:
+            enrichment = self.enrichment_engine.enrich(
+                user_instruction=str(state.get("user_instruction") or ""),
+                process_model=state.get("process_model") if isinstance(state.get("process_model"), dict) else {},
+                prior_artifacts={
+                    "narrative": state.get("narrative_md"),
+                    "docx": state.get("docx_markdown"),
+                    "pdf": state.get("pdf_markdown"),
+                },
+            )
+            state["content_enrichment"] = enrichment
+        if settings.enable_deliverable_registry:
+            by_output: dict[str, Any] = {}
+            for output_type in wanted:
+                try:
+                    by_output[output_type] = DeliverableRegistry.get(output_type).get_metadata()
+                except Exception:
+                    continue
+            state["deliverable_metadata_by_output_type"] = by_output
+
+    def _run_unified_quality_framework(
+        self,
+        state: ProcessDocState,
+        outputs: dict[str, str],
+        wanted: list[str],
+        *,
+        apply_remediation: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        if not settings.enable_unified_quality_framework:
+            return {}, outputs
+        reports: dict[str, Any] = {}
+        key_map = {
+            "docx_markdown": "docx",
+            "xlsx_markdown": "xlsx",
+            "pdf_markdown": "pdf",
+            "pptx_slides": "pptx",
+        }
+        for output_key, text in outputs.items():
+            output_type = key_map.get(output_key)
+            if not output_type or output_type not in wanted:
+                continue
+            metadata: dict[str, Any] = {}
+            try:
+                from app.services.storage import workspace_path
+
+                project_id = str(state.get("project_id") or "").strip()
+                run_id = str(state.get("run_id") or "").strip()
+                if project_id and run_id:
+                    run_dir = workspace_path(project_id) / "runs" / run_id
+                    deliverable = DeliverableRegistry.get(output_type)
+                    meta = deliverable.get_metadata()
+                    artifact_name = "drawio.xml" if output_type == "process_map" else f"output{meta.file_extension}"
+                    artifact_path = run_dir / artifact_name
+                    if artifact_path.exists():
+                        metadata = deliverable.extract_quality_signals(artifact_path)
+            except Exception:
+                metadata = {}
+            reports[output_type] = self.quality_framework.evaluate_deliverable(
+                output_type=output_type,
+                text=str(text or ""),
+                metadata=metadata,
+                context={"branding": state.get("branding_context"), "enrichment": state.get("content_enrichment")},
+            )
+        if not apply_remediation:
+            return reports, outputs
+
+        remediation: dict[str, Any] = {}
+        output_key_by_type = {
+            "docx": "docx_markdown",
+            "xlsx": "xlsx_markdown",
+            "pdf": "pdf_markdown",
+            "pptx": "pptx_slides",
+        }
+        for output_type, report in reports.items():
+            if bool(report.get("passed", False)):
+                continue
+            actions: list[str] = []
+            dims = report.get("dimensions")
+            if isinstance(dims, dict):
+                for dim in dims.values():
+                    if not isinstance(dim, dict):
+                        continue
+                    hint = str(dim.get("remediation_hint") or "").strip()
+                    if hint:
+                        actions.append(hint)
+                    for issue in dim.get("issues") or []:
+                        issue_text = str(issue).strip()
+                        if issue_text:
+                            actions.append(issue_text)
+            if actions:
+                remediation[output_key_by_type[output_type]] = {
+                    "actions": list(dict.fromkeys(actions))[:8],
+                    "reason": f"Unified quality score below threshold for {output_type}.",
+                }
+
+        if remediation:
+            outputs = self._apply_qa_remediation(state, wanted, remediation)
+            # Re-score after remediation so state reflects authoritative final result.
+            reports, _ = self._run_unified_quality_framework(
+                state, outputs, wanted, apply_remediation=False
+            )
+        return reports, outputs
 
     @staticmethod
     def _apply_worker_patch(state: ProcessDocState, patch: AgentOutput | dict[str, Any]) -> None:
@@ -675,12 +863,18 @@ class Coordinator:
 
         # When a run_contract exists, worker execution order follows contract nodes; planning still informs rationale.
         system = (
-            "You are the execution planner for ProcessDoc Studio. "
+            "You are a helpful digital teammate and consulting expert for ProcessDoc Studio. "
+            "Sound like a trusted colleague: warm, clear, and collaborative. "
+            "Ground recommendations in the user's goal—explain briefly why the execution order "
+            "reduces rework and serves their outcome (no generic filler).\n"
             "Given the user instruction, extracted process model, skill registry summary, "
             "and the list of allowed output types for this run, produce a JSON object ONLY (no markdown) "
             'with keys: "rationale" (short string), "ordered_output_types" (array of strings), '
             '"per_output_notes" (optional object mapping output type id to a short note), '
             '"execution_milestones" (optional array of {"output_type": string, "label": string}, max 12). '
+            "Voice for user-visible fields: rationale reads like a concise note from a teammate; "
+            "execution_milestones labels are short, action-oriented, and user-friendly; "
+            "per_output_notes flag skill/intent mismatches or dependencies in plain language.\n"
             "Rules:\n"
             "- Every element of ordered_output_types must appear in allowed_output_types.\n"
             "- Include every allowed type exactly once in an order that minimises rework "
@@ -913,10 +1107,16 @@ class Coordinator:
                 sm.mark_task_failed(task_id, error=err)
                 failed_tasks.append((task_id, err))
                 _LOG.error(f"Task {task_id} failed: {err}")
+                # Emit updated todo snapshot after task failure
+                if emit_event:
+                    emit_run_todo_snapshot(emit_event, sm.as_todo_snapshot())
             else:
                 sm.mark_task_done(task_id, emit_event=emit_event)
                 all_updates.update(update)
                 _LOG.info(f"Task {task_id} completed")
+                # Emit updated todo snapshot after task completion
+                if emit_event:
+                    emit_run_todo_snapshot(emit_event, sm.as_todo_snapshot())
 
             if emit_event:
                 emit_event("task_execution_result", {
@@ -950,16 +1150,10 @@ class Coordinator:
         # Extract outputs from state
         outputs = self._outputs_from_state(state, wanted)
 
-        # Deliverable quality check
-        dq_report, outputs = run_deliverable_quality_loop(
-            state=state,
-            wanted=wanted,
-            outputs=outputs,
-            apply_remediation=self._apply_qa_remediation,
-            emit_event=emit_event,
-            project_id=str(project_id) if project_id else None,
-        )
-        state["deliverable_quality_report"] = dq_report
+        # Unified framework is now the authoritative quality gate.
+        unified_reports, outputs = self._run_unified_quality_framework(state, outputs, wanted)
+        state["deliverable_quality_report"] = None
+        state["unified_quality_reports"] = unified_reports
 
         # QA loop
         qa_threshold = float(state.get("qa_threshold", 0.8))
@@ -1263,6 +1457,7 @@ class Coordinator:
             "used_llm_plan": execution_plan.used_llm_plan,
             "fallback_reason": execution_plan.fallback_reason,
         }
+        self._initialize_framework_context(state, wanted)
 
         _coordinator_poll_abort()
 
@@ -1388,6 +1583,10 @@ class Coordinator:
         )
 
         with _coordinator_abort_scope(abort_check):
+            def _emit(event_type: str, payload: dict[str, Any]) -> None:
+                if emit_event:
+                    emit_event(event_type, payload)
+
             run_id = str(state.get("run_id") or "")
             project_id = state.get("project_id")
             wanted = state.get("requested_outputs") or []
@@ -1406,7 +1605,7 @@ class Coordinator:
                     if sm.current_state == "init":
                         # Placeholder: In full implementation, transition to planning
                         sm.transition_to("planning")
-                        emit_event("coordinator_event_loop", {"state": "init", "message": "Starting event loop"})
+                        _emit("coordinator_event_loop", {"state": "init", "message": "Starting event loop"})
 
                     elif sm.current_state == "planning":
                         # Run setup phase: context, planning, skill selection
@@ -1418,6 +1617,9 @@ class Coordinator:
                                 abort_check=abort_check,
                             )
                             _LOG.info(f"Setup phase complete: {len(sm.task_board)} tasks created")
+                            # Emit initial todo snapshot after task board is populated
+                            if emit_event:
+                                emit_run_todo_snapshot(emit_event, sm.as_todo_snapshot())
                             sm.transition_to("task_assignment")
                         except Exception as e:
                             _LOG.error(f"Setup phase failed: {e}")
@@ -1495,8 +1697,7 @@ class Coordinator:
                             raise
 
                     # Emit state for SSE
-                    if emit_event:
-                        emit_event("coordinator_state_event", sm.get_task_summary())
+                    _emit("coordinator_state_event", sm.get_task_summary())
 
                 _LOG.info(f"Coordinator event loop completed: {sm}")
 
@@ -1537,6 +1738,11 @@ class Coordinator:
         # Otherwise, use traditional linear execution pipeline (fallback for stability)
         _LOG.warning("⚠️⚠️⚠️ [AGENTIC-LOOP-DISABLED] AGENTIC LOOP DISABLED - USING OLD THREADPOOL PATH ⚠️⚠️⚠️")
         with _coordinator_abort_scope(abort_check):
+            state["framework_rollout_flags"] = {
+                "enable_deliverable_registry": bool(settings.enable_deliverable_registry),
+                "enable_unified_quality_framework": bool(settings.enable_unified_quality_framework),
+                "enable_content_enrichment_engine": bool(settings.enable_content_enrichment_engine),
+            }
             # region agent log
             _session_debug_log(
                 run_id=str(state.get("run_id") or ""),
@@ -1775,6 +1981,7 @@ class Coordinator:
                 "used_llm_plan": execution_plan.used_llm_plan,
                 "fallback_reason": execution_plan.fallback_reason,
             }
+            self._initialize_framework_context(state, wanted)
             _coordinator_poll_abort()
             milestone_labels = _milestone_labels_from_plan(execution_plan, wanted)
             run_todos = build_run_todo_rows(wanted, milestone_labels=milestone_labels)
@@ -2090,15 +2297,9 @@ class Coordinator:
                 )
 
             outputs = self._outputs_from_state(state, wanted)
-            dq_report, outputs = run_deliverable_quality_loop(
-                state=state,
-                wanted=wanted,
-                outputs=outputs,
-                apply_remediation=self._apply_qa_remediation,
-                emit_event=emit_event,
-                project_id=str(project_id) if project_id else None,
-            )
-            state["deliverable_quality_report"] = dq_report
+            unified_reports, outputs = self._run_unified_quality_framework(state, outputs, wanted)
+            state["deliverable_quality_report"] = None
+            state["unified_quality_reports"] = unified_reports
             qa_threshold = float(state.get("qa_threshold", 0.8))
             max_qa_loops = max(1, min(5, int(state.get("max_qa_loops", 2) or 2)))
             todo_set_status(run_todos, "qa", "running")

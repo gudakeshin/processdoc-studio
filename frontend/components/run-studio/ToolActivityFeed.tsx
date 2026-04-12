@@ -77,7 +77,7 @@ function buildSkillGroups(events: string[]): SkillGroup[] {
         groupIndex["__coordinator__"] = groups.length;
         groups.push({
           key: "__coordinator__",
-          skillName: "Coordinator",
+          skillName: "Digital Teammate",
           status: "done",
           tools: plannedOutputs.map((o) => ({
             name: o,

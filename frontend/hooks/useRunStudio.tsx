@@ -293,6 +293,13 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     void refreshChatFromServer({ reportErrors: true });
   }, [pid, token, refreshChatFromServer]);
 
+  // When a run is selected (e.g. after "Confirm plan and start run"), reload chat from the server.
+  // Pre-run messages only updated ProjectStudioUnified local state; without this, the thread looks empty.
+  useEffect(() => {
+    if (!token || !pid || !rid) return;
+    void refreshChatFromServer();
+  }, [token, pid, rid, refreshChatFromServer]);
+
   const lastVisualQaEventIdx = useRef(-1);
   const lastVqaArtifactSig = useRef("");
 

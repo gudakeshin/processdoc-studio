@@ -13,7 +13,7 @@ from app.agents.subagents import (
     _apply_quality_gate,
     _merge_pptx_slides_repair,
     _pptx_deterministic_slides,
-    _pptx_user_context_appendix,
+    _shared_user_context_appendix,
 )
 from app.services.skill_document import load_builtin_skills
 
@@ -32,7 +32,7 @@ def test_build_agent_context_prior_artifacts_excerpt() -> None:
     assert len(ex) <= 7000
 
 
-def test_pptx_user_context_appendix_includes_user_and_context() -> None:
+def test_shared_user_context_appendix_includes_user_and_context() -> None:
     state = {
         "raw_text": "",
         "user_instruction": "Focus on compliance gates.",
@@ -41,7 +41,7 @@ def test_pptx_user_context_appendix_includes_user_and_context() -> None:
         "process_model": {"process_name": "P", "steps": []},
     }
     ctx = build_agent_context(state, "pptx")  # type: ignore[arg-type]
-    appendix = _pptx_user_context_appendix(ctx)
+    appendix = _shared_user_context_appendix(ctx)
     assert "User instruction" in appendix
     assert "compliance gates" in appendix
     assert "Assembled project context" in appendix

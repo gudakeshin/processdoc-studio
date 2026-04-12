@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "id": "operations",
+    "description": "Anthropic Operations MCP - operational tools and workflows",
+    "command": "npx",
+    "args": ["-y", "@anthropic-ai/mcp-operations"],
+    "enabled": true,
+    "timeout_sec": 30.0
+  }
+]

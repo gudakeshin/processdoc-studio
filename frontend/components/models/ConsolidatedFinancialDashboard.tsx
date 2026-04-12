@@ -1,0 +1,464 @@
+"use client";
+
+import { useState } from "react";
+import dynamic from "next/dynamic";
+import { Card } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
+
+type FinancialMetrics = {
+  profitability: {
+    grossMargin: number;
+    operatingMargin: number;
+    netMargin: number;
+    roe: number;
+    roic: number;
+  };
+  liquidity: {
+    currentRatio: number;
+    quickRatio: number;
+    cashConversionCycle: number;
+  };
+  leverage: {
+    debtToEquity: number;
+    interestCoverage: number;
+    netDebtToEbitda: number;
+  };
+  growth: {
+    revenueGrowth: number;
+    ebitdaGrowth: number;
+    fcfGrowth: number;
+    cagr: number;
+  };
+};
+
+type DashboardTab = "overview" | "statements" | "variance" | "forecast" | "assumptions";
+
+type FinancialStatement = {
+  name: string;
+  periods: string[];
+  revenue: number[];
+  cogs: number[];
+  grossProfit: number[];
+  opex: number[];
+  ebit: number[];
+  taxes: number[];
+  netIncome: number[];
+};
+
+type VarianceData = {
+  period: number;
+  budget: number;
+  actual: number;
+  variance: number;
+  variancePct: number;
+  favorable: boolean;
+};
+
+type ForecastData = {
+  period: number;
+  revenue: number;
+  margin: number;
+  ebit: number;
+  confidence: number;
+};
+
+const DashboardChart = dynamic(() => import("@/components/models/ModelDashboardChart"), {
+  ssr: false,
+  loading: () => <p className="text-xs text-[#4C4C4C]">Loading...</p>,
+});
+
+export function ConsolidatedFinancialDashboard({
+  metrics,
+  statements,
+  variances,
+  forecasts,
+  assumptions,
+}: {
+  metrics?: FinancialMetrics;
+  statements?: FinancialStatement;
+  variances?: VarianceData[];
+  forecasts?: ForecastData[];
+  assumptions?: Record<string, number>;
+}) {
+  const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
+  const [selectedScenario, setSelectedScenario] = useState("base");
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-[#0F0B0B]">
+            Financial Dashboard
+          </h1>
+          <p className="mt-1 text-sm text-[#4C4C4C]">
+            Comprehensive view of financial performance and projections
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Select
+            value={selectedScenario}
+            onChange={(value) => setSelectedScenario(value)}
+          >
+            <option value="base">Base Case</option>
+            <option value="upside">Upside</option>
+            <option value="downside">Downside</option>
+          </Select>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 border-b border-[#f0f0f0]">
+        {(["overview", "statements", "variance", "forecast", "assumptions"] as const).map(
+          (tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-4 py-2 text-sm font-medium transition ${
+                activeTab === tab
+                  ? "border-b-2 border-[#86BC24] text-[#86BC24]"
+                  : "text-[#4C4C4C] hover:text-[#0F0B0B]"
+              }`}
+            >
+              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            </button>
+          )
+        )}
+      </div>
+
+      {/* Tab Content */}
+      <div>
+        {/* Overview Tab */}
+        {activeTab === "overview" && metrics && (
+          <div className="space-y-6">
+            {/* Profitability Metrics */}
+            <div>
+              <h3 className="mb-3 text-base font-semibold text-[#0F0B0B]">
+                Profitability
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                {[
+                  { label: "Gross Margin", value: metrics.profitability.grossMargin, format: "pct" },
+                  { label: "Operating Margin", value: metrics.profitability.operatingMargin, format: "pct" },
+                  { label: "Net Margin", value: metrics.profitability.netMargin, format: "pct" },
+                  { label: "ROE", value: metrics.profitability.roe, format: "pct" },
+                  { label: "ROIC", value: metrics.profitability.roic, format: "pct" },
+                ].map((metric) => (
+                  <Card key={metric.label} className="bg-white">
+                    <div className="p-4">
+                      <p className="text-xs text-[#4C4C4C]">{metric.label}</p>
+                      <p className="mt-2 text-lg font-bold text-[#86BC24]">
+                        {metric.format === "pct"
+                          ? `${(metric.value * 100).toFixed(1)}%`
+                          : metric.value.toFixed(2)}
+                      </p>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            {/* Liquidity Metrics */}
+            <div>
+              <h3 className="mb-3 text-base font-semibold text-[#0F0B0B]">
+                Liquidity
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {[
+                  { label: "Current Ratio", value: metrics.liquidity.currentRatio },
+                  { label: "Quick Ratio", value: metrics.liquidity.quickRatio },
+                  { label: "Cash Conversion Cycle", value: metrics.liquidity.cashConversionCycle, format: "days" },
+                ].map((metric) => (
+                  <Card key={metric.label} className="bg-white">
+                    <div className="p-4">
+                      <p className="text-xs text-[#4C4C4C]">{metric.label}</p>
+                      <p className="mt-2 text-lg font-bold text-[#0F0B0B]">
+                        {metric.format === "days"
+                          ? `${Math.round(metric.value)} days`
+                          : metric.value.toFixed(2)}x
+                      </p>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            {/* Leverage Metrics */}
+            <div>
+              <h3 className="mb-3 text-base font-semibold text-[#0F0B0B]">
+                Leverage
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {[
+                  { label: "Debt/Equity", value: metrics.leverage.debtToEquity },
+                  { label: "Interest Coverage", value: metrics.leverage.interestCoverage, format: "x" },
+                  { label: "Net Debt/EBITDA", value: metrics.leverage.netDebtToEbitda, format: "x" },
+                ].map((metric) => (
+                  <Card key={metric.label} className="bg-white">
+                    <div className="p-4">
+                      <p className="text-xs text-[#4C4C4C]">{metric.label}</p>
+                      <p className="mt-2 text-lg font-bold text-[#0F0B0B]">
+                        {metric.format === "x" ? `${metric.value.toFixed(1)}x` : metric.value.toFixed(2)}
+                      </p>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            {/* Growth Metrics */}
+            <div>
+              <h3 className="mb-3 text-base font-semibold text-[#0F0B0B]">
+                Growth
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-4">
+                {[
+                  { label: "Revenue Growth", value: metrics.growth.revenueGrowth, format: "pct" },
+                  { label: "EBITDA Growth", value: metrics.growth.ebitdaGrowth, format: "pct" },
+                  { label: "FCF Growth", value: metrics.growth.fcfGrowth, format: "pct" },
+                  { label: "CAGR", value: metrics.growth.cagr, format: "pct" },
+                ].map((metric) => (
+                  <Card key={metric.label} className="bg-white">
+                    <div className="p-4">
+                      <p className="text-xs text-[#4C4C4C]">{metric.label}</p>
+                      <p className="mt-2 text-lg font-bold text-[#86BC24]">
+                        {metric.format === "pct"
+                          ? `${(metric.value * 100).toFixed(1)}%`
+                          : metric.value.toFixed(2)}
+                      </p>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Statements Tab */}
+        {activeTab === "statements" && statements && (
+          <div className="space-y-6">
+            <Card className="bg-white">
+              <div className="p-4">
+                <h3 className="mb-3 text-base font-semibold text-[#0F0B0B]">
+                  Income Statement - {statements.name}
+                </h3>
+                <div className="overflow-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#f0f0f0]">
+                        <th className="px-3 py-2 text-left font-semibold text-[#0F0B0B]">
+                          Period
+                        </th>
+                        {statements.periods.map((period) => (
+                          <th
+                            key={period}
+                            className="px-3 py-2 text-right font-semibold text-[#0F0B0B]"
+                          >
+                            {period}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#f0f0f0]">
+                      {[
+                        { label: "Revenue", values: statements.revenue },
+                        { label: "COGS", values: statements.cogs },
+                        { label: "Gross Profit", values: statements.grossProfit, bold: true },
+                        { label: "OpEx", values: statements.opex },
+                        { label: "EBIT", values: statements.ebit, bold: true },
+                        { label: "Taxes", values: statements.taxes },
+                        { label: "Net Income", values: statements.netIncome, bold: true },
+                      ].map((row) => (
+                        <tr
+                          key={row.label}
+                          className={row.bold ? "bg-[#f9f9f9]" : ""}
+                        >
+                          <td
+                            className={`px-3 py-2 text-[#0F0B0B] ${
+                              row.bold ? "font-semibold" : ""
+                            }`}
+                          >
+                            {row.label}
+                          </td>
+                          {row.values.map((value, idx) => (
+                            <td
+                              key={idx}
+                              className={`px-3 py-2 text-right text-[#0F0B0B] ${
+                                row.bold ? "font-semibold" : ""
+                              }`}
+                            >
+                              ${(value / 1000000).toFixed(1)}M
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* Variance Tab */}
+        {activeTab === "variance" && variances && (
+          <div className="space-y-6">
+            <Card className="bg-white">
+              <div className="p-4">
+                <h3 className="mb-3 text-base font-semibold text-[#0F0B0B]">
+                  Budget vs Actual
+                </h3>
+                <div className="overflow-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#f0f0f0]">
+                        <th className="px-3 py-2 text-left font-semibold text-[#0F0B0B]">
+                          Period
+                        </th>
+                        <th className="px-3 py-2 text-right font-semibold text-[#0F0B0B]">
+                          Budget
+                        </th>
+                        <th className="px-3 py-2 text-right font-semibold text-[#0F0B0B]">
+                          Actual
+                        </th>
+                        <th className="px-3 py-2 text-right font-semibold text-[#0F0B0B]">
+                          Variance
+                        </th>
+                        <th className="px-3 py-2 text-center font-semibold text-[#0F0B0B]">
+                          Status
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#f0f0f0]">
+                      {variances.map((row) => (
+                        <tr key={row.period} className="hover:bg-[#f9f9f9]">
+                          <td className="px-3 py-2 text-[#0F0B0B]">
+                            Period {row.period}
+                          </td>
+                          <td className="px-3 py-2 text-right text-[#0F0B0B]">
+                            ${row.budget.toFixed(0)}
+                          </td>
+                          <td className="px-3 py-2 text-right text-[#0F0B0B]">
+                            ${row.actual.toFixed(0)}
+                          </td>
+                          <td
+                            className={`px-3 py-2 text-right font-semibold ${
+                              row.favorable
+                                ? "text-[#86BC24]"
+                                : "text-red-600"
+                            }`}
+                          >
+                            ${row.variance.toFixed(0)} ({row.variancePct.toFixed(1)}%)
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <Badge
+                              variant={row.favorable ? "success" : "warning"}
+                            >
+                              {row.favorable ? "Favorable" : "Unfavorable"}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* Forecast Tab */}
+        {activeTab === "forecast" && forecasts && (
+          <div className="space-y-6">
+            <Card className="bg-white">
+              <div className="p-4">
+                <h3 className="mb-3 text-base font-semibold text-[#0F0B0B]">
+                  Financial Forecast
+                </h3>
+                <div className="overflow-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#f0f0f0]">
+                        <th className="px-3 py-2 text-left font-semibold text-[#0F0B0B]">
+                          Period
+                        </th>
+                        <th className="px-3 py-2 text-right font-semibold text-[#0F0B0B]">
+                          Revenue
+                        </th>
+                        <th className="px-3 py-2 text-right font-semibold text-[#0F0B0B]">
+                          Margin
+                        </th>
+                        <th className="px-3 py-2 text-right font-semibold text-[#0F0B0B]">
+                          EBIT
+                        </th>
+                        <th className="px-3 py-2 text-center font-semibold text-[#0F0B0B]">
+                          Confidence
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#f0f0f0]">
+                      {forecasts.map((row) => (
+                        <tr key={row.period} className="hover:bg-[#f9f9f9]">
+                          <td className="px-3 py-2 text-[#0F0B0B]">
+                            Year {row.period}
+                          </td>
+                          <td className="px-3 py-2 text-right text-[#0F0B0B]">
+                            ${(row.revenue / 1000000).toFixed(1)}M
+                          </td>
+                          <td className="px-3 py-2 text-right text-[#0F0B0B]">
+                            {(row.margin * 100).toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 text-right text-[#0F0B0B]">
+                            ${(row.ebit / 1000000).toFixed(1)}M
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <Badge variant="info">
+                              {(row.confidence * 100).toFixed(0)}%
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* Assumptions Tab */}
+        {activeTab === "assumptions" && assumptions && (
+          <div className="space-y-6">
+            <Card className="bg-white">
+              <div className="p-4">
+                <h3 className="mb-3 text-base font-semibold text-[#0F0B0B]">
+                  Model Assumptions
+                </h3>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {Object.entries(assumptions).map(([key, value]) => (
+                    <div key={key} className="rounded-lg bg-[#f9f9f9] p-3">
+                      <p className="text-xs text-[#4C4C4C]">
+                        {key
+                          .replace(/([A-Z])/g, " $1")
+                          .replace(/^./, (str) => str.toUpperCase())}
+                      </p>
+                      <p className="mt-1 text-lg font-semibold text-[#0F0B0B]">
+                        {typeof value === "number" && value < 1
+                          ? `${(value * 100).toFixed(1)}%`
+                          : typeof value === "number" && value > 1000
+                          ? `$${(value / 1000000).toFixed(1)}M`
+                          : value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

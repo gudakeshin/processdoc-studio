@@ -312,6 +312,33 @@ class CoordinatorStateManager:
             "timestamp": datetime.utcnow().isoformat(),
         }
 
+    def as_todo_snapshot(self) -> list[dict[str, str]]:
+        """Convert task_board to run_todo_snapshot format for frontend display.
+
+        Returns list of dicts with: {id, label, status}
+        Ordered by phase (setup → generation → finalization) for UI display.
+        """
+        PHASE_ORDER = {"setup": 0, "generation": 1, "finalization": 2}
+
+        # Sort tasks by phase, then by creation time
+        sorted_tasks = sorted(
+            self.task_board.items(),
+            key=lambda item: (
+                PHASE_ORDER.get(item[1].get("phase", ""), 99),
+                item[1].get("created_at", ""),
+            ),
+        )
+
+        todos = []
+        for task_id, task_info in sorted_tasks:
+            todos.append({
+                "id": task_id,
+                "label": task_info.get("label", task_id),
+                "status": task_info.get("status", "queued"),
+            })
+
+        return todos
+
     # ============================================================================
     # Teammate Management
     # ============================================================================

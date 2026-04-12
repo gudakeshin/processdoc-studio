@@ -93,34 +93,26 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({
 
       {/* Quick Actions */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Link href={`/wiki/${wikiType}/search`}>
-          <a className="p-4 border rounded-lg hover:bg-gray-50 transition">
+        <Link href={`/wiki/${wikiType}/search`} className="p-4 border rounded-lg hover:bg-gray-50 transition">
             <div className="font-semibold">Search</div>
             <div className="text-sm text-gray-600">Find pages and topics</div>
-          </a>
         </Link>
 
-        <Link href={`/wiki/${wikiType}/browse`}>
-          <a className="p-4 border rounded-lg hover:bg-gray-50 transition">
+        <Link href={`/wiki/${wikiType}/browse`} className="p-4 border rounded-lg hover:bg-gray-50 transition">
             <div className="font-semibold">Browse</div>
             <div className="text-sm text-gray-600">View all pages</div>
-          </a>
         </Link>
 
         {wikiType === 'project' && (
-          <Link href={`/wiki/${wikiType}/ingest`}>
-            <a className="p-4 border rounded-lg hover:bg-gray-50 transition bg-blue-50">
+          <Link href={`/wiki/${wikiType}/ingest`} className="p-4 border rounded-lg hover:bg-gray-50 transition bg-blue-50">
               <div className="font-semibold text-blue-600">+ Ingest</div>
               <div className="text-sm text-gray-600">Add sources</div>
-            </a>
           </Link>
         )}
 
-        <Link href={`/wiki/${wikiType}/lint`}>
-          <a className="p-4 border rounded-lg hover:bg-gray-50 transition">
+        <Link href={`/wiki/${wikiType}/lint`} className="p-4 border rounded-lg hover:bg-gray-50 transition">
             <div className="font-semibold">Health Check</div>
             <div className="text-sm text-gray-600">Run lint</div>
-          </a>
         </Link>
       </div>
 
@@ -161,11 +153,9 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({
         <h2 className="text-xl font-bold mb-4">Pages by Category</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {Object.entries(stats.by_category).map(([category, count]) => (
-            <Link key={category} href={`/wiki/${wikiType}/browse?category=${category}`}>
-              <a className="p-4 text-center border rounded hover:bg-gray-50 transition">
+            <Link key={category} href={`/wiki/${wikiType}/browse?category=${category}`} className="p-4 text-center border rounded hover:bg-gray-50 transition">
                 <div className="font-semibold text-lg">{count}</div>
                 <div className="text-sm text-gray-600 capitalize">{category}s</div>
-              </a>
             </Link>
           ))}
         </div>
@@ -215,10 +205,8 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({
           <p className="text-sm text-gray-700 mb-3">
             Your wiki has {stats.health.issues_count} issue{stats.health.issues_count !== 1 ? 's' : ''} that should be reviewed.
           </p>
-          <Link href={`/wiki/${wikiType}/lint`}>
-            <a className="text-sm font-medium text-blue-600 hover:underline">
+          <Link href={`/wiki/${wikiType}/lint`} className="text-sm font-medium text-blue-600 hover:underline">
               View details and suggestions →
-            </a>
           </Link>
         </div>
       )}

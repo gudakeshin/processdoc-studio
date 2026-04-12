@@ -1,0 +1,50 @@
+{
+  "branding_name": "custom_acme",
+  "organization": "ACME Corporation",
+  "version": "1.0",
+  "colors": {
+    "primary": "#0052CC",
+    "accent": "#FF6B35",
+    "warning": "#FFB627",
+    "dark": "#1A1A1A",
+    "mid_dark": "#2D2D2D",
+    "mid": "#3D3D3D",
+    "dark_green": "#004E89",
+    "gray": "#757B7B",
+    "light_gray": "#AAAAAA",
+    "white": "#FFFFFF",
+    "light_green": "#E3F2FD",
+    "e8": "#E8E8E8"
+  },
+  "fonts": {
+    "heading": "Arial",
+    "body": "Arial",
+    "mono": "Courier New"
+  },
+  "company_name": "ACME",
+  "favicon": "/assets/acme_favicon.ico",
+  "logos": {
+    "main": "/assets/acme_logo.png",
+    "icon": "/assets/acme_icon.png"
+  },
+  "pptx_theme": {
+    "title_slide_bg": "primary",
+    "accent_color": "accent",
+    "text_color": "white"
+  },
+  "docx_styles": {
+    "heading_font": "Arial",
+    "body_font": "Arial",
+    "heading_color": "primary"
+  },
+  "pdf_styles": {
+    "header_bg": "primary",
+    "text_color": "dark",
+    "accent_color": "accent"
+  },
+  "xlsx_styles": {
+    "header_bg": "primary",
+    "header_text": "white",
+    "accent_bg": "accent"
+  }
+}

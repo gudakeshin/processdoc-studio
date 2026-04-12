@@ -197,8 +197,7 @@ export const WikiSearch: React.FC<WikiSearchProps> = ({
               </div>
               <div className="space-y-4">
                 {results.map((result) => (
-                  <Link key={result.id} href={`/wiki/${wikiType}/pages/${result.id}`}>
-                    <a className="block p-4 border rounded-lg hover:shadow-md transition">
+                  <Link key={result.id} href={`/wiki/${wikiType}/pages/${result.id}`} className="block p-4 border rounded-lg hover:shadow-md transition">
                       <div className="flex items-start justify-between mb-2">
                         <h3 className="text-lg font-semibold text-blue-600 hover:underline">
                           {result.title}
@@ -223,7 +222,6 @@ export const WikiSearch: React.FC<WikiSearchProps> = ({
                       <p className="text-gray-700 line-clamp-2">
                         {result.content.substring(0, 200)}...
                       </p>
-                    </a>
                   </Link>
                 ))}
               </div>

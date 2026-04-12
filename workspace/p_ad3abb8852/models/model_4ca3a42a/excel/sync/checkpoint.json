@@ -1,0 +1,10 @@
+{
+  "state": "idle",
+  "delta_token": null,
+  "last_remote_revision": null,
+  "last_applied_change_id": null,
+  "last_pull_at": null,
+  "last_push_at": null,
+  "last_error": null,
+  "updated_at": "2026-04-11T02:47:31.067590+00:00"
+}

@@ -1,0 +1,12 @@
+{
+  "state": "idle",
+  "delta_token": "delta_1251e30b",
+  "last_remote_revision": "rev_02be9058",
+  "last_applied_change_id": "chg_4999f72c",
+  "last_pull_at": "2026-04-11T07:09:28.547033+00:00",
+  "last_push_at": "2026-04-11T07:09:28.547035+00:00",
+  "last_error": null,
+  "updated_at": "2026-04-11T07:09:28.547122+00:00",
+  "mode": "manual",
+  "last_request_id": "req_aadb4058c9"
+}

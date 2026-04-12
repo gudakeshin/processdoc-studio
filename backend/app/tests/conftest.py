@@ -34,6 +34,7 @@ def _stub_output_type_recommendations_for_integration_tests(request, monkeypatch
             [],
             {},
             "stubbed recommendation for tests",
+            None,
         )
 
     import app.api.projects as projects_module

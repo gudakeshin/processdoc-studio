@@ -4,6 +4,10 @@
  *
  * Backend `run-events-v1` stores logical fields under `payload` when
  * `event_contract_strict` is true; merge before reading `todos` / `tasks`.
+ *
+ * Handles both:
+ * - `run_todo_snapshot` events (traditional format with todos array)
+ * - `coordinator_state_event` events (agentic loop task_board format)
  */
 
 export type RunTodoRow = {
@@ -44,6 +48,42 @@ export function extractRunTodoRowsFromEventData(data: unknown): RunTodoRow[] {
   return arr.filter(isTodoRow);
 }
 
+/** Convert coordinator task_board to RunTodoRow format.
+ *
+ * Task board is a dict: {task_id: {id, label, status, phase, ...}}
+ * We convert to array of RunTodoRow, sorted by phase.
+ */
+function coordinatorStateToTodoRows(taskBoard: Record<string, any>): RunTodoRow[] {
+  if (!taskBoard || typeof taskBoard !== "object" || Array.isArray(taskBoard)) {
+    return [];
+  }
+
+  const PHASE_ORDER: Record<string, number> = {
+    setup: 0,
+    generation: 1,
+    finalization: 2,
+  };
+
+  // Convert task_board object to array and sort by phase
+  const entries = Object.entries(taskBoard)
+    .map(([id, task]) => ({
+      id,
+      label: task.label || id,
+      status: task.status || "queued",
+      phase: task.phase || "unknown",
+      created_at: task.created_at || "",
+    }))
+    .sort((a, b) => {
+      const phaseA = PHASE_ORDER[a.phase] ?? 99;
+      const phaseB = PHASE_ORDER[b.phase] ?? 99;
+      if (phaseA !== phaseB) return phaseA - phaseB;
+      // Secondary sort by creation time
+      return a.created_at.localeCompare(b.created_at);
+    });
+
+  return entries.map(({ id, label, status }) => ({ id, label, status }));
+}
+
 export function runTodosFromEvents(eventLines: string[]): RunTodoRow[] {
   let latest: RunTodoRow[] = [];
   for (const line of eventLines) {
@@ -52,6 +92,18 @@ export function runTodosFromEvents(eventLines: string[]): RunTodoRow[] {
       raw = line.slice("run_todo_snapshot:".length).trim();
     } else if (line.startsWith("todo.checklist_created:")) {
       raw = line.slice("todo.checklist_created:".length).trim();
+    } else if (line.startsWith("coordinator_state_event:")) {
+      raw = line.slice("coordinator_state_event:".length).trim();
+      try {
+        const data = JSON.parse(raw);
+        if (data.tasks && typeof data.tasks === "object") {
+          const rows = coordinatorStateToTodoRows(data.tasks);
+          if (rows.length > 0) latest = rows;
+        }
+      } catch {
+        /* ignore malformed state event */
+      }
+      continue;
     } else {
       continue;
     }

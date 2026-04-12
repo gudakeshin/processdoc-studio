@@ -1,0 +1,26 @@
+[
+  {
+    "output_type": "xlsx",
+    "representation": "xlsx",
+    "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "body": "binary_file:output.xlsx"
+  },
+  {
+    "output_type": "pdf",
+    "representation": "pdf",
+    "content_type": "application/pdf",
+    "body": "binary_file:output.pdf"
+  },
+  {
+    "output_type": "docx",
+    "representation": "docx",
+    "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "body": "binary_file:output.docx"
+  },
+  {
+    "output_type": "pptx",
+    "representation": "pptx",
+    "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "body": "binary_file:output.pptx"
+  }
+]

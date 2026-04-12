@@ -363,6 +363,31 @@ def _build_system_from_skill(
                 zone1_parts.append("")
                 zone1_parts.append(companion)
 
+    # 5.6 Inline post-processor rules — merge brand/tone guidelines from
+    #     post_processor skills into the primary generation prompt instead of
+    #     running a separate Claude call.  The post-processor instructions are
+    #     generic guardrails (tighten titles, brand compliance) that don't need
+    #     to see "naive" output first.  Inlining them saves a full API round-trip.
+    sc_for_pp = ctx.skill_card if isinstance(ctx.skill_card, dict) else {}
+    post_processors: list[dict] = (
+        (sc_for_pp.get("post_processor_skills_by_output_type") or {}).get(output_type) or []
+    )
+    if post_processors:
+        zone3_parts.append("")
+        zone3_parts.append(
+            "Brand & tone rules (apply during generation — do NOT wait for a second pass):"
+        )
+        zone3_parts.append(
+            "Preserve facts, numbers, and process names accurately. "
+            "Tighten titles, bullets, descriptions, and table cells for clarity and conciseness."
+        )
+        for pp_skill in post_processors:
+            pp_name = str(pp_skill.get("display_name") or pp_skill.get("id") or "Brand")
+            pp_instr = str(pp_skill.get("prompt_instructions") or "").strip()
+            if pp_instr:
+                zone3_parts.append(f"  ## {pp_name}")
+                zone3_parts.append(f"  {pp_instr}")
+
     # 6. Tool invocation policy — agents must be told when to call tools vs. generate
     #    directly. Without this guidance agents skip retrieve_context and generate
     #    from the ProcessModel JSON alone, missing all project-specific context.
@@ -698,12 +723,21 @@ def _run_post_processor(ctx: AgentContext, content: str) -> str:
 
 
 def _run_pptx_post_processor(ctx: AgentContext, slides: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Apply brand / post_processor skills to slide JSON (same slide count and slide_types)."""
+    """Apply brand / post_processor skills to slide JSON (same slide count and slide_types).
+
+    When a primary skill is present, post-processor rules are already inlined into
+    the primary generation prompt by _build_system_from_skill (Section 5.6), so this
+    separate Claude call is skipped — saving a full API round-trip.
+    """
     if not slides or not is_claude_enabled():
         return slides
     sc = ctx.skill_card if isinstance(ctx.skill_card, dict) else {}
     post_processors: list[dict] = (sc.get("post_processor_skills_by_output_type") or {}).get("pptx") or []
     if not post_processors:
+        return slides
+    # Skip separate post-processing when rules were already inlined into the
+    # primary generation prompt (primary skill present → rules in Zone 3).
+    if _primary_skill(ctx):
         return slides
 
     system_parts: list[str] = [
@@ -1730,13 +1764,99 @@ def _docx_deterministic_fallback(pm: ProcessModel, deliverable: str) -> str:
 
 
 def _shared_user_context_appendix(ctx: AgentContext) -> str:
+    """
+    Build the user-prompt context appendix with labelled sections.
+
+    For PPTX output, context is segmented by purpose so the model can
+    locate the right facts for each slide type without scanning 30KB:
+      - QUANTITATIVE METRICS  → stat_cards slides
+      - PAIN POINTS           → problem statement slides
+      - VALUE DRIVERS & ROI   → value case slides
+      - LEADING PRACTICES     → credibility / case study slides
+    """
     blocks: list[str] = []
     ui = ctx.user_instruction.strip()
     if ui:
         blocks.append(f"## User instruction\n{ui[:2200]}")
+
     ac = ctx.assembled_context.strip()
-    if ac:
+    if ac and ctx.output_type == "pptx":
+        # ── Labelled context for PPTX: segment by slide purpose ──────────
+        # Split assembled_context into purpose-labelled sections so the model
+        # can find the right facts per slide without scanning the entire blob.
+        enrichment = ctx.enrichment
+        metrics_parts: list[str] = []
+        value_parts: list[str] = []
+
+        # Extract structured metrics from enrichment if available
+        if enrichment:
+            steps = getattr(enrichment, "steps_count", None) or (
+                getattr(getattr(enrichment, "process_analytics", None), "steps_count", None)
+            )
+            roles = getattr(enrichment, "roles_count", None) or (
+                getattr(getattr(enrichment, "process_analytics", None), "roles_count", None)
+            )
+            systems = getattr(enrichment, "systems_count", None)
+            if steps or roles or systems:
+                metrics_parts.append(
+                    f"Process scale: {steps or '[TBC]'} steps, "
+                    f"{roles or '[TBC]'} roles, {systems or '[TBC]'} systems"
+                )
+
+            drivers = getattr(enrichment, "value_drivers", [])
+            if isinstance(drivers, list) and drivers:
+                driver_names = [
+                    str(d.get("name") if isinstance(d, dict) else d)
+                    for d in drivers[:5] if d
+                ]
+                value_parts.append("Value drivers: " + ", ".join(n for n in driver_names if n))
+
+            risks_obj = getattr(enrichment, "risk_profile", None)
+            risks = getattr(risks_obj, "risks", []) if risks_obj else []
+            if isinstance(risks, list) and risks:
+                risk_names = [
+                    str(r.get("name") if isinstance(r, dict) else r)
+                    for r in risks[:5] if r
+                ]
+                value_parts.append("Key risks: " + ", ".join(n for n in risk_names if n))
+
+        # Build labelled sections
+        labelled: list[str] = []
+        if metrics_parts:
+            labelled.append(
+                "## QUANTITATIVE METRICS (use for stat_cards slides)\n" + "\n".join(metrics_parts)
+            )
+
+        # Scan assembled_context for pain-point / current-state signals
+        ac_lower = ac.lower()
+        has_pain = any(kw in ac_lower for kw in ("pain point", "challenge", "problem", "current state", "issue", "gap"))
+        has_value = any(kw in ac_lower for kw in ("saving", "roi", "cost reduction", "benefit", "improvement", "value"))
+        has_lp = any(kw in ac_lower for kw in ("case study", "leading practice", "benchmark", "reference"))
+
+        if has_pain:
+            labelled.append("## PAIN POINTS & CURRENT STATE (use for problem statement slides)")
+        if has_value and value_parts:
+            labelled.append(
+                "## VALUE DRIVERS & ROI (use for value case slides)\n" + "\n".join(value_parts)
+            )
+        elif value_parts:
+            labelled.append("## VALUE DRIVERS\n" + "\n".join(value_parts))
+        if has_lp:
+            labelled.append("## LEADING PRACTICES & CASE STUDIES (use for credibility slides)")
+
+        if labelled:
+            # Prepend labels, then include full context below
+            label_block = "\n\n".join(labelled)
+            blocks.append(
+                f"## Assembled project context (labelled for slide generation)\n"
+                f"{label_block}\n\n"
+                f"## Full context\n{ac[:3500]}"
+            )
+        else:
+            blocks.append(f"## Assembled project context (excerpt)\n{ac[:3500]}")
+    elif ac:
         blocks.append(f"## Assembled project context (excerpt)\n{ac[:3500]}")
+
     pae = ctx.prior_artifacts_excerpt.strip()
     if pae:
         blocks.append(pae)
@@ -1935,6 +2055,87 @@ def _pptx_deterministic_slides(pm: ProcessModel) -> list[dict[str, Any]]:
     ]
 
 
+def _generate_slides_batched(
+    ctx: AgentContext,
+    *,
+    system: str,
+    user_core: str,
+    appendix: str,
+    pm: dict,
+    outline: list[dict],
+    temperature: float = 0.3,
+    max_rounds: int | None = None,
+) -> list[dict] | None:
+    """
+    Generate slides in batches of 4-5, guided by the deck outline preview.
+
+    Each batch receives the outline for its slides plus context from prior batches,
+    enabling intermediate validation and better quality for long decks.
+    Returns the combined slide list, or None if any batch fails critically.
+    """
+    batch_size = 4
+    all_slides: list[dict] = []
+    n_total = len(outline)
+
+    for batch_start in range(0, n_total, batch_size):
+        batch_end = min(batch_start + batch_size, n_total)
+        batch_outline = outline[batch_start:batch_end]
+
+        # Build the batch-specific prompt
+        outline_desc = "\n".join(
+            f"  {batch_start + i + 1}. [{s.get('slide_type', 'bullets')}] {s.get('title', '')} — {s.get('purpose', '')}"
+            for i, s in enumerate(batch_outline)
+        )
+        batch_instruction = (
+            f"Generate slides {batch_start + 1}–{batch_end} of {n_total} for this deck.\n"
+            f"Follow this outline for these slides:\n{outline_desc}\n\n"
+            "Return ONLY valid JSON: {\"slides\": [...]}\n"
+            "Each slide must match the outline entry's title and slide_type.\n"
+        )
+        if all_slides:
+            # Provide prior slides as context for continuity
+            prior_summary = json.dumps(
+                [{"title": s.get("title"), "slide_type": s.get("slide_type")} for s in all_slides],
+                ensure_ascii=False,
+            )
+            batch_instruction += f"\nPrior slides already generated (maintain continuity):\n{prior_summary}\n"
+
+        batch_user = batch_instruction + "\n" + user_core + appendix + f"ProcessModel JSON:\n{json.dumps(pm)}"
+
+        raw_json = _run_subagent_tool_loop_text(
+            ctx, agent_id="pptx", system=system, user=batch_user,
+            temperature=temperature, max_rounds=max_rounds,
+        )
+        batch_obj: dict | None = None
+        if raw_json:
+            try:
+                batch_obj = _extract_first_json_object(raw_json)
+            except Exception:
+                batch_obj = None
+        if not batch_obj:
+            try:
+                batch_obj = claude_generate_json(system=system, user=batch_user, temperature=temperature, max_tokens=4096)
+            except Exception:
+                batch_obj = None
+
+        batch_slides = batch_obj.get("slides") if isinstance(batch_obj, dict) else None
+        if isinstance(batch_slides, list) and batch_slides:
+            valid = [s for s in batch_slides if isinstance(s, dict) and s.get("title")]
+            all_slides.extend(valid)
+        else:
+            # Batch failed — fall back to single-shot generation
+            _session_debug_log(
+                run_id=ctx.run_id,
+                hypothesis_id="H5",
+                location="subagents.py:_generate_slides_batched:batch_fail",
+                message=f"Batch {batch_start + 1}-{batch_end} failed, aborting batched mode",
+                data={"batch_start": batch_start, "batch_end": batch_end},
+            )
+            return None
+
+    return all_slides if all_slides else None
+
+
 def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
     pm = _model(ctx)
     primary = _primary_skill(ctx) or {}
@@ -2030,31 +2231,14 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             f"Use [TBC] ONLY if data is truly unavailable.\n"
         )
 
-        user_core = (
-            f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
-            "below (user instruction, assembled context, prior narrative/document drafts).\n"
-            "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
-            + data_for_slide_2 + data_for_slide_7 + "\n"
-            "Slide ordering mandate (follow this sequence):\n"
-            "1. slide_type=\"title\" — process name as title, subtitle=\"Process Overview\",\n"
-            "   badges=[up to 4 short capability phrases from ProcessModel context]\n"
-            "2. slide_type=\"stat_cards\" — exactly 3 cards quantifying scale/impact metrics;\n"
-            "   derive from step count, role count, or ProcessModel.metadata; fills: dark, mid_dark, gray\n"
-            "   each card MUST have a description: 1 sentence (10–20 words) explaining the metric's significance\n"
-            "3. slide_type=\"column_cards\" — exactly 3 columns representing the three core pillars\n"
-            "   of this process (e.g. Intelligence / Quality / Productivity); accent: green, dark, gray\n"
-            "4. slide_type=\"stack_layers\" — 3–6 rows showing workflow phases or architecture layers;\n"
-            "   fills rotate: green, mid_dark, dark, gray, mid, dark_green\n"
-            "5. slide_type=\"bullets\" — Process Overview: one bullet per role mandate\n"
-            "6. slide_type=\"table\" — Workflow Walkthrough: headers=[Step, Owner, Inputs → Outputs];\n"
-            "   one row per ProcessModel.steps entry\n"
-            "7. slide_type=\"stat_cards\" — 3 Key Metrics or Controls derived from the process\n"
-            "   (error rate, SLA, compliance gates, cycle time, etc.);\n"
-            "   each card must have stat, label, description; use [TBC] only if truly unquantifiable\n"
-            "   Prefer stat_cards here — use column_cards only if all 3 items are purely qualitative pillars\n"
-            "8+ (if more slides needed): slide_type=\"bullets\" or \"column_cards\" for workflow phases\n"
-            "Final slide: slide_type=\"bullets\", title=\"Recommended Next Actions\",\n"
-            "   bullets=[exactly 3 numbered actions specific to this process, each ≤15 words]\n\n"
+        # ── Skill-aware slide sequence ──────────────────────────────────────
+        # If the primary skill defines a slide_sequence (e.g., proposal skills
+        # have a different structure than process documentation), use it.
+        # This allows each domain skill to control the slide ordering via
+        # SKILL.md configuration rather than hardcoded Python.
+
+        # ── Shared slide schema (used by both skill-aware and fallback paths) ──
+        _slide_schema = (
             "Each slide object schema (omit fields that are null):\n"
             "  title         string — ≤10 words (required)\n"
             "  slide_type    string — one of: title | bullets | stat_cards | column_cards |\n"
@@ -2080,6 +2264,48 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             "  - Do not mix bullets + table on the same slide.\n"
             "  - Return ONLY valid JSON: {\"slides\": [...]}\n\n"
         )
+
+        skill_slide_sequence = primary.get("slide_sequence") if primary else None
+        if isinstance(skill_slide_sequence, list) and skill_slide_sequence:
+            slide_mandate_lines = [f"{i}. {step}" for i, step in enumerate(skill_slide_sequence, 1)]
+            slide_mandate = "\n".join(slide_mandate_lines)
+            user_core = (
+                f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
+                "below (user instruction, assembled context, prior narrative/document drafts).\n"
+                "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
+                + data_for_slide_2 + data_for_slide_7 + "\n"
+                f"Slide ordering mandate (follow this sequence):\n{slide_mandate}\n\n"
+                + _slide_schema
+            )
+        else:
+            # Default process-documentation slide sequence (fallback)
+            user_core = (
+                f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
+                "below (user instruction, assembled context, prior narrative/document drafts).\n"
+                "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
+                + data_for_slide_2 + data_for_slide_7 + "\n"
+                "Slide ordering mandate (follow this sequence):\n"
+                "1. slide_type=\"title\" — process name as title, subtitle=\"Process Overview\",\n"
+                "   badges=[up to 4 short capability phrases from ProcessModel context]\n"
+                "2. slide_type=\"stat_cards\" — exactly 3 cards quantifying scale/impact metrics;\n"
+                "   derive from step count, role count, or ProcessModel.metadata; fills: dark, mid_dark, gray\n"
+                "   each card MUST have a description: 1 sentence (10–20 words) explaining the metric's significance\n"
+                "3. slide_type=\"column_cards\" — exactly 3 columns representing the three core pillars\n"
+                "   of this process (e.g. Intelligence / Quality / Productivity); accent: green, dark, gray\n"
+                "4. slide_type=\"stack_layers\" — 3–6 rows showing workflow phases or architecture layers;\n"
+                "   fills rotate: green, mid_dark, dark, gray, mid, dark_green\n"
+                "5. slide_type=\"bullets\" — Process Overview: one bullet per role mandate\n"
+                "6. slide_type=\"table\" — Workflow Walkthrough: headers=[Step, Owner, Inputs → Outputs];\n"
+                "   one row per ProcessModel.steps entry\n"
+                "7. slide_type=\"stat_cards\" — 3 Key Metrics or Controls derived from the process\n"
+                "   (error rate, SLA, compliance gates, cycle time, etc.);\n"
+                "   each card must have stat, label, description; use [TBC] only if truly unquantifiable\n"
+                "   Prefer stat_cards here — use column_cards only if all 3 items are purely qualitative pillars\n"
+                "8+ (if more slides needed): slide_type=\"bullets\" or \"column_cards\" for workflow phases\n"
+                "Final slide: slide_type=\"bullets\", title=\"Recommended Next Actions\",\n"
+                "   bullets=[exactly 3 numbered actions specific to this process, each ≤15 words]\n\n"
+                + _slide_schema
+            )
         appendix = _shared_user_context_appendix(ctx)
         user = user_core + appendix + f"ProcessModel JSON:\n{json.dumps(pm)}"
         visual_feedback: list[dict] = (ctx.plan_payload or {}).get("pptx_visual_feedback") or []
@@ -2098,7 +2324,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
         prior_slides: list[dict[str, Any]] | None = None
         if isinstance(prior_slides_raw, list):
             prior_slides = [s for s in prior_slides_raw if isinstance(s, dict)]
-        fix_indices = _pptx_visual_feedback_indices(visual_feedback) if visual_feedback else set()
+        fix_indices = _pptx_visual_feedback_indices(visual_feedback) if visual_feedback and isinstance(visual_feedback, list) else set()
         repair_mode = bool(prior_slides and fix_indices)
         if repair_mode and prior_slides:
             user += (
@@ -2112,6 +2338,50 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 "PRIOR_DECK:\n"
                 + json.dumps(prior_slides, ensure_ascii=False)
             )
+        # ── Batched generation (when deck outline is available & not in repair mode) ──
+        batched_slides: list[dict] | None = None
+        deck_outline_raw = (ctx.plan_payload or {}).get("deck_outline_preview")
+        if (
+            not repair_mode
+            and isinstance(deck_outline_raw, dict)
+            and isinstance(deck_outline_raw.get("slides"), list)
+            and len(deck_outline_raw["slides"]) >= 6
+        ):
+            batched_slides = _generate_slides_batched(
+                ctx,
+                system=sb.system,
+                user_core=user_core,
+                appendix=appendix,
+                pm=pm,
+                outline=deck_outline_raw["slides"],
+                temperature=sb.temperature,
+                max_rounds=sb.max_rounds,
+            )
+
+        if batched_slides:
+            # region agent log
+            _session_debug_log(
+                run_id=ctx.run_id,
+                hypothesis_id="H5",
+                location="subagents.py:run_pptx_agent:batched",
+                message="PPTX slides generated via batched mode",
+                data={"slide_count": len(batched_slides), "used_primary_skill_id": str(primary.get("id") or "")},
+            )
+            # endregion
+            slide_dicts = batched_slides
+            json_str = json.dumps({"slides": slide_dicts}, ensure_ascii=False)
+            json_str = _apply_quality_gate(ctx, "pptx", json_str, system=sb.system, temperature=sb.temperature)
+            try:
+                obj2 = _extract_first_json_object(json_str)
+                slides2 = obj2.get("slides") if isinstance(obj2, dict) else None
+                if isinstance(slides2, list) and slides2:
+                    slide_dicts = [s for s in slides2 if isinstance(s, dict)] or slide_dicts
+            except Exception:
+                pass
+            slide_dicts = _run_pptx_post_processor(ctx, slide_dicts)
+            return AgentOutput(updates={"pptx_slides": slide_dicts})
+
+        # ── Single-shot generation (default path) ──
         raw_json = _run_subagent_tool_loop_text(ctx, agent_id="pptx", system=sb.system, user=user, temperature=sb.temperature, max_rounds=sb.max_rounds)
         obj: dict | None = None
         if raw_json:

@@ -23,17 +23,28 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
     """
     Check that PPTX slides have required content (not just titles).
     Returns (is_complete, issues_list).
+
+    Handles both formats:
+    - {"slides": [...]} (dict format)
+    - [...] (list format, direct array)
     """
     issues = []
     try:
-        parsed = json.loads(pptx_json) if pptx_json.strip().startswith("{") else None
+        parsed = json.loads(pptx_json)
     except json.JSONDecodeError:
         return False, ["Invalid JSON in pptx_slides"]
 
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("slides"), list):
-        return False, ["pptx_slides missing or invalid 'slides' array"]
+    # Handle both dict format {"slides": [...]} and list format [...]
+    if isinstance(parsed, dict):
+        slides = parsed.get("slides", [])
+    elif isinstance(parsed, list):
+        slides = parsed
+    else:
+        return False, ["pptx_slides must be a dict with 'slides' key or a list"]
 
-    slides = parsed["slides"]
+    if not isinstance(slides, list):
+        return False, ["pptx_slides 'slides' must be a list"]
+
     if not slides:
         return False, ["pptx_slides has no slides"]
 
@@ -100,6 +111,86 @@ def _flatten_for_eval(output_key: str, raw: Any) -> str:
                 parts.append(body)
         return "\n".join(parts)
     return text
+
+
+def _fuzzy_title_match(required: str, candidate: str, threshold: float = 0.65) -> bool:
+    """
+    Fuzzy match a required section name against a candidate title.
+    Handles common variations like '&' vs 'and', extra words, reordering.
+    Returns True if the candidate is a close-enough match for the required section.
+    """
+    req = required.lower().strip()
+    cand = candidate.lower().strip()
+    # Exact substring match
+    if req in cand or cand in req:
+        return True
+    # Normalize '&' / 'and', common punctuation
+    for old, new in [("&", "and"), ("–", "-"), ("—", "-")]:
+        req = req.replace(old, new)
+        cand = cand.replace(old, new)
+    if req in cand or cand in req:
+        return True
+    # Word-overlap ratio (handles reordering and partial matches)
+    req_words = set(re.split(r"\W+", req)) - {"", "the", "a", "an", "of", "for", "in", "on", "to"}
+    cand_words = set(re.split(r"\W+", cand)) - {"", "the", "a", "an", "of", "for", "in", "on", "to"}
+    if not req_words:
+        return True
+    overlap = len(req_words & cand_words) / len(req_words)
+    return overlap >= threshold
+
+
+def _score_section_coverage_pptx(slides_raw: Any, dim: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+    """
+    Evaluate section coverage against PPTX slide structure directly (not flattened text).
+    Uses fuzzy title matching to handle variations like 'Current State & Problem Statement'
+    vs 'Current State and Problem Statement'.
+    """
+    required = dim.get("required_sections")
+    if not isinstance(required, list) or not required:
+        return 1.0, {"missing": []}
+
+    # Parse slides from raw value
+    slides: list[dict] = []
+    if isinstance(slides_raw, list):
+        slides = [s for s in slides_raw if isinstance(s, dict)]
+    elif isinstance(slides_raw, str):
+        try:
+            parsed = json.loads(slides_raw)
+            if isinstance(parsed, dict) and isinstance(parsed.get("slides"), list):
+                slides = [s for s in parsed["slides"] if isinstance(s, dict)]
+            elif isinstance(parsed, list):
+                slides = [s for s in parsed if isinstance(s, dict)]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Collect all slide titles and bullet/body text for matching
+    slide_titles = [str(s.get("title") or "").strip() for s in slides if s.get("title")]
+
+    missing: list[str] = []
+    matched_pairs: list[dict[str, str]] = []
+    for sec in required:
+        label = str(sec).strip()
+        if not label:
+            continue
+        found = False
+        for title in slide_titles:
+            if _fuzzy_title_match(label, title):
+                matched_pairs.append({"required": label, "matched_to": title})
+                found = True
+                break
+        if not found:
+            missing.append(label)
+
+    total = len([s for s in required if str(s).strip()])
+    if total == 0:
+        return 1.0, {"missing": []}
+    hit = total - len(missing)
+    return hit / total, {
+        "missing": missing,
+        "required_total": total,
+        "matched": hit,
+        "matched_pairs": matched_pairs,
+    }
 
 
 def _score_section_coverage(text: str, dim: dict[str, Any]) -> tuple[float, dict[str, Any]]:
@@ -189,7 +280,11 @@ def _evaluate_one_output(
             continue
         did = str(dim.get("id") or kind)
         if kind == "section_coverage":
-            score, meta = _score_section_coverage(text, dim)
+            # Use structural JSON matching for PPTX slides instead of flat text
+            if output_key == "pptx_slides":
+                score, meta = _score_section_coverage_pptx(raw_text, dim)
+            else:
+                score, meta = _score_section_coverage(text, dim)
         elif kind == "citation_density":
             score, meta = _score_citation_density(text, dim)
         elif kind == "llm_critique":
@@ -295,6 +390,11 @@ def run_deliverable_quality_loop(
     working = dict(outputs)
     rounds_meta: list[dict[str, Any]] = []
     unified_framework = UnifiedQualityFramework() if bool(getattr(settings, "enable_unified_quality_framework", False)) else None
+
+    # Load contract-based rules into framework
+    if unified_framework is not None and contracts_by_key:
+        unified_framework.add_contract_rules(contracts_by_key)
+
     increment("deliverable_quality_runs_total")
 
     for rnd in range(max_rounds):

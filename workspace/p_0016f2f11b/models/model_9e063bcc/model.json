@@ -1,0 +1,10 @@
+{
+  "id": "model_9e063bcc",
+  "name": "Revenue Model",
+  "description": "Forecast",
+  "assumptions": {},
+  "created_at": "2026-04-10T18:48:30.580560+00:00",
+  "updated_at": "2026-04-10T18:48:30.580563+00:00",
+  "created_by": "model@example.com",
+  "status": "draft"
+}

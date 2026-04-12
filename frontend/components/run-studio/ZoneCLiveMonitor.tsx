@@ -171,8 +171,9 @@ function humanizeEvent(
     return {
       category: "decisions",
       severity: "info",
-      title: "Coordinator plan",
-      summary: "The coordinator produced an execution plan and rationale for this run.",
+      title: "Run plan from your digital teammate",
+      summary:
+        "Your digital teammate outlined an execution plan and rationale for this run.",
     };
   }
   if (eventType === "run_todo_snapshot" && payloadObj) {

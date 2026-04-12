@@ -7,8 +7,11 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { DocumentUploader } from "@/components/documents/DocumentUploader";
 import { ToolActivityFeed } from "@/components/run-studio/ToolActivityFeed";
+import { ApprovalBanner } from "@/components/run-studio/ApprovalBanner";
 import { ZoneAInstruction } from "@/components/run-studio/ZoneAInstruction";
 import { ZoneCLiveMonitor } from "@/components/run-studio/ZoneCLiveMonitor";
+import { ActivityTodoList } from "@/components/activity/ActivityTodoList";
+import { WikiQuickAccess } from "@/components/wiki/WikiQuickAccess";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import {
@@ -272,6 +275,39 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
       });
       setActiveRunId(runIdCreated);
       setReadyForConfirmation(false);
+      const appr = await api(
+        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(runIdCreated)}/approve`,
+        { method: "POST" }
+      );
+      if (!appr.ok) {
+        const retryAfter = appr.headers.get("Retry-After");
+        const queueDepth = appr.headers.get("X-Admission-Queue-Depth");
+        const projectLimit = appr.headers.get("X-Admission-Project-Limit");
+        const globalLimit = appr.headers.get("X-Admission-Global-Limit");
+        const userLimit = appr.headers.get("X-Admission-User-Limit");
+        const apprData = (await appr.json().catch(() => ({}))) as { detail?: string | { message?: string } };
+        if (appr.status === 429) {
+          const retrySec = retryAfter ? Number.parseInt(retryAfter, 10) : NaN;
+          studio.setBackpressureRetrySec(
+            Number.isFinite(retrySec) && retrySec > 0 ? retrySec : 5
+          );
+          const retryIn = retryAfter ? `${retryAfter}s` : "a short interval";
+          setError(
+            `Approval throttled. Retry in ${retryIn}. ` +
+              `Queue depth: ${queueDepth ?? "n/a"}, limits (project/global/user): ` +
+              `${projectLimit ?? "n/a"}/${globalLimit ?? "n/a"}/${userLimit ?? "n/a"}. ` +
+              "Use Approve & Run below when ready."
+          );
+          return;
+        }
+        setError(
+          extractApiErrorMessage(
+            apprData,
+            "Run was created but approval failed — use Approve & Run below to start execution."
+          )
+        );
+        return;
+      }
     } catch (e) {
       if (e instanceof RunCreationError && e.code === "output_selection_required") {
         setError("Output type confirmation is required before run creation.");
@@ -312,9 +348,12 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
   }
 
   const activeOpenQuestions = activeRunId ? studio.openQuestions : openQuestions;
-  const activeMessages = activeRunId ? studio.instructionChatMessages : chatMessages;
+  // Use latest messages: if user has sent messages (chatMessages updated), use those
+  // Otherwise use studio messages which includes greeting on mount
+  const activeMessages = chatMessages.length > 0 ? chatMessages : studio.instructionChatMessages;
   const activeChatBusy = activeRunId ? studio.chatBusy : chatBusy;
-  const activeConversationId = activeRunId ? studio.conversationId : conversationId;
+  // Prefer studio conversation ID if available (from initial greeting load)
+  const activeConversationId = studio.conversationId || conversationId;
   const activeDecisionPrompts = activeRunId ? studio.decisionPrompts : decisionPrompts;
   const activeUnresolvedPromptIds = activeRunId ? studio.unresolvedPromptIds : unresolvedPromptIds;
 
@@ -333,6 +372,7 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
       <section className="grid gap-3 lg:grid-cols-[minmax(0,2.1fr)_minmax(340px,1fr)]">
         <section className="min-w-0 space-y-3">
           <ZoneAInstruction
+            projectId={pid}
             recommendationNote={activeRunId ? studio.recommendationNote : null}
             chatMessages={activeMessages}
             chatInput={activeRunId ? studio.chatInput : chatInput}
@@ -351,10 +391,35 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
             thinkingExpanded={cowork.thinkingExpanded}
             onToggleThinkingTrace={() => cowork.setThinkingExpanded((prev) => !prev)}
           />
+          {activeRunId ? (
+            <>
+              {studio.backpressureRetrySec !== null && studio.backpressureRetrySec > 0 ? (
+                <div className="alert alert--warning text-xs">
+                  Approval is temporarily throttled. Auto-retry in{" "}
+                  <strong>{studio.backpressureRetrySec}s</strong>.
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="ml-3 min-h-9 px-2 py-1 text-xs"
+                    onClick={() => {
+                      studio.setBackpressureRetrySec(null);
+                      void studio.approvePlan();
+                    }}
+                  >
+                    Retry now
+                  </Button>
+                </div>
+              ) : null}
+              <ApprovalBanner state={studio.approvalBannerState} />
+            </>
+          ) : null}
           {!activeRunId && readyForConfirmation ? (
-            <div className="rounded border border-[var(--surface-border)] bg-white p-3">
+            <div className="rounded border border-[var(--accent-blue-light)] bg-[var(--info-light)] p-3">
+              <p className="mb-2 text-xs text-[var(--text-muted)]">
+                Sheldon has a plan ready. Confirm to start building.
+              </p>
               <Button type="button" onClick={() => void confirmPlanAndStartRun()}>
-                Confirm plan and start run
+                Let&apos;s build it 🚀
               </Button>
             </div>
           ) : null}
@@ -366,22 +431,33 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
           </CollapsibleSection>
 
           <CollapsibleSection title="Activity" defaultOpen={Boolean(activeRunId)}>
-            {activeRunId ? (
-              <ToolActivityFeed
-                events={events}
-                parsedEvents={parsedEvents}
-                runChecklistTodos={studio.runChecklistTodos}
-                artifacts={studio.artifacts}
-                pollMode={pollMode}
-                streamError={streamError}
-                downloadsContent={studio.downloadsContent}
-                onTaskAction={studio.applyTaskAction}
-                hooksPanel={studio.hooksPanel}
-                permissionPanel={studio.permissionPanel}
+            <div className="space-y-4">
+              {/* Project Activity To-Do List */}
+              <ActivityTodoList
+                projectId={pid}
+                onTodoClick={(runId) => setActiveRunId(runId)}
+                maxItems={10}
               />
-            ) : (
-              <p className="text-xs text-[var(--text-muted)]">Select a run to view activity.</p>
-            )}
+
+              {/* Selected Run Activity Feed */}
+              {activeRunId && (
+                <div className="border-t pt-4">
+                  <h4 className="text-sm font-semibold mb-3">Selected Run Activity</h4>
+                  <ToolActivityFeed
+                    events={events}
+                    parsedEvents={parsedEvents}
+                    runChecklistTodos={studio.runChecklistTodos}
+                    artifacts={studio.artifacts}
+                    pollMode={pollMode}
+                    streamError={streamError}
+                    downloadsContent={studio.downloadsContent}
+                    onTaskAction={studio.applyTaskAction}
+                    hooksPanel={studio.hooksPanel}
+                    permissionPanel={studio.permissionPanel}
+                  />
+                </div>
+              )}
+            </div>
           </CollapsibleSection>
 
           <CollapsibleSection title="Execution Audit Trail" defaultOpen={Boolean(activeRunId)}>
@@ -428,6 +504,10 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
               </Button>
               <Link href={`/projects/${pid}/workspace`} className="text-xs">Workspace</Link>
             </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Project Wiki" defaultOpen={!activeRunId}>
+            <WikiQuickAccess projectId={pid} />
           </CollapsibleSection>
         </aside>
       </section>

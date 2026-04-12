@@ -1,0 +1,6 @@
+{
+  "id": "content_quality_v1",
+  "dimension": "content_quality",
+  "description": "Checks baseline completeness and specificity for generated deliverables.",
+  "default_threshold": 0.75
+}
