@@ -775,6 +775,11 @@ def _build_and_persist_relationships(
         _save_communities(wiki_type, project_id, communities_data)
         logger.info(f"Detected {communities_data['total_communities']} communities")
 
+        # Detect god nodes (most important pages)
+        god_nodes_data = _detect_god_nodes(wiki_type, project_id)
+        _save_god_nodes(wiki_type, project_id, god_nodes_data)
+        logger.info(f"Detected {len(god_nodes_data['god_nodes'])} god nodes")
+
         avg_links = len(all_relationships) / max(len(pages), 1) if pages else 0
 
         return {
@@ -782,6 +787,7 @@ def _build_and_persist_relationships(
             "pages_with_links": pages_with_links,
             "average_links_per_page": round(avg_links, 2),
             "total_communities": communities_data["total_communities"],
+            "god_nodes_count": len(god_nodes_data["god_nodes"]),
         }
     except Exception as e:
         logger.error(f"Error building relationships: {e}")
@@ -922,6 +928,197 @@ def _detect_communities(
             "communities": {},
             "page_community_map": {},
         }
+
+
+def _detect_god_nodes(
+    wiki_type: str,
+    project_id: Optional[str],
+) -> dict:
+    """
+    Detect 'god nodes' (most-important pages) using combined centrality metrics.
+
+    God nodes are pages that:
+    - Have many inbound links (widely referenced)
+    - Bridge multiple communities (high betweenness centrality)
+    - Act as hubs in the knowledge graph
+
+    Importance score = 0.6 * normalized_inbound + 0.4 * betweenness_centrality
+
+    Returns:
+        {
+            "god_nodes": [
+                {
+                    "page_id": str,
+                    "page_title": str,
+                    "importance_score": float (0.0-1.0),
+                    "inbound_links": int,
+                    "betweenness_centrality": float,
+                    "rank": int (1-based)
+                },
+                ...
+            ],
+            "total_pages": int,
+            "avg_importance": float
+        }
+    """
+    try:
+        import networkx as nx
+        from app.services.storage import workspace_path
+        import json
+        import re
+
+        # Determine wiki directory
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        if not wiki_dir.exists():
+            return {"god_nodes": [], "total_pages": 0, "avg_importance": 0.0}
+
+        # Load relationships
+        relationships_file = wiki_dir / "relationships.json"
+        if not relationships_file.exists():
+            return {"god_nodes": [], "total_pages": 0, "avg_importance": 0.0}
+
+        rels_data = json.loads(relationships_file.read_text())
+        relationships = rels_data.get("relationships", [])
+
+        # Build undirected graph
+        G = nx.Graph()
+
+        # Add all pages as nodes
+        page_titles = {}
+        for md_file in wiki_dir.glob("*.md"):
+            if md_file.name not in ("index.md", "log.md", "relationships.json"):
+                page_id = md_file.stem
+                content = md_file.read_text(encoding="utf-8")
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else page_id.replace("_", " ").title()
+                G.add_node(page_id)
+                page_titles[page_id] = title
+
+        # Add edges from relationships
+        for rel in relationships:
+            source = rel["source_id"]
+            target = rel["target_id"]
+            weight = rel.get("confidence_score", 0.5)
+            G.add_edge(source, target, weight=weight)
+
+        if len(G.nodes()) == 0:
+            return {"god_nodes": [], "total_pages": 0, "avg_importance": 0.0}
+
+        # Calculate metrics
+        # 1. Inbound link count (normalized)
+        inbound_counts = {}
+        for node in G.nodes():
+            inbound_counts[node] = G.degree(node)
+
+        max_inbound = max(inbound_counts.values()) if inbound_counts else 1
+        normalized_inbound = {
+            node: count / max_inbound for node, count in inbound_counts.items()
+        }
+
+        # 2. Betweenness centrality (already normalized 0-1)
+        try:
+            betweenness = nx.betweenness_centrality(G, weight="weight")
+        except:
+            betweenness = {node: 0.0 for node in G.nodes()}
+
+        # 3. Combined importance score
+        god_nodes_list = []
+        importance_scores = {}
+
+        for page_id in G.nodes():
+            inbound_norm = normalized_inbound.get(page_id, 0.0)
+            between = betweenness.get(page_id, 0.0)
+
+            # Combined score: 60% inbound links, 40% betweenness
+            importance = 0.6 * inbound_norm + 0.4 * between
+            importance_scores[page_id] = importance
+
+            god_nodes_list.append({
+                "page_id": page_id,
+                "page_title": page_titles.get(page_id, page_id),
+                "importance_score": round(importance, 3),
+                "inbound_links": inbound_counts[page_id],
+                "betweenness_centrality": round(between, 3),
+                "rank": 0,  # Will be assigned after sorting
+            })
+
+        # Sort by importance (descending)
+        god_nodes_list.sort(key=lambda x: x["importance_score"], reverse=True)
+
+        # Assign ranks
+        for rank, node in enumerate(god_nodes_list, 1):
+            node["rank"] = rank
+
+        # Calculate average importance
+        avg_importance = (
+            sum(importance_scores.values()) / len(importance_scores)
+            if importance_scores else 0.0
+        )
+
+        return {
+            "god_nodes": god_nodes_list,
+            "total_pages": len(G.nodes()),
+            "avg_importance": round(avg_importance, 3),
+        }
+
+    except Exception as e:
+        logger.error(f"Error detecting god nodes: {e}")
+        return {"god_nodes": [], "total_pages": 0, "avg_importance": 0.0}
+
+
+def _save_god_nodes(
+    wiki_type: str,
+    project_id: Optional[str],
+    god_nodes_data: dict,
+) -> bool:
+    """Save god nodes (important pages) to god_nodes.json."""
+    try:
+        from app.services.storage import workspace_path
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        wiki_dir.mkdir(parents=True, exist_ok=True)
+        god_nodes_file = wiki_dir / "god_nodes.json"
+
+        god_nodes_file.write_text(json.dumps({
+            "total_pages": god_nodes_data["total_pages"],
+            "avg_importance": god_nodes_data["avg_importance"],
+            "god_nodes": god_nodes_data["god_nodes"],
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }, indent=2))
+
+        return True
+    except Exception as e:
+        logger.error(f"Error saving god nodes: {e}")
+        return False
+
+
+def _get_god_nodes(wiki_type: str, project_id: Optional[str], limit: int = 10) -> list:
+    """Get top N god nodes (most important pages)."""
+    try:
+        from app.services.storage import workspace_path
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        god_nodes_file = wiki_dir / "god_nodes.json"
+        if not god_nodes_file.exists():
+            return []
+
+        god_nodes_data = json.loads(god_nodes_file.read_text())
+        return god_nodes_data.get("god_nodes", [])[:limit]
+    except Exception as e:
+        logger.warning(f"Error loading god nodes: {e}")
+        return []
 
 
 def _save_communities(

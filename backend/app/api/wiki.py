@@ -416,9 +416,11 @@ async def list_pages(
 
         pages = []
 
-        # Load relationship counts and community assignments
-        from app.services.wiki_operations import _get_community_for_page
+        # Load relationship counts, community assignments, and god node status
+        from app.services.wiki_operations import _get_community_for_page, _get_god_nodes
         rel_counts = _get_relationship_counts(wiki_type, project_id)
+        god_nodes = _get_god_nodes(wiki_type, project_id, limit=100)
+        god_node_ids = {gn["page_id"] for gn in god_nodes}
 
         # Read markdown files from wiki directory
         if wiki_dir.exists():
@@ -460,10 +462,18 @@ async def list_pages(
                             summary = line.strip()[:200]
                             break
 
-                    # Get relationship counts and community
+                    # Get relationship counts, community, and god node status
                     page_id = md_file.stem
                     inbound_count = rel_counts.get(page_id, {}).get("inbound", 0)
                     community_info = _get_community_for_page(wiki_type, project_id, page_id)
+
+                    # Check if this is a god node
+                    god_node_rank = None
+                    if page_id in god_node_ids:
+                        for gn in god_nodes:
+                            if gn["page_id"] == page_id:
+                                god_node_rank = gn["rank"]
+                                break
 
                     # Apply filters
                     if category and category != "artifact":
@@ -482,6 +492,8 @@ async def list_pages(
                         if community_info:
                             page_dict["community_id"] = community_info["community_id"]
                             page_dict["community_concepts"] = community_info.get("top_concepts", [])
+                        if god_node_rank:
+                            page_dict["god_node_rank"] = god_node_rank
                         pages.append(page_dict)
                 except Exception as e:
                     logger.warning(f"Failed to parse wiki page {md_file.name}: {e}")
@@ -906,6 +918,83 @@ async def get_community_details(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ===== God Node Operations =====
+
+@router.get("/{wiki_type}/god-nodes")
+async def get_god_nodes(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    limit: int = Query(10, ge=1, le=100),
+) -> Dict[str, Any]:
+    """
+    Get the most important pages (god nodes) in the wiki.
+
+    God nodes are ranked by:
+    - Inbound link count (60% weight): how many pages reference this page
+    - Betweenness centrality (40% weight): how much it bridges between communities
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        project_id: Project ID
+        limit: Max results to return (default 10, max 100)
+
+    Returns:
+        {
+            "status": "success",
+            "god_nodes": [
+                {
+                    "rank": int,
+                    "page_id": str,
+                    "page_title": str,
+                    "importance_score": float (0.0-1.0),
+                    "inbound_links": int,
+                    "betweenness_centrality": float,
+                },
+                ...
+            ],
+            "total_pages": int,
+            "avg_importance": float
+        }
+    """
+    try:
+        from app.services.wiki_operations import _get_god_nodes
+
+        god_nodes = _get_god_nodes(wiki_type, project_id, limit=limit)
+
+        # Get overall stats
+        from app.services.storage import workspace_path
+        import json
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            if not project_id:
+                raise HTTPException(status_code=400, detail="project_id required for project wiki")
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        total_pages = 0
+        avg_importance = 0.0
+
+        god_nodes_file = wiki_dir / "god_nodes.json"
+        if god_nodes_file.exists():
+            god_nodes_data = json.loads(god_nodes_file.read_text())
+            total_pages = god_nodes_data.get("total_pages", 0)
+            avg_importance = god_nodes_data.get("avg_importance", 0.0)
+
+        return {
+            "status": "success",
+            "god_nodes": god_nodes,
+            "total_pages": total_pages,
+            "avg_importance": avg_importance,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get god nodes failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ===== Dashboard Operations =====
 
 @router.get("/{wiki_type}/stats")
@@ -1006,6 +1095,7 @@ async def get_wiki_stats(
                     continue
 
         # Load relationship and community statistics
+        from app.services.wiki_operations import _get_god_nodes
         rel_counts = _get_relationship_counts(wiki_type, project_id)
         total_relationships = 0
         pages_with_links = 0
@@ -1022,6 +1112,9 @@ async def get_wiki_stats(
                 communities_data = json.loads(communities_file.read_text())
         except Exception as e:
             logger.warning(f"Error loading communities: {e}")
+
+        # Load god nodes statistics
+        god_nodes = _get_god_nodes(wiki_type, project_id, limit=10)
 
         stats = {
             "total_pages": total_pages,
@@ -1044,6 +1137,19 @@ async def get_wiki_stats(
                 "avg_community_size": round(
                     total_pages / max(communities_data.get("total_communities", 1), 1), 1
                 ) if total_pages > 0 else 0,
+            },
+            "god_nodes": {
+                "total": len(god_nodes),
+                "top_5": [
+                    {
+                        "rank": gn["rank"],
+                        "page_id": gn["page_id"],
+                        "page_title": gn["page_title"],
+                        "importance_score": gn["importance_score"],
+                        "inbound_links": gn["inbound_links"],
+                    }
+                    for gn in god_nodes[:5]
+                ],
             },
         }
 
