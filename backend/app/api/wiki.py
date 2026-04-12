@@ -401,21 +401,111 @@ async def list_pages(
         }
     """
     try:
-        # Stub implementation - would query database
+        from app.services.storage import workspace_path
+        from pathlib import Path
+        import re
+        from app.services.wiki_operations import _get_relationship_counts
+
+        # Determine wiki directory
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            if not project_id:
+                raise HTTPException(status_code=400, detail="project_id required for project wiki")
+            wiki_dir = workspace_path(project_id) / "wiki"
+
         pages = []
-        total = 0
+
+        # Load relationship counts
+        rel_counts = _get_relationship_counts(wiki_type, project_id)
+
+        # Read markdown files from wiki directory
+        if wiki_dir.exists():
+            for md_file in sorted(wiki_dir.glob("*.md")):
+                # Skip special files
+                if md_file.name in ("index.md", "log.md", "relationships.json"):
+                    continue
+
+                try:
+                    content = md_file.read_text(encoding="utf-8")
+
+                    # Parse frontmatter
+                    frontmatter = {}
+                    title = md_file.stem.replace("_", " ").title()
+                    confidence = "medium"
+                    category = "artifact"
+                    updated_at = md_file.stat().st_mtime
+
+                    # Extract frontmatter
+                    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+                    if match:
+                        fm_text = match.group(1)
+                        for line in fm_text.split("\n"):
+                            if ":" in line:
+                                key, value = line.split(":", 1)
+                                key = key.strip()
+                                value = value.strip().strip('"')
+                                frontmatter[key] = value
+
+                        title = frontmatter.get("title", title)
+                        confidence = frontmatter.get("confidence", confidence)
+                        category = frontmatter.get("category", category)
+
+                    # Extract summary from content
+                    summary = None
+                    lines = content.split("\n")
+                    for line in lines:
+                        if line.strip() and not line.startswith("#") and not line.startswith("-") and not line.startswith("["):
+                            summary = line.strip()[:200]
+                            break
+
+                    # Get relationship counts
+                    page_id = md_file.stem
+                    inbound_count = rel_counts.get(page_id, {}).get("inbound", 0)
+
+                    # Apply filters
+                    if category and category != "artifact":
+                        continue  # For now, only show artifact pages
+                    if category == category:  # Category filter
+                        pages.append({
+                            "id": page_id,
+                            "title": title,
+                            "category": category,
+                            "confidence": confidence,
+                            "updated_at": updated_at,
+                            "summary": summary,
+                            "inbound_links": inbound_count,
+                            "outbound_links": rel_counts.get(page_id, {}).get("outbound", 0),
+                        })
+                except Exception as e:
+                    logger.warning(f"Failed to parse wiki page {md_file.name}: {e}")
+                    continue
+
+        # Sort pages
+        if sort_by == "updated_at":
+            pages.sort(key=lambda p: p["updated_at"], reverse=True)
+        elif sort_by == "title":
+            pages.sort(key=lambda p: p["title"])
+
+        # Apply pagination
+        total = len(pages)
+        paginated = pages[offset : offset + limit]
 
         return {
             "status": "success",
-            "pages": pages,
+            "pages": paginated,
             "pagination": {
                 "offset": offset,
                 "limit": limit,
                 "total": total,
-                "has_next": offset + limit < total,
+                "has_more": offset + limit < total,
             },
+            "available_categories": ["entity", "concept", "decision", "learning", "template", "artifact"],
+            "available_confidence": ["low", "medium", "high"],
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"List pages failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -581,6 +671,89 @@ async def promote_to_lp(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ===== Relationship Operations =====
+
+@router.get("/{wiki_type}/relationships/{page_id}")
+async def get_page_relationships(
+    wiki_type: str,
+    page_id: str,
+    project_id: Optional[str] = None,
+    relationship_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get relationships for a specific page.
+
+    Args:
+        wiki_type: "leading_practice" or "project"
+        page_id: Page ID
+        project_id: Project ID
+        relationship_type: Filter by type ("references", "mentions", etc)
+
+    Returns:
+        {
+            "status": "success",
+            "page_id": str,
+            "inbound": [{source_id, relation_type, confidence, confidence_score}],
+            "outbound": [{target_id, relation_type, confidence, confidence_score}],
+            "total_inbound": int,
+            "total_outbound": int
+        }
+    """
+    try:
+        from app.services.storage import workspace_path
+        import json
+
+        # Determine wiki directory
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            if not project_id:
+                raise HTTPException(status_code=400, detail="project_id required for project wiki")
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        # Load relationships
+        relationships_file = wiki_dir / "relationships.json"
+        inbound = []
+        outbound = []
+
+        if relationships_file.exists():
+            rels_data = json.loads(relationships_file.read_text())
+            for rel in rels_data.get("relationships", []):
+                # Filter by relationship type if specified
+                if relationship_type and rel["relation_type"] != relationship_type:
+                    continue
+
+                if rel["source_id"] == page_id:
+                    outbound.append({
+                        "target_id": rel["target_id"],
+                        "relation_type": rel["relation_type"],
+                        "confidence": rel["confidence"],
+                        "confidence_score": rel["confidence_score"],
+                    })
+                elif rel["target_id"] == page_id:
+                    inbound.append({
+                        "source_id": rel["source_id"],
+                        "relation_type": rel["relation_type"],
+                        "confidence": rel["confidence"],
+                        "confidence_score": rel["confidence_score"],
+                    })
+
+        return {
+            "status": "success",
+            "page_id": page_id,
+            "inbound": inbound,
+            "outbound": outbound,
+            "total_inbound": len(inbound),
+            "total_outbound": len(outbound),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get relationships failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ===== Dashboard Operations =====
 
 @router.get("/{wiki_type}/stats")
@@ -613,16 +786,97 @@ async def get_wiki_stats(
         }
     """
     try:
+        from app.services.storage import workspace_path
+        from datetime import datetime, timedelta, timezone
+        import re
+        import json
+        from app.services.wiki_operations import _get_relationship_counts
+
+        # Determine wiki directory
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            if not project_id:
+                raise HTTPException(status_code=400, detail="project_id required for project wiki")
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        by_category = {}
+        by_confidence = {}
+        total_pages = 0
+        last_ingest = None
+        pages_this_week = 0
+        stale_pages = 0
+
+        # Read wiki pages
+        if wiki_dir.exists():
+            now = datetime.now(timezone.utc)
+            week_ago = now - timedelta(days=7)
+
+            for md_file in wiki_dir.glob("*.md"):
+                # Skip special files
+                if md_file.name in ("index.md", "log.md", "relationships.json"):
+                    continue
+
+                try:
+                    content = md_file.read_text(encoding="utf-8")
+                    mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=timezone.utc)
+
+                    # Parse frontmatter
+                    category = "artifact"
+                    confidence = "medium"
+                    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+                    if match:
+                        fm_text = match.group(1)
+                        for line in fm_text.split("\n"):
+                            if ":" in line:
+                                key, value = line.split(":", 1)
+                                key = key.strip()
+                                value = value.strip().strip('"')
+                                if key == "category":
+                                    category = value
+                                elif key == "confidence":
+                                    confidence = value
+
+                    total_pages += 1
+                    by_category[category] = by_category.get(category, 0) + 1
+                    by_confidence[confidence] = by_confidence.get(confidence, 0) + 1
+
+                    if mtime > week_ago:
+                        pages_this_week += 1
+                    if mtime < week_ago:
+                        stale_pages += 1
+
+                    if last_ingest is None or mtime > last_ingest:
+                        last_ingest = mtime.isoformat()
+
+                except Exception as e:
+                    logger.warning(f"Failed to parse wiki page {md_file.name}: {e}")
+                    continue
+
+        # Load relationship statistics
+        rel_counts = _get_relationship_counts(wiki_type, project_id)
+        total_relationships = 0
+        pages_with_links = 0
+        for page_id, counts in rel_counts.items():
+            total_relationships += counts.get("outbound", 0)
+            if counts.get("inbound", 0) > 0 or counts.get("outbound", 0) > 0:
+                pages_with_links += 1
+
         stats = {
-            "total_pages": 0,
-            "by_category": {},
-            "by_confidence": {},
-            "last_ingest": None,
-            "pages_this_week": 0,
+            "total_pages": total_pages,
+            "by_category": by_category,
+            "by_confidence": by_confidence,
+            "last_ingest": last_ingest,
+            "pages_this_week": pages_this_week,
             "health": {
-                "severity": "low",
-                "issues_count": 0,
-                "stale_pages": 0,
+                "severity": "low" if stale_pages < 3 else "medium" if stale_pages < 10 else "high",
+                "issues_count": stale_pages,
+                "stale_pages": stale_pages,
+            },
+            "relationships": {
+                "total_relationships": total_relationships,
+                "pages_with_links": pages_with_links,
+                "connectivity": round(pages_with_links / max(total_pages, 1) * 100, 1) if total_pages > 0 else 0,
             },
         }
 
@@ -631,6 +885,8 @@ async def get_wiki_stats(
             "stats": stats,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Stats query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
