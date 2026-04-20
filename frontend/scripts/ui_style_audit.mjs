@@ -29,7 +29,7 @@ const scanGlobs = [
   path.join(frontendRoot, "components/**/*.jsx"),
 ];
 
-// eslint-disable-next-line no-undef
+ 
 const allowlistFiles = new Set(
   [
     // Temporary allowlist until the “Full-route WCAG + Token” wave is complete.

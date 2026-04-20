@@ -26,11 +26,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("processdoc.desktopNavCollapsed") === "true";
   });
-  const [matrixTheme, setMatrixTheme] = useState(false);
-
-  useEffect(() => {
-    setMatrixTheme(readMatrixThemeFromStorage());
-  }, []);
+  const [matrixTheme, setMatrixTheme] = useState(readMatrixThemeFromStorage);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -56,6 +52,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [desktopNavCollapsed]);
 
   useEffect(() => {
+    // Close the mobile nav whenever the route changes. Syncing with router
+    // state is a legitimate setState-in-effect; cascading render is intended.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMobileNavOpen(false);
   }, [pathname]);
 

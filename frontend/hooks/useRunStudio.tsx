@@ -953,7 +953,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     } catch {
       setArtifactsError("Could not copy prompt; please copy manually from browser console.");
       try {
-        // eslint-disable-next-line no-console
+         
         console.info("[ClaudeCode Handoff]", text);
       } catch {
         /* ignore */

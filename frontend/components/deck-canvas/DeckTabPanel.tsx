@@ -37,15 +37,12 @@ export function DeckTabPanel({
     return slides.filter((s): s is CanvasSlide => Boolean(s) && typeof s === "object");
   }, [slides]);
 
-  const [focusIdx, setFocusIdx] = useState(0);
+  const [focusIdxState, setFocusIdx] = useState(0);
+  // Clamp during render instead of setState-in-effect so a shrinking slides
+  // array can never leave the focus pointer dangling past the new end.
+  const focusIdx = Math.min(focusIdxState, Math.max(0, normalized.length - 1));
   const railRef = useRef<HTMLDivElement | null>(null);
   const mainRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (focusIdx >= normalized.length) {
-      setFocusIdx(Math.max(0, normalized.length - 1));
-    }
-  }, [normalized.length, focusIdx]);
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {

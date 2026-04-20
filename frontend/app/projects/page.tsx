@@ -38,7 +38,7 @@ export default function ProjectsIndexPage() {
 
   useEffect(() => {
     // Hydration guard to keep server/client initial markup identical.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setHydrated(true);
   }, []);
 
