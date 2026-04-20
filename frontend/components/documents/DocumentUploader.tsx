@@ -43,6 +43,10 @@ export function DocumentUploader({ projectId, autoload = true }: { projectId: st
     setUploading(true);
     setError(null);
     setMessage(null);
+
+    // Capture filename immediately from the File object
+    const filename = file.name;
+
     try {
       const form = new FormData();
       form.append("project_id", projectId);
@@ -59,24 +63,27 @@ export function DocumentUploader({ projectId, autoload = true }: { projectId: st
       if (!res.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Upload failed");
       }
-      const filename = data.filename ?? file.name;
       setMessage(`Uploaded: ${filename}`);
       await loadDocuments();
 
-      // Ingest document into wiki
+      // Ingest document into wiki (non-blocking — wiki page auto-syncs on load too)
       try {
-        await api("/api/wiki/project/ingest", {
+        const params = new URLSearchParams({
+          source_type: "document",
+          project_id: projectId,
+        });
+        const wikiRes = await api(`/api/wiki/project/ingest?${params}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            source_type: "document",
-            source_data: { filename, project_id: projectId },
-            project_id: projectId,
-          }),
+          body: JSON.stringify({ source_data: { filename } }),
         });
-      } catch (wikiErr) {
-        // Log wiki ingest error but don't block upload success
-        console.error("Failed to ingest document into wiki:", wikiErr);
+        if (wikiRes.ok) {
+          setMessage(`Uploaded: ${filename} — added to wiki`);
+        } else {
+          setMessage(`Uploaded: ${filename} — wiki sync pending (open Wiki to sync)`);
+        }
+      } catch {
+        setMessage(`Uploaded: ${filename} — wiki sync pending (open Wiki to sync)`);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed");

@@ -1,22 +1,17 @@
+"use client";
+
+import { useAuth } from '@/lib/auth-context';
 /**
- * WikiPage - Single page display with metadata, content, and related pages
- *
- * Features:
- * - Full page content with markdown rendering
- * - Metadata display (category, confidence, dates, links)
- * - Related pages and cross-references
- * - Action buttons (edit, promote, etc.)
- * - Breadcrumb navigation
+ * WikiPage — individual page viewer.
  */
 
 import React, { useState, useEffect } from 'react';
-import Link from 'next/link';
+import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
+import { WikiTabNav } from './WikiTabNav';
+import { confidenceClass } from '@/utils/wikiColors';
 
-interface PageLink {
-  id: string;
-  title: string;
-  type: 'inbound' | 'outbound';
-}
+interface PageLink { id: string; title: string; type: 'inbound' | 'outbound' }
 
 interface PageMetadata {
   id: string;
@@ -32,256 +27,169 @@ interface PageMetadata {
   inbound_links: PageLink[];
   outbound_links: PageLink[];
   pages_linking_count: number;
-  frontmatter: Record<string, any>;
+  frontmatter: Record<string, unknown>;
 }
 
 interface WikiPageProps {
   wikiType: 'leading_practice' | 'project';
   pageId: string;
   projectId?: string;
+  onBack?: () => void;
+  /** Called when the user clicks an inbound/outbound link so the parent can change page. */
+  onSelectPage?: (pageId: string) => void;
 }
 
-export const WikiPage: React.FC<WikiPageProps> = ({
-  wikiType,
-  pageId,
-  projectId,
-}) => {
-  const [page, setPage] = useState<PageMetadata | null>(null);
+export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId, onBack, onSelectPage }) => {
+  const { api } = useAuth();
+  const [page, setPage]       = useState<PageMetadata | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'content' | 'links' | 'metadata'>('content');
 
   useEffect(() => {
+    let cancelled = false;
     const fetchPage = async () => {
       try {
         setLoading(true);
         setError(null);
-
         const params = new URLSearchParams();
         if (projectId) params.append('project_id', projectId);
-
-        const response = await fetch(
-          `/api/wiki/${wikiType}/pages/${pageId}?${params.toString()}`,
-          { method: 'GET' }
-        );
-
-        if (!response.ok) throw new Error('Failed to load page');
-
-        const data = await response.json();
-        setPage(data.page);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
+        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}?${params}`);
+        if (!res.ok) throw new Error(res.status === 404 ? 'Page not found' : `Failed to load page (${res.status})`);
+        const data = await res.json();
+        if (!cancelled) setPage(data.page);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Unknown error');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
-
     fetchPage();
-  }, [wikiType, pageId, projectId]);
+    return () => { cancelled = true; };
+  }, [wikiType, pageId, projectId, api]);
 
-  if (loading) {
-    return <div className="p-8 text-center">Loading page...</div>;
-  }
+  if (loading) return (
+    <div className="space-y-3">
+      <div className="h-5 w-64 bg-[var(--surface-muted)] animate-pulse" />
+      <div className="h-3 w-32 bg-[var(--surface-muted)] animate-pulse" />
+    </div>
+  );
 
-  if (error) {
-    return <div className="p-8 text-red-600">Error: {error}</div>;
-  }
+  if (error || !page) return (
+    <div className="space-y-3">
+      {onBack && (
+        <Button variant="ghost" className="text-xs px-2 py-1" onClick={onBack}>
+          ← Back
+        </Button>
+      )}
+      <p className="text-xs text-[var(--error)]">{error ?? 'Page not found'}</p>
+    </div>
+  );
 
-  if (!page) {
-    return <div className="p-8">Page not found</div>;
-  }
-
-  const confidenceColor = {
-    high: 'text-green-700 bg-green-100',
-    medium: 'text-yellow-700 bg-yellow-100',
-    low: 'text-red-700 bg-red-100',
+  const renderLinkList = (links: PageLink[], emptyText: string) => {
+    if (links.length === 0) {
+      return <p className="text-xs text-[var(--text-muted)]">{emptyText}</p>;
+    }
+    return (
+      <div className="space-y-1">
+        {links.map((link) => (
+          <button
+            key={`${link.type}-${link.id}`}
+            type="button"
+            onClick={() => onSelectPage?.(link.id)}
+            disabled={!onSelectPage}
+            className="w-full text-left text-xs text-[var(--accent-blue)] py-1 border-b border-[var(--surface-border)] hover:underline disabled:text-[var(--text-muted)] disabled:no-underline"
+          >
+            {link.title}
+          </button>
+        ))}
+      </div>
+    );
   };
 
   return (
-    <div className="space-y-6">
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm text-gray-600">
-        <Link href={`/wiki/${wikiType}`} className="hover:text-blue-600">{wikiType === 'leading_practice' ? 'Leading Practices' : 'Wiki'}</Link>
-        <span>/</span>
-        <span className="capitalize">{page.category}</span>
-        <span>/</span>
-        <span className="font-medium text-gray-900">{page.title}</span>
-      </div>
-
-      {/* Header with Title and Metadata */}
-      <div className="border-b pb-6">
-        <div className="flex items-start justify-between mb-4">
-          <h1 className="text-4xl font-bold">{page.title}</h1>
-          <span
-            className={`px-4 py-2 rounded font-medium text-sm capitalize ${
-              confidenceColor[page.confidence as keyof typeof confidenceColor]
-            }`}
-          >
-            {page.confidence} Confidence
+    <div className="space-y-4">
+      {/* Back + Title row */}
+      {onBack && (
+        <Button variant="ghost" className="text-xs px-2 py-1 -ml-2" onClick={onBack}>
+          ← Back
+        </Button>
+      )}
+      <div className="flex items-start justify-between gap-4 pb-3 border-b border-[var(--surface-border)]">
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+            <Badge className="capitalize text-[10px]">{page.category}</Badge>
+            <span>Updated {new Date(page.updated_at).toLocaleDateString()}</span>
+          </div>
+          <h1 className="text-xl font-semibold text-[var(--text-default)]">{page.title}</h1>
+          <span className={`inline-flex items-center px-2 py-0.5 text-[10px] border capitalize ${confidenceClass[page.confidence] ?? confidenceClass.medium}`}>
+            {page.confidence} confidence
           </span>
         </div>
 
-        <div className="flex flex-wrap gap-4 text-sm text-gray-600 mb-4">
-          <div>
-            <span className="font-medium">Category:</span> <span className="capitalize">{page.category}</span>
-          </div>
-          <div>
-            <span className="font-medium">Updated:</span> {new Date(page.updated_at).toLocaleDateString()}
-          </div>
-          <div>
-            <span className="font-medium">Created:</span> {new Date(page.created_at).toLocaleDateString()}
-          </div>
-          {page.created_by && (
-            <div>
-              <span className="font-medium">Source:</span> {page.created_by}
-            </div>
-          )}
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex gap-2 flex-wrap">
-          <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
-            ✎ Edit
-          </button>
+        <div className="flex gap-2 flex-shrink-0 mt-1">
+          <Button variant="primary" className="text-xs px-3 py-1.5">Edit</Button>
           {wikiType === 'project' && (
-            <button className="px-4 py-2 border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 text-sm font-medium">
-              ↑ Promote to LP
-            </button>
+            <Button variant="secondary" className="text-xs px-3 py-1.5">Promote to LP</Button>
           )}
-          <button className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium">
-            ⋮ More
-          </button>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-4 border-b">
-        {(['content', 'links', 'metadata'] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 font-medium capitalize border-b-2 -mb-1 transition ${
-              activeTab === tab
-                ? 'text-blue-600 border-blue-600'
-                : 'text-gray-600 border-transparent hover:text-gray-900'
-            }`}
-          >
-            {tab === 'content' ? 'Content' : tab === 'links' ? 'Links' : 'Metadata'}
-            {tab === 'links' && page.pages_linking_count > 0 && (
-              <span className="ml-2 px-2 py-0 bg-gray-200 rounded-full text-xs">
-                {page.inbound_links.length}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      <WikiTabNav
+        tabs={[
+          { key: 'content',  label: 'Content' },
+          { key: 'links',    label: `Links (${page.inbound_links.length + page.outbound_links.length})` },
+          { key: 'metadata', label: 'Metadata' },
+        ]}
+        activeTab={activeTab}
+        onChange={(k) => setActiveTab(k as typeof activeTab)}
+      />
 
-      {/* Content Tab */}
+      {/* Content */}
       {activeTab === 'content' && (
-        <div className="prose prose-sm max-w-none">
-          <div
-            className="bg-white p-6 rounded-lg border"
-            dangerouslySetInnerHTML={{
-              __html: page.content.replace(/\n/g, '<br/>'),
-            }}
-          />
+        <div className="text-sm text-[var(--text-default)] leading-relaxed whitespace-pre-wrap border-t border-[var(--surface-border)] pt-4">
+          {page.content}
         </div>
       )}
 
-      {/* Links Tab */}
+      {/* Links */}
       {activeTab === 'links' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Inbound Links */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
           <div>
-            <h3 className="font-semibold mb-4 text-lg">Referenced By ({page.inbound_links.length})</h3>
-            {page.inbound_links.length === 0 ? (
-              <p className="text-gray-500">No pages reference this one yet</p>
-            ) : (
-              <div className="space-y-2">
-                {page.inbound_links.map((link) => (
-                  <Link key={link.id} href={`/wiki/${wikiType}/pages/${link.id}`} className="block p-3 border rounded hover:bg-blue-50 transition">
-                      <div className="text-blue-600 font-medium hover:underline">{link.title}</div>
-                  </Link>
-                ))}
-              </div>
-            )}
+            <p className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide mb-2">
+              Referenced by ({page.inbound_links.length})
+            </p>
+            {renderLinkList(page.inbound_links, 'No pages reference this one')}
           </div>
-
-          {/* Outbound Links */}
           <div>
-            <h3 className="font-semibold mb-4 text-lg">References ({page.outbound_links.length})</h3>
-            {page.outbound_links.length === 0 ? (
-              <p className="text-gray-500">This page doesn't reference other pages</p>
-            ) : (
-              <div className="space-y-2">
-                {page.outbound_links.map((link) => (
-                  <Link key={link.id} href={`/wiki/${wikiType}/pages/${link.id}`} className="block p-3 border rounded hover:bg-blue-50 transition">
-                      <div className="text-blue-600 font-medium hover:underline">{link.title}</div>
-                  </Link>
-                ))}
-              </div>
-            )}
+            <p className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide mb-2">
+              References ({page.outbound_links.length})
+            </p>
+            {renderLinkList(page.outbound_links, 'No outbound references')}
           </div>
         </div>
       )}
 
-      {/* Metadata Tab */}
+      {/* Metadata */}
       {activeTab === 'metadata' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Frontmatter */}
-          <div className="bg-white p-6 rounded-lg border">
-            <h3 className="font-semibold mb-4">Frontmatter</h3>
-            <div className="space-y-3 text-sm">
+        <div className="pt-2">
+          {Object.keys(page.frontmatter ?? {}).length > 0 ? (
+            <dl className="divide-y divide-[var(--surface-border)] border border-[var(--surface-border)]">
               {Object.entries(page.frontmatter).map(([key, value]) => (
-                <div key={key} className="flex gap-2">
-                  <span className="font-medium text-gray-600 w-32">{key}:</span>
-                  <span className="text-gray-900">
+                <div key={key} className="grid grid-cols-[180px_1fr] text-xs">
+                  <dt className="px-3 py-2 bg-[var(--surface-muted)] text-[var(--text-muted)] font-medium">{key}</dt>
+                  <dd className="px-3 py-2 text-[var(--text-default)]">
                     {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                  </span>
+                  </dd>
                 </div>
               ))}
-            </div>
-          </div>
-
-          {/* Sources */}
-          <div className="bg-white p-6 rounded-lg border space-y-4">
-            {page.source_memory_ids && page.source_memory_ids.length > 0 && (
-              <div>
-                <h3 className="font-semibold mb-2">Memory Items</h3>
-                <div className="space-y-1 text-sm">
-                  {page.source_memory_ids.map((id) => (
-                    <div key={id} className="text-blue-600 hover:underline cursor-pointer">
-                      {id}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {page.source_run_ids && page.source_run_ids.length > 0 && (
-              <div>
-                <h3 className="font-semibold mb-2">Run Artifacts</h3>
-                <div className="space-y-1 text-sm">
-                  {page.source_run_ids.map((id) => (
-                    <div key={id} className="text-blue-600 hover:underline cursor-pointer">
-                      {id}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {!page.source_memory_ids && !page.source_run_ids && (
-              <p className="text-gray-500 text-sm">No source references</p>
-            )}
-          </div>
+            </dl>
+          ) : (
+            <p className="text-xs text-[var(--text-muted)]">No frontmatter fields</p>
+          )}
         </div>
       )}
-
-      {/* Back to Browse */}
-      <div className="pt-6 border-t">
-        <Link href={`/wiki/${wikiType}/browse`} className="text-blue-600 hover:underline font-medium">← Back to Browse</Link>
-      </div>
     </div>
   );
 };

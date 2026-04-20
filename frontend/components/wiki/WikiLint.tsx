@@ -1,15 +1,14 @@
+"use client";
+
+import { useAuth } from '@/lib/auth-context';
 /**
- * WikiLint - Health check and issue resolution interface
- *
- * Features:
- * - Run health check on wiki
- * - Display issues by category and severity
- * - Suggestions and recommendations
- * - Auto-fix capabilities
- * - Historical trend view
+ * WikiLint — health check and issue browser.
  */
 
 import React, { useState, useEffect } from 'react';
+import { Button } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { severityBg, severityBorder } from '@/utils/wikiColors';
 
 interface Issue {
   id: string;
@@ -39,48 +38,40 @@ interface WikiLintProps {
   autoRun?: boolean;
 }
 
-type IssueFilter = 'all' | 'contradiction' | 'orphan' | 'broken_link' | 'missing_reference' | 'coverage_gap' | 'divergence' | 'staleness';
+type IssueFilter = 'all' | Issue['type'];
 type SeverityFilter = 'all' | 'low' | 'medium' | 'high';
 
-export const WikiLint: React.FC<WikiLintProps> = ({
-  wikiType,
-  projectId,
-  autoRun = false,
-}) => {
-  const [result, setResult] = useState<LintResult | null>(null);
-  const [loading, setLoading] = useState(autoRun);
-  const [error, setError] = useState<string | null>(null);
-  const [autoFix, setAutoFix] = useState(false);
-  const [issueFilter, setIssueFilter] = useState<IssueFilter>('all');
-  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
-  const [expandedIssue, setExpandedIssue] = useState<string | null>(null);
+const ISSUE_LABELS: Record<string, string> = {
+  contradiction:      'Contradiction',
+  orphan:             'Orphan',
+  broken_link:        'Broken Link',
+  missing_reference:  'Missing Ref',
+  coverage_gap:       'Gap',
+  divergence:         'Divergence',
+  staleness:          'Stale',
+};
 
-  useEffect(() => {
-    if (autoRun) {
-      runLint();
-    }
-  }, []);
+export const WikiLint: React.FC<WikiLintProps> = ({ wikiType, projectId, autoRun = false }) => {
+  const { api } = useAuth();
+  const [result, setResult]         = useState<LintResult | null>(null);
+  const [loading, setLoading]       = useState(autoRun);
+  const [error, setError]           = useState<string | null>(null);
+  const [autoFix, setAutoFix]       = useState(false);
+  const [issueFilter, setIssueFilter]       = useState<IssueFilter>('all');
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
+  const [expandedIssue, setExpandedIssue]   = useState<string | null>(null);
+
+  useEffect(() => { if (autoRun) runLint(); }, []);
 
   const runLint = async () => {
     try {
       setLoading(true);
       setError(null);
-
-      const params = new URLSearchParams({
-        auto_fix: autoFix.toString(),
-      });
-
+      const params = new URLSearchParams({ auto_fix: autoFix.toString() });
       if (projectId) params.append('project_id', projectId);
-
-      const response = await fetch(
-        `/api/wiki/${wikiType}/lint?${params.toString()}`,
-        { method: 'POST' }
-      );
-
-      if (!response.ok) throw new Error('Lint failed');
-
-      const data: LintResult = await response.json();
-      setResult(data);
+      const res = await api(`/api/wiki/${wikiType}/lint?${params}`, { method: 'POST' });
+      if (!res.ok) throw new Error('Lint failed');
+      setResult(await res.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -88,297 +79,166 @@ export const WikiLint: React.FC<WikiLintProps> = ({
     }
   };
 
-  const filteredIssues = result?.issues.filter((issue) => {
-    const matchesType = issueFilter === 'all' || issue.type === issueFilter;
-    const matchesSeverity = severityFilter === 'all' || issue.severity === severityFilter;
-    return matchesType && matchesSeverity;
-  }) || [];
-
-  const severityColor = {
-    low: 'text-green-700 bg-green-100',
-    medium: 'text-yellow-700 bg-yellow-100',
-    high: 'text-red-700 bg-red-100',
-  };
-
-  const severityBorder = {
-    low: 'border-green-300 bg-green-50',
-    medium: 'border-yellow-300 bg-yellow-50',
-    high: 'border-red-300 bg-red-50',
-  };
-
-  const issueTypeLabel = {
-    contradiction: '⚠️ Contradiction',
-    orphan: '🔗 Orphan Page',
-    broken_link: '❌ Broken Link',
-    missing_reference: '🔍 Missing Reference',
-    coverage_gap: '📊 Coverage Gap',
-    divergence: '↔️ Divergence',
-    staleness: '⏰ Stale Content',
-  };
+  const visible = result?.issues.filter((i) =>
+    (issueFilter === 'all' || i.type === issueFilter) &&
+    (severityFilter === 'all' || i.severity === severityFilter)
+  ) ?? [];
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold mb-2">Wiki Health Check</h1>
-        <p className="text-gray-600">
-          Scan for quality issues and get suggestions for improvement
-        </p>
-      </div>
-
-      {/* Run Button */}
+    <div className="space-y-4">
+      {/* Toolbar */}
       <div className="flex items-center gap-4">
-        <button
-          onClick={runLint}
-          disabled={loading}
-          className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium flex items-center"
-        >
-          {loading ? (
-            <>
-              <span className="inline-block animate-spin mr-2">⟳</span>
-              Checking health...
-            </>
-          ) : (
-            '🔎 Run Health Check'
-          )}
-        </button>
-
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={autoFix}
-            onChange={(e) => setAutoFix(e.target.checked)}
-            className="rounded"
-          />
-          <span className="text-sm text-gray-700">Auto-fix issues</span>
+        <Button variant="primary" className="text-xs px-4 py-2" onClick={runLint} disabled={loading}>
+          {loading ? 'Checking…' : 'Run Health Check'}
+        </Button>
+        <label className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] cursor-pointer">
+          <input type="checkbox" checked={autoFix} onChange={(e) => setAutoFix(e.target.checked)} />
+          Auto-fix
         </label>
       </div>
 
-      {error && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded text-red-600">
-          {error}
-        </div>
-      )}
+      {error && <p className="text-xs text-[var(--error)]">{error}</p>}
 
-      {/* Results Summary */}
       {result && (
         <>
-          {/* Status Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div
-              className={`p-4 rounded-lg border ${
-                result.passed
-                  ? 'bg-green-50 border-green-200'
-                  : 'bg-red-50 border-red-200'
-              }`}
+          {/* Summary stats */}
+          <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-[var(--surface-border)] border border-[var(--surface-border)]">
+            {[
+              { label: 'Status',     value: result.passed ? 'Healthy' : 'Issues' },
+              { label: 'Issues',     value: result.issues_count },
+              { label: 'Severity',   value: result.severity },
+              { label: 'Auto-fixed', value: result.auto_fixes_applied ?? '—' },
+            ].map(({ label, value }) => (
+              <div key={label} className="px-4 py-3 bg-[var(--surface-muted)]">
+                <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide">{label}</div>
+                <div className={`text-lg font-semibold mt-0.5 capitalize ${
+                  label === 'Status'
+                    ? result.passed ? 'text-[var(--success)]' : 'text-[var(--error)]'
+                    : label === 'Severity'
+                    ? result.severity === 'high' ? 'text-[var(--error)]' : result.severity === 'medium' ? 'text-[var(--warning)]' : 'text-[var(--success)]'
+                    : 'text-[var(--text-default)]'
+                }`}>
+                  {value}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Issue type filter */}
+          <div className="flex flex-wrap gap-1 items-center text-xs">
+            <button
+              onClick={() => setIssueFilter('all')}
+              className={`px-2 py-0.5 border transition ${!issueFilter || issueFilter === 'all' ? 'border-[var(--text-default)] bg-[var(--text-default)] text-white' : 'border-[var(--surface-border)] text-[var(--text-muted)] hover:border-[var(--text-default)]'}`}
             >
-              <div className={`text-sm font-medium ${result.passed ? 'text-green-700' : 'text-red-700'}`}>
-                Status
-              </div>
-              <div className={`text-2xl font-bold ${result.passed ? 'text-green-900' : 'text-red-900'}`}>
-                {result.passed ? '✓ Healthy' : '✗ Issues'}
-              </div>
-            </div>
-
-            <div className="p-4 rounded-lg bg-blue-50 border border-blue-200">
-              <div className="text-sm font-medium text-blue-700">Issues Found</div>
-              <div className="text-2xl font-bold text-blue-900">{result.issues_count}</div>
-            </div>
-
-            <div className={`p-4 rounded-lg border ${severityBorder[result.severity]}`}>
-              <div className={`text-sm font-medium ${severityColor[result.severity]}`}>Severity</div>
-              <div className={`text-2xl font-bold capitalize ${severityColor[result.severity]}`}>
-                {result.severity}
-              </div>
-            </div>
-
-            {result.auto_fixes_applied !== undefined && (
-              <div className="p-4 rounded-lg bg-purple-50 border border-purple-200">
-                <div className="text-sm font-medium text-purple-700">Auto-Fixed</div>
-                <div className="text-2xl font-bold text-purple-900">{result.auto_fixes_applied}</div>
-              </div>
-            )}
-          </div>
-
-          {/* Issue Breakdown by Type */}
-          <div className="bg-white border rounded-lg p-6">
-            <h2 className="text-xl font-bold mb-4">Issues by Type</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {Object.entries(issueTypeLabel).map(([type, label]) => {
-                const count = result.issues.filter((i) => i.type === type as any).length;
-                return (
-                  <button
-                    key={type}
-                    onClick={() => setIssueFilter(count > 0 ? (type as IssueFilter) : 'all')}
-                    className={`p-4 rounded-lg border text-center transition ${
-                      issueFilter === type
-                        ? 'bg-blue-100 border-blue-500'
-                        : count > 0
-                        ? 'bg-gray-50 border-gray-300 hover:border-gray-400'
-                        : 'bg-gray-50 border-gray-200 opacity-50 cursor-default'
-                    }`}
-                  >
-                    <div className="text-lg">{label.split(' ')[0]}</div>
-                    <div className="text-2xl font-bold mt-1">{count}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Issues List */}
-          <div className="space-y-4">
-            <div className="flex gap-2 items-center">
-              <h2 className="text-xl font-bold">Issues</h2>
-              <button
-                onClick={() => setSeverityFilter('all')}
-                className={`px-2 py-1 text-xs rounded ${
-                  severityFilter === 'all'
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                All
-              </button>
-              {(['high', 'medium', 'low'] as const).map((severity) => (
+              All
+            </button>
+            {Object.entries(ISSUE_LABELS).map(([type, label]) => {
+              const count = result.issues.filter((i) => i.type === type).length;
+              if (count === 0) return null;
+              return (
                 <button
-                  key={severity}
-                  onClick={() => setSeverityFilter(severity)}
-                  className={`px-2 py-1 text-xs rounded capitalize ${
-                    severityFilter === severity
-                      ? severityColor[severity]
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
+                  key={type}
+                  onClick={() => setIssueFilter(type as IssueFilter)}
+                  className={`px-2 py-0.5 border transition ${issueFilter === type ? 'border-[var(--text-default)] bg-[var(--text-default)] text-white' : 'border-[var(--surface-border)] text-[var(--text-muted)] hover:border-[var(--text-default)]'}`}
                 >
-                  {severity}
+                  {label} <span className="opacity-70">{count}</span>
                 </button>
-              ))}
-            </div>
-
-            {filteredIssues.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                {result.issues_count === 0
-                  ? 'No issues found! Your wiki is healthy.'
-                  : 'No issues match your filters.'}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {filteredIssues.map((issue) => (
-                  <div
-                    key={issue.id}
-                    className={`border rounded-lg overflow-hidden ${
-                      severityBorder[issue.severity]
-                    }`}
-                  >
-                    <button
-                      onClick={() =>
-                        setExpandedIssue(expandedIssue === issue.id ? null : issue.id)
-                      }
-                      className="w-full px-6 py-4 flex items-start justify-between hover:bg-black hover:bg-opacity-[0.02] transition text-left"
-                    >
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span
-                            className={`px-2 py-1 rounded text-xs font-medium ${
-                              severityColor[issue.severity]
-                            }`}
-                          >
-                            {issue.severity}
-                          </span>
-                          <span className="font-semibold">{issue.title}</span>
-                        </div>
-                        <p className="text-sm text-gray-600">{issue.description}</p>
-                      </div>
-                      <span className="text-gray-400 ml-4">
-                        {expandedIssue === issue.id ? '▼' : '▶'}
-                      </span>
-                    </button>
-
-                    {/* Expanded Details */}
-                    {expandedIssue === issue.id && (
-                      <div className="px-6 py-4 border-t bg-opacity-50 space-y-4">
-                        {issue.affected_pages.length > 0 && (
-                          <div>
-                            <h4 className="font-medium text-sm mb-2">Affected Pages</h4>
-                            <div className="space-y-1">
-                              {issue.affected_pages.map((page, idx) => (
-                                <div key={idx} className="text-sm text-gray-700">
-                                  • {page}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {issue.suggestion && (
-                          <div className="bg-white p-3 rounded border-l-4 border-blue-500">
-                            <h4 className="font-medium text-sm mb-1">Suggestion</h4>
-                            <p className="text-sm text-gray-700">{issue.suggestion}</p>
-                          </div>
-                        )}
-
-                        <div className="flex gap-2 pt-2">
-                          <button className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50">
-                            ✓ Resolve
-                          </button>
-                          <button className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50">
-                            ⊘ Ignore
-                          </button>
-                          <button className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50">
-                            ✎ Edit
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+              );
+            })}
+            <span className="mx-1 text-[var(--surface-border)]">|</span>
+            {(['all', 'high', 'medium', 'low'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setSeverityFilter(s)}
+                className={`px-2 py-0.5 border capitalize transition ${severityFilter === s ? 'border-[var(--text-default)] bg-[var(--text-default)] text-white' : 'border-[var(--surface-border)] text-[var(--text-muted)] hover:border-[var(--text-default)]'}`}
+              >
+                {s}
+              </button>
+            ))}
           </div>
 
-          {/* Suggestions */}
-          {result.suggestions.length > 0 && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-              <h3 className="font-semibold text-blue-900 mb-4">Recommendations</h3>
-              <div className="space-y-3">
-                {result.suggestions.map((suggestion, idx) => (
-                  <div key={idx} className="flex gap-3 text-sm text-blue-800">
-                    <span className="text-blue-600 font-bold flex-shrink-0">→</span>
-                    <span>{suggestion}</span>
-                  </div>
-                ))}
-              </div>
+          {/* Issues */}
+          {visible.length === 0 ? (
+            <EmptyState
+              title={result.issues_count === 0 ? 'Wiki is healthy' : 'No matching issues'}
+              description={result.issues_count === 0 ? 'No issues detected.' : 'Adjust the filters above.'}
+            />
+          ) : (
+            <div className="border border-[var(--surface-border)] divide-y divide-[var(--surface-border)]">
+              {visible.map((issue) => (
+                <div key={issue.id}>
+                  <button
+                    onClick={() => setExpandedIssue(expandedIssue === issue.id ? null : issue.id)}
+                    className="w-full px-4 py-3 flex items-start justify-between text-left hover:bg-[var(--surface-muted)] transition"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className={`inline-flex items-center px-1.5 py-0.5 text-[10px] border capitalize ${severityBg[issue.severity]}`}>
+                          {issue.severity}
+                        </span>
+                        <span className="text-xs font-medium text-[var(--text-default)]">{issue.title}</span>
+                      </div>
+                      <p className="text-xs text-[var(--text-muted)] truncate">{issue.description}</p>
+                    </div>
+                    <span className="text-[var(--text-muted)] ml-3 text-xs">{expandedIssue === issue.id ? '▼' : '▶'}</span>
+                  </button>
+
+                  {expandedIssue === issue.id && (
+                    <div className="px-4 py-3 bg-[var(--surface-muted)] border-t border-[var(--surface-border)] space-y-3">
+                      {issue.affected_pages.length > 0 && (
+                        <div>
+                          <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1">Affected pages</p>
+                          {issue.affected_pages.map((p, i) => (
+                            <div key={i} className="text-xs text-[var(--text-default)]">· {p}</div>
+                          ))}
+                        </div>
+                      )}
+                      {issue.suggestion && (
+                        <div className={`px-3 py-2 border-l-2 ${severityBorder[issue.severity]} text-xs text-[var(--text-default)]`}>
+                          {issue.suggestion}
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <Button variant="ghost" className="text-xs px-3 py-1">Resolve</Button>
+                        <Button variant="ghost" className="text-xs px-3 py-1">Ignore</Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
-          {/* Timestamp */}
-          <div className="text-xs text-gray-500 text-center">
+          {/* Suggestions */}
+          {result.suggestions.length > 0 && (
+            <div className="border border-[var(--surface-border)] px-4 py-3 bg-[var(--surface-muted)]">
+              <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-2">Recommendations</p>
+              <ul className="space-y-1">
+                {result.suggestions.map((s, i) => (
+                  <li key={i} className="text-xs text-[var(--text-default)] flex gap-2">
+                    <span className="text-[var(--accent-blue)]">→</span>{s}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <p className="text-[10px] text-[var(--text-muted)]">
             Last checked: {new Date(result.timestamp).toLocaleString()}
-          </div>
+          </p>
         </>
       )}
 
-      {/* Help Box */}
       {!result && !loading && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-          <h3 className="font-semibold text-blue-900 mb-3">About Wiki Health Checks</h3>
-          <div className="text-sm text-blue-800 space-y-2">
-            <p>
-              Health checks scan your wiki for seven types of issues:
-            </p>
-            <ul className="space-y-1 list-disc list-inside">
-              <li><strong>Contradictions:</strong> Conflicting claims across pages</li>
-              <li><strong>Orphan Pages:</strong> Pages with no incoming links</li>
-              <li><strong>Broken Links:</strong> References to non-existent pages</li>
-              <li><strong>Missing References:</strong> Concepts mentioned but no dedicated page</li>
-              <li><strong>Coverage Gaps:</strong> Important topics under-covered</li>
-              <li><strong>Divergence:</strong> Project wiki differs from leading practices</li>
-              <li><strong>Staleness:</strong> Pages not updated despite newer sources</li>
-            </ul>
-            <p className="mt-3">
-              Enable auto-fix to automatically resolve low-risk issues like formatting and broken links.
-            </p>
-          </div>
+        <div className="border border-[var(--surface-border)] px-4 py-3 bg-[var(--surface-muted)]">
+          <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1.5">What gets checked</p>
+          <ul className="text-xs text-[var(--text-muted)] space-y-0.5 list-disc list-inside">
+            <li>Contradictions — conflicting claims across pages</li>
+            <li>Orphan pages — no incoming links</li>
+            <li>Broken links — references to non-existent pages</li>
+            <li>Coverage gaps — important topics under-documented</li>
+            <li>Staleness — pages not updated despite newer sources</li>
+          </ul>
         </div>
       )}
     </div>

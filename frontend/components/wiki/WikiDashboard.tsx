@@ -1,20 +1,18 @@
+"use client";
+
+import { useAuth } from '@/lib/auth-context';
 /**
- * WikiDashboard - Main wiki interface with overview, search, and actions
- *
- * Displays:
- * - Wiki statistics (total pages, by category)
- * - Health summary (issues, severity)
- * - Quick actions (search, ingest, browse)
- * - Recent activity
+ * WikiDashboard — compact overview with live stats.
+ * Auto-syncs uningested project documents on mount.
  */
 
-import React, { useState, useEffect } from 'react';
-import Link from 'next/link';
+import React, { useState, useEffect, useCallback } from 'react';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 interface WikiStats {
   total_pages: number;
-  by_category: { [key: string]: number };
-  by_confidence: { [key: string]: number };
+  by_category: Record<string, number>;
+  by_confidence: Record<string, number>;
   last_ingest?: string;
   pages_this_week: number;
   health: {
@@ -24,190 +22,154 @@ interface WikiStats {
   };
 }
 
+interface SyncResult {
+  synced: number;
+  already_synced: number;
+  errors: number;
+  total_files: number;
+}
+
 interface WikiDashboardProps {
   wikiType: 'leading_practice' | 'project';
   projectId?: string;
 }
 
-export const WikiDashboard: React.FC<WikiDashboardProps> = ({
-  wikiType,
-  projectId,
-}) => {
-  const [stats, setStats] = useState<WikiStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectId }) => {
+  const { api } = useAuth();
+  const [stats, setStats]       = useState<WikiStats | null>(null);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState<string | null>(null);
+  const [syncing, setSyncing]   = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const params = new URLSearchParams();
-        if (projectId) params.append('project_id', projectId);
-
-        const response = await fetch(
-          `/api/wiki/${wikiType}/stats?${params.toString()}`
-        );
-
-        if (!response.ok) throw new Error('Failed to fetch stats');
-
-        const data = await response.json();
-        setStats(data.stats);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchStats();
+  const fetchStats = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (projectId) params.append('project_id', projectId);
+      const res = await api(`/api/wiki/${wikiType}/stats?${params}`);
+      if (!res.ok) throw new Error('Failed to fetch stats');
+      const data = await res.json();
+      setStats(data.stats);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
   }, [wikiType, projectId]);
 
-  if (loading) {
-    return <div className="p-8 text-center">Loading wiki dashboard...</div>;
+  // Auto-sync project documents on mount
+  useEffect(() => {
+    const syncAndFetch = async () => {
+      if (wikiType === 'project' && projectId) {
+        setSyncing(true);
+        try {
+          const params = new URLSearchParams({ project_id: projectId });
+          const res = await api(`/api/wiki/project/sync-documents?${params}`, { method: 'POST' });
+          if (res.ok) {
+            const result: SyncResult = await res.json();
+            if (result.synced > 0) setSyncResult(result);
+          }
+        } catch {
+          // non-blocking — sync failure shouldn't break the page
+        } finally {
+          setSyncing(false);
+        }
+      }
+      await fetchStats();
+    };
+    void syncAndFetch();
+  }, [wikiType, projectId, fetchStats]);
+
+  if (loading || syncing) {
+    return (
+      <div className="space-y-3">
+        {syncing && (
+          <p className="text-xs text-[var(--text-muted)]">Syncing project documents into wiki…</p>
+        )}
+        {[...Array(3)].map((_, i) => (
+          <div key={i} className="h-8 bg-[var(--surface-muted)] animate-pulse" />
+        ))}
+      </div>
+    );
   }
 
   if (error) {
-    return <div className="p-8 text-red-600">Error: {error}</div>;
+    return <p className="text-xs text-[var(--error)]">{error}</p>;
   }
 
-  if (!stats) {
-    return <div className="p-8">No wiki data available</div>;
+  if (!stats || stats.total_pages === 0) {
+    return (
+      <EmptyState
+        title="No pages yet"
+        description="Upload documents in Run Studio — they'll appear here automatically. You can also ingest URLs or other sources from the Ingest tab."
+      />
+    );
   }
 
-  const severityColor = {
-    low: 'text-green-600',
-    medium: 'text-yellow-600',
-    high: 'text-red-600',
-  };
+  const healthColor =
+    stats.health.severity === 'high'   ? 'text-[var(--error)]' :
+    stats.health.severity === 'medium' ? 'text-[var(--warning)]' :
+                                          'text-[var(--success)]';
+
+  const lastIngest = stats.last_ingest
+    ? new Date(stats.last_ingest).toLocaleDateString()
+    : '—';
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold">
-          {wikiType === 'leading_practice' ? 'Leading Practices' : 'Project'} Wiki
-        </h1>
-        <p className="text-gray-600 mt-2">
-          Knowledge base with auto-correction and health checks
-        </p>
+    <div className="space-y-5">
+      {/* Sync banner — shown only when new docs were just synced */}
+      {syncResult && syncResult.synced > 0 && (
+        <div className="border border-[var(--surface-border)] px-4 py-2 bg-[var(--surface-muted)] text-xs text-[var(--success)]">
+          {syncResult.synced} project document{syncResult.synced !== 1 ? 's' : ''} added to wiki.
+          {syncResult.errors > 0 && (
+            <span className="text-[var(--warning)] ml-2">{syncResult.errors} failed.</span>
+          )}
+        </div>
+      )}
+
+      {/* Stats row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-[var(--surface-border)] border border-[var(--surface-border)]">
+        {[
+          { label: 'Pages',            value: stats.total_pages },
+          { label: 'Categories',       value: Object.keys(stats.by_category).length },
+          { label: 'Added this week',  value: stats.pages_this_week },
+          { label: 'Last ingest',      value: lastIngest },
+        ].map(({ label, value }) => (
+          <div key={label} className="px-4 py-3 bg-[var(--surface-muted)]">
+            <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide">{label}</div>
+            <div className="text-lg font-semibold text-[var(--text-default)] mt-0.5">{value}</div>
+          </div>
+        ))}
       </div>
 
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Link href={`/wiki/${wikiType}/search`} className="p-4 border rounded-lg hover:bg-gray-50 transition">
-            <div className="font-semibold">Search</div>
-            <div className="text-sm text-gray-600">Find pages and topics</div>
-        </Link>
-
-        <Link href={`/wiki/${wikiType}/browse`} className="p-4 border rounded-lg hover:bg-gray-50 transition">
-            <div className="font-semibold">Browse</div>
-            <div className="text-sm text-gray-600">View all pages</div>
-        </Link>
-
-        {wikiType === 'project' && (
-          <Link href={`/wiki/${wikiType}/ingest`} className="p-4 border rounded-lg hover:bg-gray-50 transition bg-blue-50">
-              <div className="font-semibold text-blue-600">+ Ingest</div>
-              <div className="text-sm text-gray-600">Add sources</div>
-          </Link>
+      {/* Health row */}
+      <div className="flex items-center gap-2 text-xs border border-[var(--surface-border)] px-4 py-2 bg-[var(--surface-muted)]">
+        <span className="text-[var(--text-muted)]">Health:</span>
+        <span className={`font-medium capitalize ${healthColor}`}>{stats.health.severity}</span>
+        {stats.health.issues_count > 0 && (
+          <span className="text-[var(--text-muted)]">· {stats.health.issues_count} issue{stats.health.issues_count !== 1 ? 's' : ''}</span>
         )}
-
-        <Link href={`/wiki/${wikiType}/lint`} className="p-4 border rounded-lg hover:bg-gray-50 transition">
-            <div className="font-semibold">Health Check</div>
-            <div className="text-sm text-gray-600">Run lint</div>
-        </Link>
+        {stats.health.stale_pages > 0 && (
+          <span className="text-[var(--text-muted)]">· {stats.health.stale_pages} stale</span>
+        )}
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Total Pages */}
-        <div className="bg-white p-6 rounded-lg border">
-          <div className="text-gray-600 text-sm font-medium">Total Pages</div>
-          <div className="text-4xl font-bold mt-2">{stats.total_pages}</div>
-          <div className="text-gray-600 text-sm mt-2">
-            {stats.pages_this_week} this week
+      {/* Category breakdown */}
+      {Object.keys(stats.by_category).length > 0 && (
+        <div>
+          <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-2">By category</div>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(stats.by_category)
+              .sort((a, b) => b[1] - a[1])
+              .map(([cat, count]) => (
+                <span
+                  key={cat}
+                  className="px-2 py-1 text-xs border border-[var(--surface-border)] bg-white text-[var(--text-default)] capitalize"
+                >
+                  {cat} <span className="text-[var(--text-muted)]">{count}</span>
+                </span>
+              ))}
           </div>
-        </div>
-
-        {/* Health Status */}
-        <div className="bg-white p-6 rounded-lg border">
-          <div className="text-gray-600 text-sm font-medium">Health Status</div>
-          <div className={`text-4xl font-bold mt-2 ${severityColor[stats.health.severity]}`}>
-            {stats.health.severity.toUpperCase()}
-          </div>
-          <div className="text-gray-600 text-sm mt-2">
-            {stats.health.issues_count} issue{stats.health.issues_count !== 1 ? 's' : ''}
-          </div>
-        </div>
-
-        {/* Stale Pages */}
-        <div className="bg-white p-6 rounded-lg border">
-          <div className="text-gray-600 text-sm font-medium">Stale Pages</div>
-          <div className="text-4xl font-bold mt-2">{stats.health.stale_pages}</div>
-          <div className="text-gray-600 text-sm mt-2">
-            Last ingest: {stats.last_ingest ? new Date(stats.last_ingest).toLocaleDateString() : 'Never'}
-          </div>
-        </div>
-      </div>
-
-      {/* Categories */}
-      <div className="bg-white p-6 rounded-lg border">
-        <h2 className="text-xl font-bold mb-4">Pages by Category</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {Object.entries(stats.by_category).map(([category, count]) => (
-            <Link key={category} href={`/wiki/${wikiType}/browse?category=${category}`} className="p-4 text-center border rounded hover:bg-gray-50 transition">
-                <div className="font-semibold text-lg">{count}</div>
-                <div className="text-sm text-gray-600 capitalize">{category}s</div>
-            </Link>
-          ))}
-        </div>
-      </div>
-
-      {/* Confidence Breakdown */}
-      <div className="bg-white p-6 rounded-lg border">
-        <h2 className="text-xl font-bold mb-4">Content Confidence</h2>
-        <div className="space-y-3">
-          {Object.entries(stats.by_confidence).map(([level, count]) => (
-            <div key={level} className="flex items-center justify-between">
-              <span className="capitalize font-medium">{level}</span>
-              <div className="flex items-center gap-2">
-                <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${
-                      level === 'high'
-                        ? 'bg-green-500'
-                        : level === 'medium'
-                        ? 'bg-yellow-500'
-                        : 'bg-red-500'
-                    }`}
-                    style={{
-                      width: `${(count / stats.total_pages) * 100}%`,
-                    }}
-                  />
-                </div>
-                <span className="text-sm text-gray-600 w-8">{count}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Health Alerts */}
-      {stats.health.severity !== 'low' && (
-        <div
-          className={`p-4 rounded-lg ${
-            stats.health.severity === 'high'
-              ? 'bg-red-50 border border-red-200'
-              : 'bg-yellow-50 border border-yellow-200'
-          }`}
-        >
-          <h3 className="font-semibold mb-2">
-            {stats.health.severity === 'high' ? '🔴' : '🟡'} Wiki Health Alert
-          </h3>
-          <p className="text-sm text-gray-700 mb-3">
-            Your wiki has {stats.health.issues_count} issue{stats.health.issues_count !== 1 ? 's' : ''} that should be reviewed.
-          </p>
-          <Link href={`/wiki/${wikiType}/lint`} className="text-sm font-medium text-blue-600 hover:underline">
-              View details and suggestions →
-          </Link>
         </div>
       )}
     </div>

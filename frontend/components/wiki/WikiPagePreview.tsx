@@ -1,3 +1,6 @@
+"use client";
+
+import { useAuth } from '@/lib/auth-context';
 /**
  * WikiPagePreview - Inline preview popup for wiki pages
  *
@@ -40,6 +43,7 @@ export const WikiPagePreview: React.FC<WikiPagePreviewProps> = ({
   children,
   className = '',
 }) => {
+  const { api } = useAuth();
   const [page, setPage] = useState<PageSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
@@ -55,7 +59,7 @@ export const WikiPagePreview: React.FC<WikiPagePreviewProps> = ({
       const params = new URLSearchParams();
       if (projectId) params.append('project_id', projectId);
 
-      const response = await fetch(
+      const response = await api(
         `/api/wiki/${wikiType}/pages/${pageId}/preview?${params.toString()}`,
         { method: 'GET' }
       );

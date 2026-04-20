@@ -12,6 +12,12 @@ export { WikiQuery } from './WikiQuery';
 export { WikiLint } from './WikiLint';
 export { WikiPagePreview } from './WikiPagePreview';
 
+// Phase 2-5 Components (Relationships, Schema, Refresh, Synthesis)
+export { WikiRelationships } from './WikiRelationships';
+export { WikiSchemaAnalysis } from './WikiSchemaAnalysis';
+export { WikiRefreshScheduler } from './WikiRefreshScheduler';
+export { WikiSynthesis } from './WikiSynthesis';
+
 // Integration Components
 export { WikiTabInProjectStudio } from './WikiTabInProjectStudio';
 export { WikiArtifactSection } from './WikiArtifactSection';

@@ -1,3 +1,6 @@
+"use client";
+
+import { useAuth } from '@/lib/auth-context';
 /**
  * WikiMemoryLink - Links memory items to wiki pages
  *
@@ -28,6 +31,7 @@ export const WikiMemoryLink: React.FC<WikiMemoryLinkProps> = ({
   memoryContent,
   projectId,
 }) => {
+  const { api } = useAuth();
   const [linkedPages, setLinkedPages] = useState<LinkedPage[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -35,7 +39,7 @@ export const WikiMemoryLink: React.FC<WikiMemoryLinkProps> = ({
   useEffect(() => {
     const fetchLinkedPages = async () => {
       try {
-        const response = await fetch(
+        const response = await api(
           `/api/wiki/project/memory/${memoryId}/pages?project_id=${projectId}`,
           { method: 'GET' }
         );
@@ -56,7 +60,7 @@ export const WikiMemoryLink: React.FC<WikiMemoryLinkProps> = ({
 
   const handleCreateWikiPage = async (title: string, category: string) => {
     try {
-      const response = await fetch(
+      const response = await api(
         `/api/wiki/project/ingest/from-memory`,
         {
           method: 'POST',

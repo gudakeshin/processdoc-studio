@@ -1,3 +1,6 @@
+"use client";
+
+import { useAuth } from '@/lib/auth-context';
 /**
  * WikiArtifactSection - Wiki artifact display in Run Studio
  *
@@ -29,6 +32,7 @@ export const WikiArtifactSection: React.FC<WikiArtifactSectionProps> = ({
   projectId,
   runName = 'Run',
 }) => {
+  const { api } = useAuth();
   const [artifacts, setArtifacts] = useState<WikiArtifact[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +41,7 @@ export const WikiArtifactSection: React.FC<WikiArtifactSectionProps> = ({
     const fetchArtifacts = async () => {
       try {
         setLoading(true);
-        const response = await fetch(
+        const response = await api(
           `/api/wiki/project/artifacts?run_id=${runId}&project_id=${projectId}`,
           { method: 'GET' }
         );

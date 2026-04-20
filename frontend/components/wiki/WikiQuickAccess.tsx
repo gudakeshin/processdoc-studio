@@ -57,7 +57,16 @@ export function WikiQuickAccess({ projectId }: { projectId: string }) {
         );
         if (godNodesRes.ok) {
           const godNodesData = await godNodesRes.json();
-          setRecentPages(godNodesData.god_nodes || []);
+          // API returns page_id/page_title; map to the WikiPage interface shape
+          setRecentPages(
+            (godNodesData.god_nodes || []).map((gn: Record<string, unknown>) => ({
+              id: gn.page_id as string,
+              title: gn.page_title as string,
+              importance_score: gn.importance_score as number | undefined,
+              inbound_links: gn.inbound_links as number | undefined,
+              rank: gn.rank as number | undefined,
+            }))
+          );
         }
       } catch (err) {
         console.error("Failed to fetch wiki quick access data:", err);

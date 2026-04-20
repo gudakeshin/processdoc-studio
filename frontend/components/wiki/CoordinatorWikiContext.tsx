@@ -1,3 +1,6 @@
+"use client";
+
+import { useAuth } from '@/lib/auth-context';
 /**
  * CoordinatorWikiContext - Wiki context integration in Coordinator
  *
@@ -30,6 +33,7 @@ export const CoordinatorWikiContext: React.FC<CoordinatorWikiContextProps> = ({
   runObjective,
   runType,
 }) => {
+  const { api } = useAuth();
   const [context, setContext] = useState<ContextPage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +50,7 @@ export const CoordinatorWikiContext: React.FC<CoordinatorWikiContextProps> = ({
 
         if (runType) params.append('run_type', runType);
 
-        const response = await fetch(
+        const response = await api(
           `/api/wiki/project/context?${params.toString()}`,
           { method: 'GET' }
         );
@@ -68,7 +72,7 @@ export const CoordinatorWikiContext: React.FC<CoordinatorWikiContextProps> = ({
     } else {
       setLoading(false);
     }
-  }, [projectId, runObjective, runType]);
+  }, [projectId, runObjective, runType, api]);
 
   if (loading) {
     return (
