@@ -407,6 +407,33 @@ async def sync_project_documents_to_wiki(
     return {"status": "success", "ingested": ingested, "skipped": skipped, "errors": errors}
 
 
+@router.post("/project/{project_id}/vault/init")
+async def init_obsidian_vault(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Initialize Obsidian-compatible vault layout for a project."""
+    _wiki_require_access("project", project_id, user, db, mutating=True)
+    from app.services.storage import ensure_obsidian_vault_layout
+
+    details = ensure_obsidian_vault_layout(project_id)
+    return {"status": "success", **details}
+
+
+@router.get("/project/{project_id}/vault/path")
+async def get_obsidian_vault_path(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the filesystem path of the project Obsidian vault."""
+    _wiki_require_access("project", project_id, user, db, mutating=False)
+    from app.services.storage import workspace_path
+
+    return {"status": "success", "vault_path": str(workspace_path(project_id))}
+
+
 @router.get("/{wiki_type}/artifacts")
 async def list_wiki_pages_for_run(
     wiki_type: str,
@@ -1034,7 +1061,9 @@ async def get_page(
 
         inbound: list[dict[str, str]] = []
         outbound: list[dict[str, str]] = []
-        rels_file = wiki_dir / "relationships.json"
+        rels_file = wiki_dir / ".meta" / "relationships.json"
+        if not rels_file.exists():
+            rels_file = wiki_dir / "relationships.json"
         if rels_file.exists():
             try:
                 rels_data = json.loads(rels_file.read_text(encoding="utf-8"))
@@ -1342,7 +1371,9 @@ async def get_page_relationships(
             wiki_dir = workspace_path(project_id) / "wiki"
 
         # Load relationships
-        relationships_file = wiki_dir / "relationships.json"
+        relationships_file = wiki_dir / ".meta" / "relationships.json"
+        if not relationships_file.exists():
+            relationships_file = wiki_dir / "relationships.json"
         inbound = []
         outbound = []
 

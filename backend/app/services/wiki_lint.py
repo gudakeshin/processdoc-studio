@@ -202,6 +202,27 @@ def _check_missing_entities(wiki_type: str, project_id: str | None) -> list:
         return []
 
 
+def _check_no_relationships(wiki_type: str, project_id: str | None) -> list:
+    """Warn when a wiki has pages but no relationship edges."""
+    try:
+        pages = _get_all_wiki_pages(wiki_type, project_id)
+        if len(pages) < 3:
+            return []
+        rel_counts = get_relationship_counts(wiki_type, project_id)
+        total_edges = sum(v.get("outbound", 0) for v in rel_counts.values())
+        if total_edges > 0:
+            return []
+        return [{
+            "type": "no_relationships",
+            "severity": "medium",
+            "page_count": len(pages),
+            "message": f"Wiki has {len(pages)} pages but zero relationships; link extraction likely failed.",
+        }]
+    except Exception as e:
+        _LOG.warning(f"Error checking no-relationships condition: {e}")
+        return []
+
+
 def get_relationship_counts(wiki_type: str, project_id: str | None) -> dict:
     """
     Load relationship statistics from relationships.json.
@@ -643,6 +664,7 @@ def _evaluate_wiki_qa(wiki_type: str, project_id: str | None) -> dict:
         contradictions = _check_contradictions(pages)
         coverage_gaps = _check_coverage_gaps(pages)
         staleness = _check_staleness(pages)
+        no_relationships = _check_no_relationships(wiki_type, project_id)
 
         issues.extend(broken_links)
         issues.extend(orphaned_pages)
@@ -650,6 +672,7 @@ def _evaluate_wiki_qa(wiki_type: str, project_id: str | None) -> dict:
         issues.extend(contradictions)
         issues.extend(coverage_gaps)
         issues.extend(staleness)
+        issues.extend(no_relationships)
 
         # Separate issues by severity
         real_issues = [i for i in issues if i.get("severity") in ["medium", "high"]]
@@ -685,6 +708,7 @@ def _evaluate_wiki_qa(wiki_type: str, project_id: str | None) -> dict:
                 "contradictions": len(contradictions),
                 "coverage_gaps": len(coverage_gaps),
                 "stale_pages": len(staleness),
+                "no_relationships": len(no_relationships),
                 "total_issues": len(real_issues),
                 "total_suggestions": len(suggestions),
             }

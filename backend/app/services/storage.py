@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -24,6 +25,71 @@ def ensure_workspace(project_id: str) -> Path:
     if not context.exists():
         context.write_text("# Project Context\n")
     return base
+
+
+def ensure_obsidian_vault_layout(project_id: str) -> dict[str, str]:
+    """Bootstrap a read-only Obsidian-compatible vault layout."""
+    base = ensure_workspace(project_id)
+    wiki_dir = base / "wiki"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    alias_map = {
+        "raw": base / "source_docs",
+        "outputs": base / "runs",
+    }
+    created_aliases: list[str] = []
+    for alias, target in alias_map.items():
+        alias_path = base / alias
+        target.mkdir(parents=True, exist_ok=True)
+        if alias_path.exists():
+            continue
+        try:
+            os.symlink(target, alias_path)
+            created_aliases.append(alias)
+        except OSError:
+            # Cross-platform fallback: create a pointer README when symlink is unavailable.
+            alias_path.mkdir(parents=True, exist_ok=True)
+            (alias_path / "README.md").write_text(
+                f"This folder maps to `{target.name}` in environments without symlink support.\n",
+                encoding="utf-8",
+            )
+
+    obsidian_dir = base / ".obsidian"
+    obsidian_dir.mkdir(parents=True, exist_ok=True)
+    (obsidian_dir / "app.json").write_text(
+        json.dumps(
+            {
+                "useMarkdownLinks": False,
+                "newLinkFormat": "shortest",
+                "alwaysUpdateLinks": True,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (obsidian_dir / "graph.json").write_text(
+        json.dumps(
+            {
+                "showTags": True,
+                "showAttachments": True,
+                "collapse-filter": False,
+                "colorGroups": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (base / ".gitignore").write_text(".obsidian/workspace*.json\n", encoding="utf-8")
+    (base / "README.md").write_text(
+        "# Obsidian Vault\n\n"
+        "This project folder can be opened directly as an Obsidian vault.\n"
+        "The wiki is LLM-maintained; manual edits are preserved and flagged.\n",
+        encoding="utf-8",
+    )
+    return {
+        "vault_path": str(base),
+        "wiki_path": str(wiki_dir),
+        "aliases_created": ",".join(created_aliases),
+    }
 
 
 def create_run(project_id: str, output_types: list[str]) -> dict:

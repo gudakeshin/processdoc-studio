@@ -678,6 +678,9 @@ def _compound_update_entity_page(
                 system=(
                     "You are a wiki curator following Karpathy's second-brain model. "
                     "You are updating an existing entity page with new information from a source. "
+                    "Extract and retain high-signal source facts instead of over-paraphrasing. "
+                    "When adding quantitative or specific claims, include a short source locator "
+                    "like '(source: [[page_id|Title]])'. "
                     "Rewrite the page body in Markdown to:\n"
                     "1. Integrate the new information naturally (don't just append)\n"
                     "2. Flag any contradictions with a '> ⚠️ Contradicts:' blockquote\n"
@@ -751,6 +754,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
         # --- LLM synthesis ---
         page_summary = content_preview[:600]
         entities: list = []
+        related_pages: list[dict[str, str]] = []
 
         if is_claude_enabled():
             try:
@@ -758,14 +762,31 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                 schema = _load_wiki_schema(wiki_type, project_id)
                 schema_prefix = f"Wiki schema and conventions:\n{schema}\n\n" if schema else ""
 
-                all_titles = ", ".join(existing_pages) or "none yet"
+                existing_refs = []
+                for pid in existing_pages:
+                    pfile = wiki_dir / f"{pid}.md"
+                    title = pid
+                    if pfile.exists():
+                        fm = re.match(r"^---\n(.*?)\n---", pfile.read_text(), re.DOTALL)
+                        if fm:
+                            for line in fm.group(1).split("\n"):
+                                if line.startswith("title:"):
+                                    title = line.split(":", 1)[1].strip().strip('"')
+                                    break
+                    existing_refs.append({"page_id": pid, "title": title})
                 entity_system = (
                     schema_prefix
-                    + "You are a wiki maintainer following the second-brain knowledge structure. Given source content, return JSON with:\n"
+                    + "You are a wiki maintainer following the second-brain knowledge structure.\n"
+                    + "Extract, do not paraphrase aggressively: preserve critical facts as close to source wording as possible.\n"
+                    + "Use inline wiki-links in summary text whenever a known page should be referenced.\n"
+                    + "Given source content, return JSON with:\n"
                     "{\n"
-                    '  "page_summary": "2-4 paragraph wiki summary of the source",\n'
+                    '  "page_summary": "2-4 paragraph wiki summary using inline [[page_id|Title]] links where relevant",\n'
                     '  "entities": [\n'
                     '    {"name": "Entity Name", "semantic_type": "topic|concept|process|resource", "summary": "2-3 sentences"}\n'
+                    "  ],\n"
+                    '  "related_pages": [\n'
+                    '    {"page_id": "existing_page_id", "relation_type": "references|mentions|related_to", "rationale": "one sentence"}\n'
                     "  ]\n"
                     "}\n"
                     "Extract 3-5 key knowledge entities worth their own wiki entries. Use semantic types:\n"
@@ -784,7 +805,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                     "- 'procurement team' (the group), not 'John + Mary + Ahmed'\n"
                     "\n"
                     "Only propose new entities not already covered by existing pages. "
-                    f"Existing pages: {all_titles}\n"
+                    f"Existing pages: {json.dumps(existing_refs)}\n"
                     "Return strict JSON only."
                 )
 
@@ -800,6 +821,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                 )
                 page_summary = llm_result.get("page_summary", page_summary)
                 entities = llm_result.get("entities", [])
+                related_pages = llm_result.get("related_pages", [])
             except Exception as llm_err:
                 _LOG.warning(f"LLM synthesis failed, falling back to excerpt: {llm_err}")
 
@@ -827,7 +849,11 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
             **({"created_at": now} if not is_update else {}),
         })
         page_text = f"{fm}\n# {source_title}\n\n{page_summary}\n"
-        page_file.write_text(page_text)
+        if is_update and _is_user_edited_page(page_file):
+            _compound_update_entity_page(page_file, source_title, page_summary, source_title, page_id)
+        else:
+            page_file.write_text(page_text)
+        _annotate_contradictions(page_file, source_title, related_pages)
         page_ids.append(page_id)
 
         if is_update:
@@ -905,6 +931,8 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
 
         from app.services.wiki_graph import _build_and_persist_relationships
         _build_and_persist_relationships(wiki_type, project_id)
+        if related_pages:
+            _persist_related_page_suggestions(wiki_type, project_id, page_id, related_pages)
         _update_wiki_index(wiki_type, project_id)
 
         # Analyze graph structure to flag anomalous pages (Karpathy approach: let structure reveal issues)
@@ -916,6 +944,106 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
     except Exception as e:
         _LOG.error(f"Error updating wiki pages: {e}")
         return {"created": 0, "updated": 0, "page_ids": [], "corrections": []}
+
+
+def _persist_related_page_suggestions(
+    wiki_type: str,
+    project_id: str | None,
+    source_page_id: str,
+    related_pages: list[dict[str, str]],
+) -> None:
+    """Persist LLM-provided related pages into relationships storage."""
+    try:
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        meta_dir = wiki_dir / ".meta"
+        meta_dir.mkdir(exist_ok=True)
+        rel_file = meta_dir / "relationships.json"
+        if rel_file.exists():
+            data = json.loads(rel_file.read_text(encoding="utf-8"))
+        else:
+            data = {"relationships": [], "total": 0}
+
+        relationships = data.get("relationships", [])
+        existing_pairs = {(r.get("source_id"), r.get("target_id")) for r in relationships}
+        now = datetime.now(UTC).isoformat()
+        for rel in related_pages:
+            target_id = str(rel.get("page_id") or "").strip()
+            if not target_id or target_id == source_page_id:
+                continue
+            pair = (source_page_id, target_id)
+            if pair in existing_pairs:
+                continue
+            relationships.append({
+                "source_id": source_page_id,
+                "target_id": target_id,
+                "relation_type": rel.get("relation_type", "related_to"),
+                "confidence": "LLM",
+                "confidence_score": 0.75,
+                "source_location": "llm_related_pages",
+                "rationale": rel.get("rationale", ""),
+                "created_at": now,
+            })
+            existing_pairs.add(pair)
+
+        data["relationships"] = relationships
+        data["total"] = len(relationships)
+        data["last_updated"] = now
+        rel_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as exc:
+        _LOG.warning("Persisting related page suggestions failed: %s", exc)
+
+
+def _annotate_contradictions(page_file: Path, source_title: str, related_pages: list[dict[str, str]]) -> None:
+    """Add visible contradiction annotations to page content."""
+    try:
+        contradictions = []
+        for rel in related_pages:
+            relation_type = str(rel.get("relation_type", "")).strip().lower()
+            rationale = str(rel.get("rationale", "")).strip()
+            if relation_type == "contradicts" or "contradict" in rationale.lower():
+                page_id = str(rel.get("page_id", "")).strip()
+                if not page_id:
+                    continue
+                contradictions.append((page_id, rationale))
+
+        if not contradictions:
+            return
+
+        content = page_file.read_text(encoding="utf-8")
+        blocks = []
+        for page_id, rationale in contradictions:
+            msg = rationale or "Potential conflict detected during ingest."
+            blocks.append(f"> ⚠️ Contradicts: [[{page_id}|{page_id}]] — {msg}")
+        annotation = "\n".join(blocks)
+        if annotation in content:
+            return
+        updated = f"{content.rstrip()}\n\n## Contradictions\n{annotation}\n"
+        page_file.write_text(updated, encoding="utf-8")
+        _LOG.info("Added contradiction annotations for %s", source_title)
+    except Exception as exc:
+        _LOG.warning("Contradiction annotation failed for %s: %s", source_title, exc)
+
+
+def _is_user_edited_page(page_file: Path) -> bool:
+    """Check whether page frontmatter has been marked as user-edited."""
+    try:
+        if not page_file.exists():
+            return False
+        text = page_file.read_text(encoding="utf-8")
+        fm = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+        if not fm:
+            return False
+        for line in fm.group(1).splitlines():
+            if line.strip().startswith("user_edited:"):
+                value = line.split(":", 1)[1].strip().lower()
+                return value in {"true", '"true"', "'true'"}
+    except Exception:
+        return False
+    return False
 
 
 # ---------------------------------------------------------------------------

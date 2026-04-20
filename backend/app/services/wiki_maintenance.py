@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from app.services import wiki_lint
+from app.services.wiki_corrections import DataCorrector
+from app.services.wiki_relationships import classify_all_relationships
 from app.services.storage import workspace_path
 from app.services.wiki_operations import NonTransientError
 
@@ -403,3 +405,35 @@ def get_maintenance_status(
     """Get maintenance status for a wiki."""
     manager = WikiMaintenanceManager(wiki_type, project_id)
     return manager.get_maintenance_status()
+
+
+def run_weekly_librarian_tick(
+    wiki_type: str = "project",
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Run weekly maintenance + corrections + relationship classification."""
+    manager = WikiMaintenanceManager(wiki_type, project_id)
+    maintenance = manager.run_maintenance(auto_fix=True)
+    corrections_applied = 0
+    corrected_pages: list[str] = []
+
+    try:
+        for md_file in manager.wiki_dir.glob("*.md"):
+            if md_file.name in ("index.md", "log.md", "maintenance.log", "WIKI_SCHEMA.md", "SCHEMA.md"):
+                continue
+            original = md_file.read_text(encoding="utf-8")
+            updated, fixes = DataCorrector.correct_formatting(original)
+            if fixes and updated != original:
+                md_file.write_text(updated, encoding="utf-8")
+                corrections_applied += len(fixes)
+                corrected_pages.append(md_file.stem)
+    except Exception as exc:
+        _LOG.warning("Weekly correction pass failed: %s", exc)
+
+    classification = classify_all_relationships(wiki_type, project_id)
+    return {
+        "maintenance": maintenance,
+        "corrections_applied": corrections_applied,
+        "corrected_pages": corrected_pages,
+        "classification": classification,
+    }

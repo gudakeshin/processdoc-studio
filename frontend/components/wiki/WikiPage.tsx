@@ -47,6 +47,7 @@ interface WikiPageProps {
 
 export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId, onBack, onSelectPage }) => {
   const { api } = useAuth();
+  const webEditEnabled = process.env.NEXT_PUBLIC_WIKI_WEB_EDIT_ENABLED === 'true';
   const [page, setPage]       = useState<PageMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
@@ -113,6 +114,31 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
     );
   };
 
+  const renderWikiLinkedContent = (content: string) => {
+    const parts = content.split(/(\[\[[^\]]+\]\])/g);
+    return (
+      <div className="text-sm text-[var(--text-default)] leading-relaxed whitespace-pre-wrap border-t border-[var(--surface-border)] pt-4">
+        {parts.map((part, idx) => {
+          const m = part.match(/^\[\[([^|\]]+)(?:\|([^\]]+))?\]\]$/);
+          if (!m) return <React.Fragment key={`${idx}-${part.slice(0, 16)}`}>{part}</React.Fragment>;
+          const targetId = m[1];
+          const label = m[2] ?? m[1];
+          return (
+            <button
+              key={`${idx}-${targetId}`}
+              type="button"
+              className="text-[var(--accent-blue)] hover:underline"
+              onClick={() => onSelectPage?.(targetId)}
+              disabled={!onSelectPage}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4">
       {/* Back + Title row */}
@@ -134,7 +160,9 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
         </div>
 
         <div className="flex gap-2 flex-shrink-0 mt-1">
-          <Button variant="primary" className="text-xs px-3 py-1.5">Edit</Button>
+          {webEditEnabled && (
+            <Button variant="primary" className="text-xs px-3 py-1.5">Edit</Button>
+          )}
           {wikiType === 'project' && (
             <Button variant="secondary" className="text-xs px-3 py-1.5">Promote to LP</Button>
           )}
@@ -155,9 +183,7 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
 
       {/* Content */}
       {activeTab === 'content' && (
-        <div className="text-sm text-[var(--text-default)] leading-relaxed whitespace-pre-wrap border-t border-[var(--surface-border)] pt-4">
-          {page.content}
-        </div>
+        renderWikiLinkedContent(page.content)
       )}
 
       {/* Links */}

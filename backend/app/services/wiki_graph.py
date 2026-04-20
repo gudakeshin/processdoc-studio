@@ -48,17 +48,31 @@ def _extract_relationships(
         }
     """
     relationships = []
+    title_to_id = {
+        title.lower(): pid
+        for pid, title in zip(all_page_ids, all_page_titles, strict=False)
+    }
 
     try:
         # Extract explicit links: [[Page Name]]
         explicit_pattern = r"\[\[([^\]]+)\]\]"
         for match in re.finditer(explicit_pattern, content):
-            target_name = match.group(1).strip()
-            # Try to match with available pages
-            target_id = target_name.lower().replace(" ", "_").replace(".", "")[:50]
+            raw_target = match.group(1).strip()
+            target_ref, _, target_title = raw_target.partition("|")
+            target_ref = target_ref.strip()
+            target_title = target_title.strip()
+            normalized_target = target_ref.lower().replace(" ", "_").replace(".", "")[:50]
+            target_id = ""
+
+            if normalized_target in all_page_ids:
+                target_id = normalized_target
+            elif target_title and target_title.lower() in title_to_id:
+                target_id = title_to_id[target_title.lower()]
+            elif target_ref.lower() in title_to_id:
+                target_id = title_to_id[target_ref.lower()]
 
             # Only add if target exists
-            if target_id in all_page_ids or any(t.lower() == target_name.lower() for t in all_page_titles):
+            if target_id in all_page_ids:
                 relationships.append({
                     "source_id": source_page_id,
                     "target_id": target_id,

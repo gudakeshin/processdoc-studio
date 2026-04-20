@@ -58,11 +58,14 @@ from app.services.storage import save_run_artifacts, workspace_path
 from app.services.swarm import enrich_run_todos_with_dependencies, ensure_swarm_team
 from app.services.visual_qa import run_visual_quality_check, save_visual_qa_report
 from app.services.visual_qa_chat import persist_visual_qa_assistant_message
+from app.services.wiki_maintenance import run_weekly_librarian_tick
 
 _queue_rt = RunQueueRuntime(settings)
 _log = logging.getLogger(__name__)
 _embedded_redis_consumer_lock = threading.Lock()
 _embedded_redis_consumer_started = False
+_last_librarian_tick_ts = 0.0
+_librarian_tick_interval_sec = 7 * 24 * 60 * 60
 
 # Auto re-run after Visual / evaluator gate failure: max remediation enqueue rounds.
 MAX_EVALUATOR_REMEDIATION_ROUNDS = 3
@@ -732,6 +735,14 @@ def maybe_start_run_execution(project_id: str, run_id: str) -> None:
 def _queue_worker_loop() -> None:
     while True:
         _queue_rt.mark_worker_heartbeat()
+        global _last_librarian_tick_ts
+        now = time.time()
+        if now - _last_librarian_tick_ts >= _librarian_tick_interval_sec:
+            try:
+                run_weekly_librarian_tick("leading_practice", None)
+            except Exception:
+                pass
+            _last_librarian_tick_ts = now
         job = _queue_rt.local_wait_pop_job()
         project_id = str(job.get("project_id", ""))
         run_id = str(job.get("run_id", ""))

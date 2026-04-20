@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth-context';
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { Button } from '@/components/ui/Button';
 
 interface WikiStats {
   total_pages: number;
@@ -41,6 +42,7 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
   const [error, setError]       = useState<string | null>(null);
   const [syncing, setSyncing]   = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [vaultPath, setVaultPath] = useState<string | null>(null);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -54,6 +56,21 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
       setError(e instanceof Error ? e.message : 'Unknown error');
     } finally {
       setLoading(false);
+    }
+  }, [wikiType, projectId, api]);
+
+  const initAndOpenVault = useCallback(async () => {
+    if (wikiType !== 'project' || !projectId) return;
+    try {
+      await api(`/api/wiki/project/${projectId}/vault/init`, { method: 'POST' });
+      const pathRes = await api(`/api/wiki/project/${projectId}/vault/path`);
+      if (pathRes.ok) {
+        const pathData = await pathRes.json();
+        setVaultPath(pathData.vault_path ?? null);
+      }
+      window.location.href = `obsidian://open?vault=${encodeURIComponent(projectId)}`;
+    } catch {
+      // Keep dashboard functional even if Obsidian isn't installed.
     }
   }, [wikiType, projectId, api]);
 
@@ -153,6 +170,17 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
           <span className="text-[var(--text-muted)]">· {stats.health.stale_pages} stale</span>
         )}
       </div>
+
+      {wikiType === 'project' && projectId && (
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" className="text-xs px-3 py-1.5" onClick={initAndOpenVault}>
+            Open in Obsidian
+          </Button>
+          {vaultPath && (
+            <span className="text-[10px] text-[var(--text-muted)] font-mono">{vaultPath}</span>
+          )}
+        </div>
+      )}
 
       {/* Category breakdown */}
       {Object.keys(stats.by_category).length > 0 && (
