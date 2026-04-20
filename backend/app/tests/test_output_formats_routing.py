@@ -209,3 +209,11 @@ def test_run_artifacts_api_exposes_rich_payload_outputs() -> None:
     assert typed_map.get("pptx") == "binary_file:output.pptx"
     assert typed_map.get("xlsx") == "binary_file:output.xlsx"
     assert typed_map.get("pdf") == "binary_file:output.pdf"
+
+    assert isinstance(payload.get("deck_html"), str) and payload["deck_html"]
+    assert "<html" in payload["deck_html"].lower()
+    ready = payload.get("ready_downloads") or []
+    assert "deck_html" in ready
+    filenames = payload.get("output_filenames") or {}
+    assert filenames.get("deck_html", "").endswith(".html")
+    assert filenames.get("deck_pdf", "").endswith(".pdf")

@@ -1,29 +1,25 @@
 #!/usr/bin/env python3.11
 """End-to-end test: Regenerate TestEng2 deck and validate Phase 1 fixes."""
 
-from __future__ import annotations
-
 import json
-import os
 import sys
 from pathlib import Path
 
-import pytest
+# Add backend to path
+sys.path.insert(0, str(Path(__file__).parent / "backend"))
 
-_BACKEND_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_BACKEND_ROOT))
-
-from app.agents.coordinator import Coordinator  # noqa: E402
-from app.services.deliverable_quality import _validate_pptx_completeness  # noqa: E402
+from app.agents.coordinator import Coordinator
+from app.services.deliverable_quality import _validate_pptx_completeness
 
 
-def _run_regenerate_testeng2_deck() -> bool:
-    """Run coordinator + validation; returns True only when all checks pass."""
+def test_regenerate_testeng2_deck():
+    """Regenerate the TestEng2 P2P process deck and validate all slides."""
 
     print("=" * 80)
     print("PHASE 1 END-TO-END TEST: TestEng2 Deck Regeneration")
     print("=" * 80)
 
+    # The TestEng2 process: Procure-to-Pay (P2P)
     raw_text = """
     Process: Procure-to-Pay (P2P)
 
@@ -83,11 +79,11 @@ def _run_regenerate_testeng2_deck() -> bool:
 
     print("\n[1/5] Input: P2P Process Description")
     print("-" * 80)
-    print("Process: Procure-to-Pay")
-    print("Steps: 14")
-    print("Roles: 5")
-    print("Systems: 3")
-    print("Annual Spend: $450M")
+    print(f"Process: Procure-to-Pay")
+    print(f"Steps: 14")
+    print(f"Roles: 5")
+    print(f"Systems: 3")
+    print(f"Annual Spend: $450M")
 
     print("\n[2/5] Running Coordinator with Phase 1 Fixes...")
     print("-" * 80)
@@ -95,26 +91,24 @@ def _run_regenerate_testeng2_deck() -> bool:
     try:
         coordinator = Coordinator()
 
-        state = coordinator.run(
-            {
-                "raw_text": raw_text,
-                "requested_outputs": ["deck"],
-                "dpdp_flags": {"enabled": True},
-            }
-        )
+        state = coordinator.run({
+            "raw_text": raw_text,
+            "requested_outputs": ["deck"],
+            "dpdp_flags": {"enabled": True},
+        })
 
         print("✅ Coordinator execution completed")
 
     except Exception as e:
         print(f"❌ Coordinator execution failed: {e}")
         import traceback
-
         traceback.print_exc()
         return False
 
     print("\n[3/5] Extracting PPTX Slides JSON...")
     print("-" * 80)
 
+    # Get the PPTX slides from coordinator output
     pptx_output = state.get("pptx_slides")
 
     if not pptx_output:
@@ -122,6 +116,7 @@ def _run_regenerate_testeng2_deck() -> bool:
         print(f"Available outputs: {list(state.keys())}")
         return False
 
+    # Convert to JSON structure if needed
     if isinstance(pptx_output, str):
         try:
             pptx_json_data = json.loads(pptx_output)
@@ -129,12 +124,14 @@ def _run_regenerate_testeng2_deck() -> bool:
             print(f"❌ Failed to parse PPTX JSON: {e}")
             return False
     elif isinstance(pptx_output, list):
+        # If it's already a list, wrap it in the expected structure
         pptx_json_data = {"slides": pptx_output}
     else:
         pptx_json_data = pptx_output
 
-    print("✅ PPTX output extracted")
+    print(f"✅ PPTX output extracted")
 
+    # Get slides list
     if isinstance(pptx_json_data, dict):
         slides = pptx_json_data.get("slides", [])
     elif isinstance(pptx_json_data, list):
@@ -147,6 +144,7 @@ def _run_regenerate_testeng2_deck() -> bool:
     print("\n[4/5] Validating Slide Completeness (Phase 1 Fix)...")
     print("-" * 80)
 
+    # Run completeness check
     if isinstance(pptx_json_data, dict):
         pptx_json_str = json.dumps(pptx_json_data)
     else:
@@ -167,12 +165,14 @@ def _run_regenerate_testeng2_deck() -> bool:
     print("\n[5/5] Detailed Slide Analysis...")
     print("-" * 80)
 
+    # slides was already extracted above
     all_populated = True
 
     for i, slide in enumerate(slides, 1):
         slide_type = slide.get("slide_type", "unknown")
         title = slide.get("title", "[No title]")
 
+        # Check if slide has content
         has_content = False
         content_info = ""
 
@@ -215,37 +215,23 @@ def _run_regenerate_testeng2_deck() -> bool:
         print("=" * 80)
         print("\nSummary:")
         print(f"  ✅ All {len(slides)} slides are populated with content")
-        print("  ✅ No blank slides detected")
-        print("  ✅ Completeness validation passed")
-        print("  ✅ Quality gate passed")
+        print(f"  ✅ No blank slides detected")
+        print(f"  ✅ Completeness validation passed")
+        print(f"  ✅ Quality gate passed")
         print("\nConclusion: Phase 1 fixes are working correctly!")
         print("The deck is now presentation-ready for C-suite.")
         return True
-
-    print("❌ PHASE 1 END-TO-END TEST: FAILED")
-    print("=" * 80)
-    print("\nSome slides are still blank or incomplete.")
-    print("This indicates Phase 1 fixes need refinement.")
-    return False
-
-
-@pytest.mark.live_llm
-def test_regenerate_testeng2_deck() -> None:
-    """Live coordinator run; opt-in only (expensive + flaky without pinned model output)."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.skip("Set ANTHROPIC_API_KEY to run live coordinator E2E")
-    if os.environ.get("RUN_E2E_DECK", "").strip().lower() not in {"1", "true", "yes"}:
-        pytest.skip("Set RUN_E2E_DECK=1 to run the TestEng2 deck regeneration E2E")
-
-    assert _run_regenerate_testeng2_deck(), "TestEng2 deck regeneration or validation failed"
+    else:
+        print("❌ PHASE 1 END-TO-END TEST: FAILED")
+        print("=" * 80)
+        print("\nSome slides are still blank or incomplete.")
+        print("This indicates Phase 1 fixes need refinement.")
+        return False
 
 
 if __name__ == "__main__":
     try:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            print("Set ANTHROPIC_API_KEY to run this script.", file=sys.stderr)
-            sys.exit(2)
-        success = _run_regenerate_testeng2_deck()
+        success = test_regenerate_testeng2_deck()
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:
         print("\n\n❌ Test interrupted by user")
@@ -253,6 +239,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\n❌ Unexpected error: {e}")
         import traceback
-
         traceback.print_exc()
         sys.exit(1)

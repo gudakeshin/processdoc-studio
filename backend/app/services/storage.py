@@ -273,4 +273,8 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
         typed_artifacts.append({"output_type": "docx", "representation": "docx", "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "body": "binary_file:output.docx"})
     if (run_dir / "output.pptx").exists():
         typed_artifacts.append({"output_type": "pptx", "representation": "pptx", "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "body": "binary_file:output.pptx"})
+    if (run_dir / "deck.html").exists():
+        typed_artifacts.append({"output_type": "deck_html", "representation": "html", "content_type": "text/html", "body": "binary_file:deck.html"})
+    if (run_dir / "deck.pdf").exists():
+        typed_artifacts.append({"output_type": "deck_pdf", "representation": "pdf", "content_type": "application/pdf", "body": "binary_file:deck.pdf"})
     (run_dir / "artifacts_typed.json").write_text(json.dumps(typed_artifacts, indent=2), encoding="utf-8")

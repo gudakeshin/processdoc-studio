@@ -1,0 +1,85 @@
+{
+  "spike": "pptx_canvas_visual_diff",
+  "threshold_pct": 5.0,
+  "sample_count": 3,
+  "slide_count": 10,
+  "overall_pass": true,
+  "samples": {
+    "sample_finance_transform.json": [
+      {
+        "sample_name": "sample_finance_transform.json",
+        "slide_index": 1,
+        "slide_type": "title",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      },
+      {
+        "sample_name": "sample_finance_transform.json",
+        "slide_index": 2,
+        "slide_type": "column_cards",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      },
+      {
+        "sample_name": "sample_finance_transform.json",
+        "slide_index": 3,
+        "slide_type": "stack_layers",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      },
+      {
+        "sample_name": "sample_finance_transform.json",
+        "slide_index": 4,
+        "slide_type": "section_divider",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      }
+    ],
+    "sample_ops_exec_review.json": [
+      {
+        "sample_name": "sample_ops_exec_review.json",
+        "slide_index": 1,
+        "slide_type": "title",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      },
+      {
+        "sample_name": "sample_ops_exec_review.json",
+        "slide_index": 2,
+        "slide_type": "stat_cards",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      },
+      {
+        "sample_name": "sample_ops_exec_review.json",
+        "slide_index": 3,
+        "slide_type": "table",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      }
+    ],
+    "sample_supply_chain.json": [
+      {
+        "sample_name": "sample_supply_chain.json",
+        "slide_index": 1,
+        "slide_type": "title",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      },
+      {
+        "sample_name": "sample_supply_chain.json",
+        "slide_index": 2,
+        "slide_type": "bullets",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      },
+      {
+        "sample_name": "sample_supply_chain.json",
+        "slide_index": 3,
+        "slide_type": "table",
+        "diff_pct": 0.8952,
+        "pass_threshold": true
+      }
+    ]
+  }
+}

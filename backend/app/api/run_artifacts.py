@@ -2,11 +2,13 @@ import json
 import base64
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_project_role
+from app.core.handoff_bundle import build_handoff_bundle
 from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEvent, User
 from app.db.session import get_db
 from app.services.storage import workspace_path
@@ -130,12 +132,15 @@ def get_run_artifacts(
         "pdf_base64": _read_base64(run_dir / "output.pdf"),
         "docx_base64": _read_base64(run_dir / "output.docx"),
         "pptx_base64": _read_base64(run_dir / "output.pptx"),
+        "deck_html": _read_text(run_dir / "deck.html"),
+        "deck_pdf_base64": _read_base64(run_dir / "deck.pdf"),
         "sop_markdown": _read_text(run_dir / "sop.md"),
         "narrative_md": _read_text(run_dir / "narrative.md"),
         "assembled_context": _read_text(run_dir / "assembled_context.txt"),
         "context_references": source_trace,
         "process_model": process_model_payload,
         "typed_outputs": _read_json(run_dir / "artifacts_typed.json"),
+        "pptx_slides": _read_json(run_dir / "pptx_slides.json"),
         "visual_qa_report": _read_json(run_dir / "visual_qa_report.json"),
         "dpdp_report_json": _read_json(run_dir / "dpdp_report.json"),
         "qa_report": _read_json(run_dir / "qa_report.json") or _latest_run_event_payload(db, run_id, "qa_report"),
@@ -184,6 +189,10 @@ def get_run_artifacts(
         ready_downloads.append("docx")
     if artifacts.get("pptx_base64"):
         ready_downloads.append("pptx")
+    if artifacts.get("deck_html"):
+        ready_downloads.append("deck_html")
+    if artifacts.get("deck_pdf_base64"):
+        ready_downloads.append("deck_pdf")
     if artifacts.get("xlsx_base64"):
         ready_downloads.append("xlsx")
     if artifacts.get("pdf_base64"):
@@ -203,6 +212,7 @@ def get_run_artifacts(
     if artifacts.get("narrative_md"):
         ready_downloads.append("narrative_md")
     artifacts["ready_downloads"] = ready_downloads
+    artifacts["handoff_bundle_available"] = bool(run_dir.exists())
     project = db.scalar(select(Project).where(Project.id == project_id))
     project_name = str(project.name or "").strip() if project else ""
     process_meta = process_model_payload.get("metadata") if isinstance(process_model_payload, dict) else {}
@@ -217,6 +227,9 @@ def get_run_artifacts(
     artifacts["output_filenames"] = {
         "docx": _name("ProcessNarrative", "docx"),
         "pptx": _name("ExecutiveDeck", "pptx"),
+        "deck_html": _name("ExecutiveDeck", "html"),
+        "deck_pdf": _name("ExecutiveDeck", "pdf"),
+        "handoff_bundle": _name("HandoffBundle", "zip"),
         "xlsx": _name("AnalysisModel", "xlsx"),
         "pdf": _name("ExecutiveReport", "pdf"),
         "raci_xlsx": _name("RaciMatrix", "xlsx"),
@@ -240,5 +253,63 @@ def get_run_artifacts(
         custom_output_types=custom_output_types,
         output_type_representations=output_type_representations,
         artifacts=artifacts,
+    )
+
+
+@router.get("/{project_id}/{run_id}/handoff_bundle")
+def get_run_handoff_bundle(
+    project_id: str,
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Build (if needed) and stream the Claude Code handoff bundle zip."""
+
+    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run workspace not found")
+
+    try:
+        output_types = json.loads(run.output_types) if run.output_types else []
+    except json.JSONDecodeError:
+        output_types = []
+
+    plan_hash = ""
+    if run.plan_payload:
+        try:
+            plan_payload = json.loads(run.plan_payload)
+            if isinstance(plan_payload, dict):
+                plan_hash = str(plan_payload.get("plan_hash") or "")
+        except json.JSONDecodeError:
+            plan_hash = ""
+
+    project = db.scalar(select(Project).where(Project.id == project_id))
+    project_name = str(project.name or "").strip() if project else ""
+    run_date = run.created_at.date().strftime("%Y%m%d") if run.created_at else "UnknownDate"
+    filename = f"{_tokenize_filename(project_name or 'Project')}_HandoffBundle_{run_date}.zip"
+
+    result = build_handoff_bundle(
+        run_dir,
+        metadata={
+            "project_id": project_id,
+            "run_id": run_id,
+            "status": run.status,
+            "instruction": run.instruction,
+            "output_types": output_types if isinstance(output_types, list) else [],
+            "plan_hash": plan_hash,
+        },
+    )
+    if not result.zip_path or not result.zip_path.exists():
+        raise HTTPException(status_code=500, detail="Handoff bundle unavailable")
+
+    return FileResponse(
+        path=str(result.zip_path),
+        media_type="application/zip",
+        filename=filename,
     )
 

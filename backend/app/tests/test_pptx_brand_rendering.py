@@ -20,15 +20,18 @@ from app.services.storage import save_run_artifacts
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def _build_pptx(slides: list[dict[str, Any]]) -> Presentation:
+def _build_pptx(slides: list[dict[str, Any]], *, branding: dict[str, Any] | None = None) -> Presentation:
     """Save a minimal artifact payload and parse the resulting PPTX."""
     project_id = "test_brand_proj"
     run_id = "test_brand_run"
-    save_run_artifacts(project_id, run_id, {
+    payload: dict[str, Any] = {
         "requested_outputs": ["pptx"],
         "pptx_slides": slides,
         "process_model": {"process_name": "Test Process", "steps": [], "roles": []},
-    })
+    }
+    if branding is not None:
+        payload["branding"] = branding
+    save_run_artifacts(project_id, run_id, payload)
     from app.services.storage import workspace_path
     run_dir = workspace_path(project_id) / "runs" / run_id
     pptx_path = run_dir / "output.pptx"
@@ -61,8 +64,8 @@ def _text_content(slide: Any) -> str:
 
 def test_canvas_dimensions() -> None:
     prs = _build_pptx([{"title": "T", "slide_type": "title"}])
-    assert abs(prs.slide_width.inches - 10.0) < 0.01
-    assert abs(prs.slide_height.inches - 5.625) < 0.01
+    assert abs(prs.slide_width.inches - 13.333) < 0.02
+    assert abs(prs.slide_height.inches - 7.5) < 0.02
 
 
 # ── Title slide ──────────────────────────────────────────────────────────────
@@ -191,8 +194,8 @@ def test_column_cards_slide_renders_three_cards() -> None:
     assert "86BC25" in fills
 
 
-def test_column_cards_missing_cards_fallback() -> None:
-    """Fewer than 3 cards should not crash — missing cards render as empty."""
+def test_column_cards_single_card_still_renders() -> None:
+    """Fewer than 3 cards does not crash; contract QA may still flag completeness."""
     prs = _build_pptx([{
         "title": "Partial Cards",
         "slide_type": "column_cards",
@@ -201,6 +204,30 @@ def test_column_cards_missing_cards_fallback() -> None:
         ],
     }])
     assert len(prs.slides) == 1
+    assert "Only One" in _text_content(prs.slides[0])
+
+
+def test_column_cards_empty_shows_placeholder() -> None:
+    prs = _build_pptx([{"title": "No Columns", "slide_type": "column_cards", "column_cards": []}])
+    assert "Content pending" in _text_content(prs.slides[0])
+
+
+def test_custom_branding_primary_color_and_footer() -> None:
+    prs = _build_pptx(
+        [
+            {"title": "Branded", "slide_type": "title"},
+            {"title": "B1", "slide_type": "bullets", "bullets": ["x"]},
+        ],
+        branding={
+            "primary_color": "#0033A0",
+            "company_name": "Acme Corp",
+            "footer_text": "Acme Confidential",
+            "font_family": "Arial",
+        },
+    )
+    fills = _fill_colors(prs.slides[1])
+    assert "0033A0" in fills
+    assert "Acme Confidential" in _text_content(prs.slides[1])
 
 
 # ── Stack layers ──────────────────────────────────────────────────────────────

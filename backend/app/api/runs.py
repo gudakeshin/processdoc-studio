@@ -347,6 +347,12 @@ class ControlRunRequest(BaseModel):
     action: str
 
 
+class RegenerateSlideRequest(BaseModel):
+    instruction: str
+    scope: str = "slide"
+    element_path: str | None = None
+
+
 class RecommendOutputTypesRequest(BaseModel):
     project_id: str
     instruction: str
@@ -509,6 +515,23 @@ def _recommend_output_types(
 
     # De-dup while preserving order.
     desired_types = list(dict.fromkeys(desired_types))
+
+    # ── Short-circuit: explicit format fully determines the answer ──────────────
+    # When the user explicitly named an output format (e.g. "in PPT format", "pptx only"),
+    # we already know the answer — no need to call the LLM. Returning here eliminates
+    # LLM failures (timeout, invalid JSON, rate limit) as a source of false out-of-scope responses.
+    if explicit_formats_requested:
+        _catalog_ids = {str(item.get("output_type_id")) for item in catalog}
+        allowed_explicit = [t for t in explicit_formats_requested if t in _catalog_ids]
+        if allowed_explicit:
+            fast_prefs: dict[str, str] = {}
+            for _t in allowed_explicit:
+                if _t == "pptx":        fast_prefs["pptx"] = "pptx"
+                elif _t == "docx":      fast_prefs["docx"] = "docx"
+                elif _t == "xlsx":      fast_prefs["xlsx"] = "xlsx"
+                elif _t == "process_map": fast_prefs["process_map"] = "drawio_xml"
+                elif _t == "pdf":       fast_prefs["pdf"] = "pdf"
+            return allowed_explicit, [], fast_prefs, "Explicit format constraint detected.", None
 
     deliverable_constraints_text = (
         "Deliverable intent -> preferred output types/representations:\n"
@@ -1439,6 +1462,122 @@ def control_run(
     )
     db.commit()
     return {"run_id": run_id, "status": run.status, "action": action}
+
+
+@router.post("/{project_id}/{run_id}/slides/{slide_index}/regenerate")
+def regenerate_run_slide(
+    project_id: str,
+    run_id: str,
+    slide_index: int,
+    body: RegenerateSlideRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if slide_index < 1:
+        raise HTTPException(status_code=400, detail="slide_index must be >= 1")
+    instruction = str(body.instruction or "").strip()
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction is required")
+    scope = str(body.scope or "slide").strip().lower()
+    if scope not in {"slide", "element"}:
+        raise HTTPException(status_code=400, detail="scope must be 'slide' or 'element'")
+    element_path = str(body.element_path or "").strip()
+    if scope == "element" and not element_path:
+        raise HTTPException(status_code=400, detail="element_path is required when scope='element'")
+    try:
+        output_types = json.loads(run.output_types or "[]")
+    except Exception:
+        output_types = []
+    if "pptx" not in output_types:
+        raise HTTPException(status_code=409, detail="Run does not include pptx output")
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    slides_path = run_dir / "pptx_slides.json"
+    if not slides_path.exists():
+        raise HTTPException(status_code=409, detail="pptx_slides.json is not available for this run")
+    try:
+        prior_slides = json.loads(slides_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Could not read pptx slide state") from exc
+    if not isinstance(prior_slides, list) or not prior_slides:
+        raise HTTPException(status_code=409, detail="pptx slide state is empty")
+    if slide_index > len(prior_slides):
+        raise HTTPException(status_code=400, detail=f"slide_index out of range (1-{len(prior_slides)})")
+    try:
+        plan_payload = json.loads(run.plan_payload) if run.plan_payload else {}
+    except Exception:
+        plan_payload = {}
+    if not isinstance(plan_payload, dict):
+        plan_payload = {}
+    feedback_instruction = f"Slide {slide_index}: {instruction}"
+    if scope == "element" and element_path:
+        feedback_instruction = (
+            f"Slide {slide_index}, element '{element_path}': {instruction}. "
+            "Update only this element and preserve all other slide content/layout."
+        )
+    feedback_entry = {
+        "slide_index": slide_index,
+        "instruction": feedback_instruction,
+    }
+    if element_path:
+        feedback_entry["element_path"] = element_path
+    plan_payload["prior_pptx_slides"] = prior_slides
+    plan_payload["pptx_visual_feedback"] = [feedback_entry]
+    inline_comments = plan_payload.get("pptx_inline_comments")
+    if not isinstance(inline_comments, list):
+        inline_comments = []
+    inline_comments.append(
+        {
+            "slide_index": slide_index,
+            "scope": scope,
+            "element_path": element_path or None,
+            "instruction": instruction[:1000],
+            "requested_by": str(user.id),
+            "requested_at": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+    plan_payload["pptx_inline_comments"] = inline_comments[-200:]
+    prev_regen = str(plan_payload.get("regeneration_directive") or "").strip()
+    if scope == "element" and element_path:
+        regen_line = (
+            f"Targeted element regeneration requested for slide {slide_index} at '{element_path}'. "
+            "Preserve all other elements and slides unchanged."
+        )
+    else:
+        regen_line = f"Targeted slide regeneration requested for slide {slide_index}. Preserve all other slides unchanged."
+    plan_payload["regeneration_directive"] = f"{prev_regen}\n\n{regen_line}".strip() if prev_regen else regen_line
+    run.plan_payload = json.dumps(plan_payload)
+    run.status = "approved"
+    run.error_message = f"Targeted slide regeneration queued for slide {slide_index}."
+    db.commit()
+    append_run_event(
+        db,
+        run_id,
+        "slide_regeneration_requested",
+        {
+            "project_id": project_id,
+            "run_id": run_id,
+            "slide_index": slide_index,
+            "scope": scope,
+            "element_path": element_path or None,
+            "instruction": instruction[:1000],
+            "status": "approved",
+        },
+    )
+    db.commit()
+    _ensure_run_enqueued(project_id, run_id, context="regenerate_run_slide")
+    return {
+        "project_id": project_id,
+        "run_id": run_id,
+        "slide_index": slide_index,
+        "scope": scope,
+        "element_path": element_path or None,
+        "queued": True,
+        "status": "approved",
+    }
 
 
 @router.post("/{project_id}/permission/simulate")

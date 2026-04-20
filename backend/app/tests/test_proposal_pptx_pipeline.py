@@ -44,6 +44,7 @@ class TestProposalPptxPipeline:
             "requested_outputs": ["pptx"],
             "raw_text": proposal_instruction,
             "user_instruction": proposal_instruction,
+            "user_intent_original": proposal_instruction,
             "dpdp_flags": {"enabled": False},
             "assembled_context": "",  # Will be populated
             "process_model": {
@@ -207,6 +208,9 @@ class TestProposalPptxPipeline:
             user_id=base_state["user_id"],
             raw_text=base_state["raw_text"],
             user_instruction=base_state["user_instruction"],
+            user_intent_original=str(
+                base_state.get("user_intent_original") or base_state["user_instruction"]
+            ),
             process_model=base_state["process_model"],
             assembled_context=base_state["assembled_context"],
             output_type_representations={},
@@ -272,6 +276,9 @@ class TestProposalPptxPipeline:
             user_id=base_state["user_id"],
             raw_text=base_state["raw_text"],
             user_instruction=base_state["user_instruction"],
+            user_intent_original=str(
+                base_state.get("user_intent_original") or base_state["user_instruction"]
+            ),
             process_model=base_state["process_model"],
             assembled_context="Context...",
             output_type_representations={},
@@ -410,6 +417,7 @@ class TestProposalPptxPipeline:
             user_id=base_state["user_id"],
             raw_text=base_state["raw_text"],
             user_instruction=proposal_instruction,
+            user_intent_original=proposal_instruction,
             process_model=base_state["process_model"],
             assembled_context=base_state["assembled_context"],
             output_type_representations={},
@@ -552,6 +560,9 @@ class TestProposalPptxPipeline:
                 user_id=base_state["user_id"],
                 raw_text=base_state["raw_text"],
                 user_instruction=base_state["user_instruction"],
+                user_intent_original=str(
+                    base_state.get("user_intent_original") or base_state["user_instruction"]
+                ),
                 process_model=base_state["process_model"],
                 assembled_context="Context",
                 output_type_representations={},
@@ -767,6 +778,7 @@ class TestImprovements:
             user_id="test",
             raw_text="Create proposal",
             user_instruction="Create a finance proposal",
+            user_intent_original="Create a finance proposal",
             process_model={"steps": [{"id": "1", "name": "Step1"}]},
             assembled_context="Context",
             output_type_representations={},
@@ -816,6 +828,7 @@ class TestImprovements:
             user_id="test",
             raw_text="test",
             user_instruction="test",
+            user_intent_original="test",
             process_model={},
             assembled_context="",
             output_type_representations={},
@@ -848,6 +861,7 @@ class TestImprovements:
             user_id="test",
             raw_text="Create proposal",
             user_instruction="Create a finance transformation proposal",
+            user_intent_original="Create a finance transformation proposal",
             process_model={},
             assembled_context=(
                 "Current state pain points: manual processes causing delays. "
@@ -880,6 +894,7 @@ class TestImprovements:
             user_id="test",
             raw_text="Create report",
             user_instruction="Create a finance report",
+            user_intent_original="Create a finance report",
             process_model={},
             assembled_context="Some context with pain points and case study benchmarks",
             output_type_representations={},
@@ -1047,6 +1062,7 @@ class TestImprovements:
             user_id="test",
             raw_text="Create proposal",
             user_instruction="Create a finance transformation proposal",
+            user_intent_original="Create a finance transformation proposal",
             process_model={"steps": [{"id": "1", "name": "Step1"}]},
             assembled_context="Context",
             output_type_representations={},
@@ -1086,6 +1102,7 @@ class TestImprovements:
             user_id="test",
             raw_text="Create proposal",
             user_instruction="Create a finance transformation proposal",
+            user_intent_original="Create a finance transformation proposal",
             process_model={"steps": [{"id": "1", "name": "Step1"}]},
             assembled_context="Context",
             output_type_representations={},
@@ -1131,6 +1148,7 @@ class TestImprovements:
             user_id="test",
             raw_text="Create proposal",
             user_instruction="Create a finance proposal",
+            user_intent_original="Create a finance proposal",
             process_model={"steps": [{"id": "1", "name": "Step1"}]},
             assembled_context="Context",
             output_type_representations={},

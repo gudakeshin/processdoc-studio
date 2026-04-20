@@ -2,51 +2,90 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.util import Inches, Pt
-from pptx.enum.text import PP_ALIGN
-from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
+from pptx.util import Inches, Pt
+from pptx.chart.data import CategoryChartData
 
 from app.core.deliverable import DeliverableMetadata, IDeliverable
 from app.services.deliverable_quality import _validate_pptx_completeness
 
 logger = logging.getLogger(__name__)
 
+# Legacy layout design used 10" × 5.625"; we scale positions to widescreen 13.333" × 7.5".
+_DESIGN_W = 10.0
+_DESIGN_H = 5.625
+_SLIDE_W = 13.333
+_SLIDE_H = 7.5
 
-class PPTXDeliverable(IDeliverable):
-    """PPTX presentation deliverable implementation.
 
-    Extracted from storage.py _write_pptx_output() with full slide type support
-    (title, bullets, stat_cards, column_cards, stack_layers, table, chart, section_divider).
-    """
+def _hex_to_rgb(raw: str) -> RGBColor:
+    h = str(raw or "").strip().lstrip("#")
+    if len(h) >= 6:
+        try:
+            return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+        except ValueError:
+            pass
+    return RGBColor(0x86, 0xBC, 0x25)
 
-    # Brand design tokens (from storage.py _B dict)
-    BRAND_COLORS = {
-        "green":       RGBColor(0x86, 0xBC, 0x25),
-        "dark":        RGBColor(0x1A, 0x1A, 0x1A),
-        "mid_dark":    RGBColor(0x2D, 0x2D, 0x2D),
-        "mid":         RGBColor(0x3D, 0x3D, 0x3D),
-        "dark_green":  RGBColor(0x5A, 0x8A, 0x00),
-        "gray":        RGBColor(0x75, 0x78, 0x7B),
-        "light_gray":  RGBColor(0xAA, 0xAA, 0xAA),
-        "white":       RGBColor(0xFF, 0xFF, 0xFF),
-        "light_green": RGBColor(0xEB, 0xF5, 0xD3),
-        "e8":          RGBColor(0xE8, 0xE8, 0xE8),
+
+def _merge_branding_dict(branding: Any) -> dict[str, Any]:
+    """Normalize BrandingContext, plain dict, or None into flat keys for the renderer."""
+    if branding is None:
+        return {}
+    if isinstance(branding, dict):
+        return {
+            "primary_color": str(branding.get("primary_color") or "#86BC25"),
+            "secondary_color": str(
+                branding.get("secondary_color")
+                or branding.get("complementary_color")
+                or "#E8007C"
+            ),
+            "accent_light": str(branding.get("accent_light") or "#EBF5D3"),
+            "accent_dark": str(branding.get("accent_dark") or "#5A8A00"),
+            "font_family": str(branding.get("font_family") or "Calibri"),
+            "company_name": str(branding.get("company_name") or "Deloitte"),
+            "footer_text": branding.get("footer_text") or branding.get("custom_footer_text"),
+            "neutral_light": str(branding.get("neutral_light") or "#AAAAAA"),
+            "neutral_dark": str(branding.get("neutral_dark") or "#1A1A1A"),
+            "text_primary": str(branding.get("text_primary") or "#1A1A1A"),
+            "text_inverse": str(branding.get("text_inverse") or "#FFFFFF"),
+        }
+    # BrandingContext or similar dataclass
+    pal = getattr(branding, "palette", None)
+    return {
+        "primary_color": str(getattr(branding, "primary_color", None) or "#86BC25"),
+        "secondary_color": str(
+            getattr(pal, "complementary", None) if pal is not None else None
+        )
+        or "#E8007C",
+        "accent_light": str(getattr(pal, "accent_light", None) if pal is not None else None) or "#EBF5D3",
+        "accent_dark": str(getattr(pal, "accent_dark", None) if pal is not None else None) or "#5A8A00",
+        "font_family": str(getattr(branding, "font_family", None) or "Calibri"),
+        "company_name": str(getattr(branding, "company_name", None) or "Deloitte"),
+        "footer_text": getattr(branding, "custom_footer_text", None),
+        "neutral_light": str(getattr(pal, "neutral_light", None) if pal is not None else None) or "#AAAAAA",
+        "neutral_dark": str(getattr(pal, "neutral_dark", None) if pal is not None else None) or "#1A1A1A",
+        "text_primary": str(getattr(pal, "text_primary", None) if pal is not None else None) or "#1A1A1A",
+        "text_inverse": str(getattr(pal, "text_inverse", None) if pal is not None else None) or "#FFFFFF",
     }
 
-    FONT_NAME = "Calibri"
+
+class PPTXDeliverable(IDeliverable):
+    """PPTX presentation deliverable: widescreen canvas, branding-driven chrome, slide notes, QA signals."""
 
     LAYOUT_COMPAT = {
-        "title_content":    "bullets",
-        "title_and_content":"bullets",
-        "title_only":       "bullets",
-        "two_content":      "column_cards",
-        "blank":            "bullets",
+        "title_content": "bullets",
+        "title_and_content": "bullets",
+        "title_only": "bullets",
+        "two_content": "column_cards",
+        "blank": "bullets",
     }
 
     def get_metadata(self) -> DeliverableMetadata:
@@ -59,44 +98,63 @@ class PPTXDeliverable(IDeliverable):
         )
 
     def render(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
-        """Render PPTX presentation from payload.
-
-        Args:
-            payload: Agent output with pptx_slides key
-            run_dir: Directory to save output PPTX
-            branding: Optional branding configuration
-
-        Returns:
-            Path to generated PPTX file, or None if failed
-        """
         out = run_dir / "output.pptx"
-
         try:
+            self._signals: list[dict[str, Any]] = []
+            self._sx = _SLIDE_W / _DESIGN_W
+            self._sy = _SLIDE_H / _DESIGN_H
+            self._brand = _merge_branding_dict(branding)
+            if not self._brand:
+                self._brand = _merge_branding_dict(
+                    {
+                        "primary_color": "#86BC25",
+                        "secondary_color": "#E8007C",
+                        "accent_light": "#EBF5D3",
+                        "accent_dark": "#5A8A00",
+                        "font_family": "Calibri",
+                        "company_name": "Deloitte",
+                        "footer_text": "Deloitte.",
+                        "neutral_light": "#AAAAAA",
+                        "neutral_dark": "#1A1A1A",
+                        "text_primary": "#1A1A1A",
+                        "text_inverse": "#FFFFFF",
+                    }
+                )
+            self._colors = self._build_color_tokens(self._brand)
+            self._font = str(self._brand.get("font_family") or "Calibri")
+            ft = self._brand.get("footer_text")
+            if ft and str(ft).strip():
+                self._footer_word = str(ft).strip()
+            else:
+                cn = str(self._brand.get("company_name") or "Company").strip()
+                self._footer_word = cn if cn.endswith(".") else f"{cn}."
+
             prs = Presentation()
-            prs.slide_width = Inches(10.0)
-            prs.slide_height = Inches(5.625)
+            prs.slide_width = Inches(_SLIDE_W)
+            prs.slide_height = Inches(_SLIDE_H)
 
             slides = payload.get("pptx_slides")
             if not (isinstance(slides, list) and slides):
-                # Minimal fallback
                 slides = [
                     {"title": "Process Output", "slide_type": "title", "subtitle": "Generated by ProcessDoc Studio"},
-                    {"title": "Summary", "slide_type": "bullets", "bullets": [
-                        self._safe_text(payload.get("narrative_md"), "No content generated")[:120],
-                    ]},
+                    {
+                        "title": "Summary",
+                        "slide_type": "bullets",
+                        "bullets": [self._safe_text(payload.get("narrative_md"), "No content generated")[:120]],
+                    },
                 ]
 
-            # Validate completeness
             is_complete, issues = _validate_pptx_completeness(json.dumps(payload.get("pptx_slides", [])))
             if not is_complete:
-                logger.warning(f"PPTX completeness issues: {issues}")
+                logger.warning("PPTX completeness issues: %s", issues)
+
+            self._apply_core_properties(prs, payload, slides)
 
             total = min(len(slides), 20)
             for page_num, item in enumerate(slides[:20], start=1):
                 if not isinstance(item, dict):
                     continue
 
-                # Resolve slide_type — support legacy "layout" field for backward compat
                 slide_type = str(item.get("slide_type") or "").strip()
                 if not slide_type:
                     legacy = str(item.get("layout") or "").strip().lower().replace("-", "_")
@@ -111,16 +169,38 @@ class PPTXDeliverable(IDeliverable):
                 else:
                     self._render_content_slide(prs, item, page_num, total, slide_type)
 
+            if self._signals:
+                try:
+                    (run_dir / "pptx_render_signals.json").write_text(
+                        json.dumps({"content_pending": self._signals}, indent=2),
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    logger.warning("Could not write pptx_render_signals.json: %s", exc)
+
             prs.save(out)
-            logger.info(f"PPTX rendered successfully: {out}")
+            logger.info("PPTX rendered successfully: %s", out)
+            try:
+                from app.core.deck_exporter import export_deck_artifacts
+
+                export_deck_artifacts(
+                    slides if isinstance(slides, list) else [],
+                    run_dir,
+                    self._brand,
+                )
+            except Exception as exporter_exc:  # fail-open; never block PPTX success
+                logger.warning("deck_exporter sidecar failed: %s", exporter_exc)
             return out
 
         except Exception as e:
-            logger.error(f"Failed to render PPTX: {e}", exc_info=True)
+            logger.error("Failed to render PPTX: %s", e, exc_info=True)
             return None
+        finally:
+            for attr in ("_signals", "_colors", "_brand", "_sx", "_sy", "_font", "_footer_word"):
+                if hasattr(self, attr):
+                    delattr(self, attr)
 
     def validate(self, data: dict[str, Any]) -> tuple[bool, list[str]]:
-        """Check PPTX completeness."""
         pptx_str = json.dumps(data) if isinstance(data, (dict, list)) else str(data)
         return _validate_pptx_completeness(pptx_str)
 
@@ -130,95 +210,215 @@ class PPTXDeliverable(IDeliverable):
             slide_count = len(prs.slides)
             title_count = 0
             text_chars = 0
+            pending_slides = 0
             for slide in prs.slides:
+                blob = ""
                 for shape in slide.shapes:
                     if hasattr(shape, "text") and isinstance(shape.text, str):
                         txt = shape.text.strip()
+                        blob += txt + " "
                         if txt:
                             text_chars += len(txt)
                             if len(txt) <= 80:
                                 title_count += 1
+                if "Content pending" in blob:
+                    pending_slides += 1
             return {
                 "slide_count": slide_count,
                 "text_chars": text_chars,
                 "title_like_blocks": title_count,
+                "content_pending_slides": pending_slides,
                 "artifact_path": str(artifact_path),
             }
         except Exception as e:
-            logger.error(f"Failed to extract quality signals: {e}")
+            logger.error("Failed to extract quality signals: %s", e)
             return super().extract_quality_signals(artifact_path)
 
-    # ── Helper methods ────────────────────────────────────────────────────
+    # ── Brand & geometry ─────────────────────────────────────────────────────
 
-    def _safe_text(self, value: object, default: str = "") -> str:
-        """Safely convert value to text."""
-        return str(value or default).strip()
+    def _build_color_tokens(self, b: dict[str, Any]) -> dict[str, RGBColor]:
+        primary = _hex_to_rgb(str(b.get("primary_color") or "#86BC25"))
+        secondary = _hex_to_rgb(str(b.get("secondary_color") or "#E8007C"))
+        accent_light = _hex_to_rgb(str(b.get("accent_light") or "#EBF5D3"))
+        accent_dark = _hex_to_rgb(str(b.get("accent_dark") or "#5A8A00"))
+        neutral_light = _hex_to_rgb(str(b.get("neutral_light") or "#AAAAAA"))
+        neutral_dark = _hex_to_rgb(str(b.get("neutral_dark") or "#1A1A1A"))
+        text_primary = _hex_to_rgb(str(b.get("text_primary") or "#1A1A1A"))
+        text_inverse = _hex_to_rgb(str(b.get("text_inverse") or "#FFFFFF"))
+        tp, nd, nl = tuple(text_primary), tuple(neutral_dark), tuple(neutral_light)
+        mid_dark = RGBColor(
+            min(255, (tp[0] + nd[0]) // 2),
+            min(255, (tp[1] + nd[1]) // 2),
+            min(255, (tp[2] + nd[2]) // 2),
+        )
+        md = tuple(mid_dark)
+        mid = RGBColor(
+            min(255, (md[0] + nl[0]) // 2),
+            min(255, (md[1] + nl[1]) // 2),
+            min(255, (md[2] + nl[2]) // 2),
+        )
+        e8 = RGBColor(0xE8, 0xE8, 0xE8)
+        return {
+            "green": primary,
+            "primary": primary,
+            "secondary": secondary,
+            "dark": text_primary,
+            "mid_dark": mid_dark,
+            "mid": mid,
+            "dark_green": accent_dark,
+            "gray": neutral_light,
+            "light_gray": neutral_light,
+            "white": text_inverse,
+            "light_green": accent_light,
+            "e8": e8,
+        }
 
     def _rgb(self, token: str) -> RGBColor:
-        """Get RGB color from brand token."""
-        return self.BRAND_COLORS.get(str(token).lower(), self.BRAND_COLORS["mid"])
+        return self._colors.get(str(token).lower(), self._colors["mid"])
+
+    def _ix(self, x: float) -> float:
+        return float(x) * self._sx
+
+    def _iy(self, y: float) -> float:
+        return float(y) * self._sy
+
+    def _apply_core_properties(self, prs: Any, payload: dict[str, Any], slides: list[Any]) -> None:
+        meta = payload.get("deliverable_meta") if isinstance(payload.get("deliverable_meta"), dict) else {}
+        first_title = ""
+        if slides and isinstance(slides[0], dict):
+            first_title = str(slides[0].get("title") or "").strip()
+        title = str(meta.get("title") or payload.get("presentation_title") or first_title or "Presentation").strip()
+        subject = str(meta.get("subject") or payload.get("project_name") or "Process documentation").strip()
+        author = str(meta.get("author") or payload.get("owner_name") or "ProcessDoc Studio").strip()
+        keywords = str(meta.get("keywords") or "processdoc,pptx").strip()
+        try:
+            cp = prs.core_properties
+            cp.title = title[:255]
+            cp.subject = subject[:255]
+            cp.author = author[:255]
+            cp.keywords = keywords[:255]
+            cp.last_modified_by = "ProcessDoc Studio"
+            if getattr(cp, "created", None) is None:
+                cp.created = datetime.now(timezone.utc)
+        except Exception as exc:
+            logger.debug("Core properties skipped: %s", exc)
+
+    def _record_pending(self, *, page_num: int, slide_type: str, title: str, reason: str) -> None:
+        self._signals.append(
+            {
+                "slide_index": page_num,
+                "slide_type": slide_type,
+                "title": title,
+                "reason": reason,
+            }
+        )
+
+    def _set_slide_notes(self, slide: Any, text: str) -> None:
+        body = (text or "").strip()
+        if not body:
+            return
+        try:
+            notes = slide.notes_slide
+            notes.notes_text_frame.text = body[:15000]
+        except Exception as exc:
+            logger.debug("Notes not set: %s", exc)
+
+    def _set_shape_alt(self, shape: Any, descr: str) -> None:
+        if not (descr or "").strip():
+            return
+        try:
+            el = shape._element  # noqa: SLF001
+            found = el.xpath(".//p:cNvPr")
+            if found:
+                found[0].set("descr", str(descr)[:500])
+        except Exception:
+            pass
+
+    def _render_content_pending(self, slide: Any, item: dict[str, Any], page_num: int, total: int, reason: str) -> None:
+        title = self._safe_text(item.get("title"), "Slide")
+        self._add_chrome(slide, title, page_num, total)
+        self._add_rect(slide, self._ix(0.28), self._iy(1.1), self._ix(9.44), self._iy(3.2), "e8")
+        msg = "Content pending — source data for this layout was missing or incomplete."
+        self._add_text(slide, 0.40, 1.25, 9.20, 2.8, msg, 16, "mid_dark", bold=True)
+        self._add_text(slide, 0.40, 2.05, 9.20, 1.5, reason[:280], 11, "gray")
+        self._record_pending(
+            page_num=page_num,
+            slide_type=str(item.get("slide_type") or ""),
+            title=title,
+            reason=reason,
+        )
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    def _safe_text(self, value: object, default: str = "") -> str:
+        return str(value or default).strip()
 
     def _add_rect(self, slide: Any, x: float, y: float, w: float, h: float, color_token: str) -> Any:
-        """Add rectangle shape to slide."""
         shape = slide.shapes.add_shape(1, Inches(x), Inches(y), Inches(w), Inches(h))
         fill = shape.fill
         fill.solid()
         fill.fore_color.rgb = self._rgb(color_token)
         shape.line.fill.background()
+        self._set_shape_alt(shape, f"Brand shape ({color_token})")
         return shape
 
     def _add_text(
-        self, slide: Any, x: float, y: float, w: float, h: float,
-        text: str, size: float, color_token: str,
-        bold: bool = False, align: str = "left",
+        self,
+        slide: Any,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        text: str,
+        size: float,
+        color_token: str,
+        bold: bool = False,
+        align: str = "left",
     ) -> Any:
-        """Add text box to slide."""
-        txb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+        txb = slide.shapes.add_textbox(Inches(self._ix(x)), Inches(self._iy(y)), Inches(self._ix(w)), Inches(self._iy(h)))
         tf = txb.text_frame
         tf.word_wrap = True
-        tf.auto_size = None
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
         p = tf.paragraphs[0]
         p.alignment = (
-            PP_ALIGN.CENTER if align == "center" else
-            (PP_ALIGN.RIGHT if align == "right" else PP_ALIGN.LEFT)
+            PP_ALIGN.CENTER
+            if align == "center"
+            else (PP_ALIGN.RIGHT if align == "right" else PP_ALIGN.LEFT)
         )
         run = p.add_run()
         run.text = self._safe_text(text, "")
-        run.font.name = self.FONT_NAME
+        run.font.name = self._font
         run.font.size = Pt(size)
         run.font.bold = bold
         run.font.color.rgb = self._rgb(color_token)
+        self._set_shape_alt(txb, (text or "")[:400])
         return txb
 
     def _add_chrome(self, slide: Any, title: str, page_num: int, total: int) -> None:
-        """Add page chrome (header, footer, branding)."""
-        self._add_rect(slide, 0.0, 0.0, 10.0, 0.07, "green")
-        self._add_rect(slide, 0.0, 0.07, 0.06, 5.55, "dark")
+        self._add_rect(slide, self._ix(0.0), self._iy(0.0), self._ix(10.0), self._iy(0.07), "green")
+        self._add_rect(slide, self._ix(0.0), self._iy(0.07), self._ix(0.06), self._iy(5.55), "dark")
         self._add_text(slide, 0.28, 0.18, 8.50, 0.60, title, 22, "dark", bold=True)
         self._add_text(slide, 8.80, 5.30, 1.00, 0.25, f"{page_num} / {total}", 9, "light_gray")
-        self._add_text(slide, 0.18, 5.30, 1.50, 0.25, "Deloitte.", 10, "gray", bold=True)
+        self._add_text(slide, 0.18, 5.30, 1.50, 0.25, self._footer_word, 10, "gray", bold=True)
 
     def _blank_slide(self, prs: Any) -> Any:
-        """Create blank slide."""
         layouts = prs.slide_layouts
         return prs.slides.add_slide(layouts[6] if len(layouts) > 6 else layouts[-1])
 
     def _render_footer_note(self, slide: Any, note: str) -> None:
-        """Render footer note on slide."""
-        self._add_rect(slide, 0.28, 5.22, 9.44, 0.26, "light_green")
+        self._add_rect(slide, self._ix(0.28), self._iy(5.22), self._ix(9.44), self._iy(0.26), "light_green")
         self._add_text(slide, 0.38, 5.22, 9.24, 0.26, note, 9, "mid")
 
     # ── Slide renderers ────────────────────────────────────────────────────
 
     def _render_title_slide(self, prs: Any, item: dict[str, Any]) -> None:
-        """Render title slide."""
         slide = self._blank_slide(prs)
-        self._add_rect(slide, 0.0,  0.0,   0.35, 5.625, "green")
-        self._add_rect(slide, 0.0,  5.35, 10.0,  0.28,  "green")
-        self._add_text(slide, 0.60, 0.40,  3.00, 0.50, "Deloitte.", 20, "white", bold=True)
+        self._add_rect(slide, self._ix(0.0), self._iy(0.0), self._ix(0.35), self._iy(5.625), "green")
+        self._add_rect(slide, self._ix(0.0), self._iy(5.35), self._ix(10.0), self._iy(0.28), "green")
+        self._add_text(slide, 0.60, 0.40, 3.00, 0.50, self._footer_word, 20, "white", bold=True)
         title_text = self._safe_text(item.get("title"), "Process Overview")
         self._add_text(slide, 0.60, 1.15, 8.80, 1.05, title_text, 44, "white", bold=True)
-        self._add_rect(slide, 0.60, 2.28, 5.50, 0.06, "green")
+        self._add_rect(slide, self._ix(0.60), self._iy(2.28), self._ix(5.50), self._iy(0.06), "green")
         subtitle = self._safe_text(item.get("subtitle"), "Executive Presentation")
         self._add_text(slide, 0.60, 2.48, 8.80, 0.55, subtitle, 18, "light_gray")
         badges = item.get("badges") if isinstance(item.get("badges"), list) else []
@@ -231,28 +431,28 @@ class PPTXDeliverable(IDeliverable):
             y = y_start + row * 0.65
             badge_text = self._safe_text(badge)
             if badge_text:
-                self._add_rect(slide, x, y, 3.00, 0.55, "mid")
+                self._add_rect(slide, self._ix(x), self._iy(y), self._ix(3.00), self._iy(0.55), "mid")
                 self._add_text(slide, x + 0.15, y + 0.05, 2.70, 0.45, badge_text, 13, "white")
         footer = self._safe_text(item.get("footer"), "")
         if footer:
             self._render_footer_note(slide, footer)
+        notes = self._safe_text(item.get("notes"), "")
+        self._set_slide_notes(slide, notes)
 
     def _render_content_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int, slide_type: str) -> None:
-        """Dispatch to appropriate content slide renderer."""
         renderers = {
-            "bullets":          self._render_bullets_slide,
-            "stat_cards":       self._render_stat_cards_slide,
-            "column_cards":     self._render_column_cards_slide,
-            "stack_layers":     self._render_stack_layers_slide,
-            "table":            self._render_table_slide,
-            "chart":            self._render_chart_slide,
-            "section_divider":  self._render_section_divider_slide,
+            "bullets": self._render_bullets_slide,
+            "stat_cards": self._render_stat_cards_slide,
+            "column_cards": self._render_column_cards_slide,
+            "stack_layers": self._render_stack_layers_slide,
+            "table": self._render_table_slide,
+            "chart": self._render_chart_slide,
+            "section_divider": self._render_section_divider_slide,
         }
         renderer = renderers.get(slide_type, self._render_bullets_slide)
         renderer(prs, item, page_num, total)
 
     def _render_bullets_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int) -> None:
-        """Render bullets slide."""
         slide = self._blank_slide(prs)
         self._add_chrome(slide, self._safe_text(item.get("title"), ""), page_num, total)
         bullets = item.get("bullets") if isinstance(item.get("bullets"), list) else []
@@ -267,44 +467,64 @@ class PPTXDeliverable(IDeliverable):
         else:
             font_size, max_chars = 10, 80
 
-        validated_bullets = []
+        validated_bullets: list[str] = []
         for i, bullet in enumerate(bullets[:12]):
             bullet_text = self._safe_text(bullet)
             if len(bullet_text) > max_chars:
                 logger.warning(
-                    f"Bullet {i} on '{item.get('title')}' exceeds {max_chars} chars (got {len(bullet_text)})"
+                    "Bullet %s on '%s' exceeds %s chars (got %s)",
+                    i,
+                    item.get("title"),
+                    max_chars,
+                    len(bullet_text),
                 )
-                bullet_text = bullet_text[:max_chars - 3] + "..."
+                bullet_text = bullet_text[: max_chars - 3] + "..."
             validated_bullets.append(bullet_text)
 
         if validated_bullets:
-            txb = slide.shapes.add_textbox(Inches(0.28), Inches(0.95), Inches(9.44), Inches(4.5))
+            txb = slide.shapes.add_textbox(
+                Inches(self._ix(0.28)), Inches(self._iy(0.95)), Inches(self._ix(9.44)), Inches(self._iy(4.5))
+            )
             tf = txb.text_frame
             tf.word_wrap = True
+            tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
             for i, bullet_text in enumerate(validated_bullets):
                 p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
                 p.alignment = PP_ALIGN.LEFT
                 p.level = 0
                 run = p.add_run()
                 run.text = bullet_text
-                run.font.name = self.FONT_NAME
+                run.font.name = self._font
                 run.font.size = Pt(font_size)
                 run.font.color.rgb = self._rgb("dark")
+            self._set_shape_alt(txb, "Bullet list")
+        else:
+            self._render_content_pending(
+                slide,
+                item,
+                page_num,
+                total,
+                "No bullet items were provided for this slide.",
+            )
 
-        # Check for footer_note or footer (support both for compatibility)
         footer = self._safe_text(item.get("footer_note") or item.get("footer"), "")
         if footer:
             self._render_footer_note(slide, footer)
+        self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
 
     def _render_stat_cards_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int) -> None:
-        """Render stat cards slide."""
         slide = self._blank_slide(prs)
         self._add_chrome(slide, self._safe_text(item.get("title"), ""), page_num, total)
         cards = item.get("stat_cards") if isinstance(item.get("stat_cards"), list) else []
         if not cards:
-            logger.warning(
-                f"Slide '{item.get('title')}' (stat_cards): expected 3+, got {len(cards)}"
+            self._render_content_pending(
+                slide,
+                item,
+                page_num,
+                total,
+                "stat_cards layout expects at least one card; none were supplied.",
             )
+            self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
             return
 
         card_w = 3.02
@@ -320,8 +540,8 @@ class PPTXDeliverable(IDeliverable):
             x = padding_x + col * (card_w + spacing_x)
             y = padding_y + row * (card_h + spacing_y)
 
-            fill_token = card.get("fill", "mid_dark")
-            self._add_rect(slide, x, y, card_w, card_h, fill_token)
+            fill_token = str(card.get("fill", "mid_dark")).lower()
+            rect = self._add_rect(slide, self._ix(x), self._iy(y), self._ix(card_w), self._iy(card_h), fill_token)
 
             stat = self._safe_text(card.get("stat"), "—")
             label = self._safe_text(card.get("label"), "")
@@ -330,16 +550,23 @@ class PPTXDeliverable(IDeliverable):
             self._add_text(slide, x + 0.15, y + 0.20, card_w - 0.30, 0.50, stat, 18, "white", bold=True)
             self._add_text(slide, x + 0.15, y + 0.75, card_w - 0.30, 0.35, label, 11, "white", bold=True)
             self._add_text(slide, x + 0.15, y + 1.15, card_w - 0.30, 0.55, desc, 9, "light_gray")
+            self._set_shape_alt(rect, f"Stat card: {label or stat}")
+
+        self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
 
     def _render_column_cards_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int) -> None:
-        """Render column cards slide."""
         slide = self._blank_slide(prs)
         self._add_chrome(slide, self._safe_text(item.get("title"), ""), page_num, total)
         cards = item.get("column_cards") if isinstance(item.get("column_cards"), list) else []
         if not cards:
-            logger.warning(
-                f"Slide '{item.get('title')}' (column_cards): expected 3+, got {len(cards)}"
+            self._render_content_pending(
+                slide,
+                item,
+                page_num,
+                total,
+                "column_cards layout expects cards; none were supplied.",
             )
+            self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
             return
 
         col_w = 3.0
@@ -352,24 +579,31 @@ class PPTXDeliverable(IDeliverable):
             x = col_padding_x + i * (col_w + col_spacing)
             y = col_padding_y
 
-            accent = card.get("accent", "mid")
-            self._add_rect(slide, x, y, col_w, col_h, accent)
+            accent = str(card.get("accent", "mid")).lower()
+            rect = self._add_rect(slide, self._ix(x), self._iy(y), self._ix(col_w), self._iy(col_h), accent)
 
             heading = self._safe_text(card.get("heading"), "")
             body = self._safe_text(card.get("body"), "")
 
             self._add_text(slide, x + 0.20, y + 0.25, col_w - 0.40, 0.40, heading, 14, "white", bold=True)
             self._add_text(slide, x + 0.20, y + 0.75, col_w - 0.40, 3.0, body, 11, "white")
+            self._set_shape_alt(rect, f"Column card: {heading or 'column'}")
+
+        self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
 
     def _render_stack_layers_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int) -> None:
-        """Render stacked layers slide."""
         slide = self._blank_slide(prs)
         self._add_chrome(slide, self._safe_text(item.get("title"), ""), page_num, total)
         layers = item.get("stack_layers") if isinstance(item.get("stack_layers"), list) else []
         if not layers:
-            logger.warning(
-                f"Slide '{item.get('title')}' (stack_layers): expected 1+, got {len(layers)}"
+            self._render_content_pending(
+                slide,
+                item,
+                page_num,
+                total,
+                "stack_layers layout expects one or more layers; none were supplied.",
             )
+            self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
             return
 
         layer_height = 3.6 / len(layers)
@@ -377,18 +611,19 @@ class PPTXDeliverable(IDeliverable):
 
         for i, layer in enumerate(layers[:6]):
             y = start_y + i * layer_height
-            # Support both "fill" and "color" for compatibility
-            color = layer.get("fill") or layer.get("color") or "mid"
-            label = self._safe_text(layer.get("label"), f"Layer {i+1}")
+            color = str(layer.get("fill") or layer.get("color") or "mid").lower()
+            label = self._safe_text(layer.get("label"), f"Layer {i + 1}")
             description = self._safe_text(layer.get("description"), "")
 
-            self._add_rect(slide, 0.28, y, 9.44, layer_height - 0.05, color)
+            rect = self._add_rect(slide, self._ix(0.28), self._iy(y), self._ix(9.44), self._iy(layer_height - 0.05), color)
             self._add_text(slide, 0.50, y + 0.15, 4.0, 0.40, label, 14, "white", bold=True)
             if description:
                 self._add_text(slide, 0.50, y + 0.60, 8.94, 0.35, description, 10, "light_gray")
+            self._set_shape_alt(rect, f"Stack layer: {label}")
+
+        self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
 
     def _render_table_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int) -> None:
-        """Render table slide."""
         slide = self._blank_slide(prs)
         self._add_chrome(slide, self._safe_text(item.get("title"), ""), page_num, total)
 
@@ -396,9 +631,14 @@ class PPTXDeliverable(IDeliverable):
         rows = table_data.get("rows", []) if isinstance(table_data, dict) else []
 
         if not rows:
-            logger.warning(
-                f"Slide '{item.get('title')}' (table): expected 1+ rows, got {len(rows)}"
+            self._render_content_pending(
+                slide,
+                item,
+                page_num,
+                total,
+                "table layout requires at least one data row.",
             )
+            self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
             return
 
         headers = table_data.get("headers", []) if isinstance(table_data, dict) else []
@@ -406,27 +646,36 @@ class PPTXDeliverable(IDeliverable):
         num_rows = len(rows) + (1 if headers else 0)
 
         if num_cols > 0 and num_rows > 0:
-            # Get table position and dimensions
             x = float(table_data.get("x", 0.28)) if isinstance(table_data, dict) else 0.28
             y = float(table_data.get("y", 1.0)) if isinstance(table_data, dict) else 1.0
             w = float(table_data.get("w", 9.44)) if isinstance(table_data, dict) else 9.44
             h = float(table_data.get("h", 3.5)) if isinstance(table_data, dict) else 3.5
 
-            # Create table shape with proper dimensions
-            shape = slide.shapes.add_table(num_rows, num_cols, Inches(x), Inches(y), Inches(w), Inches(h))
+            shape = slide.shapes.add_table(
+                num_rows,
+                num_cols,
+                Inches(self._ix(x)),
+                Inches(self._iy(y)),
+                Inches(self._ix(w)),
+                Inches(self._iy(h)),
+            )
             tbl = shape.table
+            alt = self._safe_text(item.get("title"), "Data table")
+            self._set_shape_alt(shape, alt)
 
-            # Fill in headers if present
             if headers:
                 for col_idx, header in enumerate(headers[:num_cols]):
                     cell = tbl.cell(0, col_idx)
                     cell.text = str(header).strip()
-                    # Style header cell
                     for paragraph in cell.text_frame.paragraphs:
                         paragraph.font.bold = True
                         paragraph.font.color.rgb = self._rgb("dark")
+                    try:
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = self._rgb("light_green")
+                    except Exception:
+                        pass
 
-            # Fill in data rows
             for row_idx, row in enumerate(rows[:12]):
                 actual_row = row_idx + (1 if headers else 0)
                 if isinstance(row, list):
@@ -434,25 +683,27 @@ class PPTXDeliverable(IDeliverable):
                         cell = tbl.cell(actual_row, col_idx)
                         cell.text = str(cell_value).strip()[:50]
                         for paragraph in cell.text_frame.paragraphs:
+                            paragraph.font.name = self._font
                             paragraph.font.color.rgb = self._rgb("dark")
 
+        self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
+
     def _render_chart_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int) -> None:
-        """Render chart slide with actual chart object."""
         slide = self._blank_slide(prs)
         self._add_chrome(slide, self._safe_text(item.get("title"), ""), page_num, total)
 
         chart_data_dict = item.get("chart", {})
         if not isinstance(chart_data_dict, dict):
+            self._render_content_pending(slide, item, page_num, total, "chart payload was missing or invalid.")
+            self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
             return
 
-        # Get chart dimensions
-        x = float(chart_data_dict.get("x", 0.8)) if chart_data_dict.get("x") else 0.8
-        y = float(chart_data_dict.get("y", 1.4)) if chart_data_dict.get("y") else 1.4
-        w = float(chart_data_dict.get("w", 8.5)) if chart_data_dict.get("w") else 8.5
-        h = float(chart_data_dict.get("h", 3.5)) if chart_data_dict.get("h") else 3.5
+        x = float(chart_data_dict.get("x", 0.8)) if chart_data_dict.get("x") is not None else 0.8
+        y = float(chart_data_dict.get("y", 1.4)) if chart_data_dict.get("y") is not None else 1.4
+        w = float(chart_data_dict.get("w", 8.5)) if chart_data_dict.get("w") is not None else 8.5
+        h = float(chart_data_dict.get("h", 3.5)) if chart_data_dict.get("h") is not None else 3.5
 
         try:
-            # Determine chart type
             chart_type_str = str(chart_data_dict.get("type", "line")).lower()
             chart_type_map = {
                 "line": XL_CHART_TYPE.LINE,
@@ -462,7 +713,6 @@ class PPTXDeliverable(IDeliverable):
             }
             chart_type = chart_type_map.get(chart_type_str, XL_CHART_TYPE.LINE)
 
-            # Build chart data
             categories = chart_data_dict.get("categories", ["A", "B", "C"])
             series_list = chart_data_dict.get("series", [{"name": "Series 1", "values": [1, 2, 3]}])
 
@@ -476,19 +726,54 @@ class PPTXDeliverable(IDeliverable):
                     if isinstance(values, list):
                         chart_data.add_series(series_name, tuple(values))
 
-            # Add chart to slide
-            slide.shapes.add_chart(chart_type, Inches(x), Inches(y), Inches(w), Inches(h), chart_data)
+            graphic_frame = slide.shapes.add_chart(
+                chart_type,
+                Inches(self._ix(x)),
+                Inches(self._iy(y)),
+                Inches(self._ix(w)),
+                Inches(self._iy(h)),
+                chart_data,
+            )
+            chart = graphic_frame.chart
+            ctitle = str(chart_data_dict.get("title") or item.get("title") or "Chart").strip()
+            chart.has_title = True
+            chart.chart_title.text_frame.text = ctitle[:120]
+            for tr in chart.chart_title.text_frame.paragraphs[0].runs:
+                tr.font.name = self._font
+                tr.font.size = Pt(14)
+                tr.font.bold = True
 
+            x_title = str(chart_data_dict.get("category_axis_title") or "").strip()
+            y_title = str(chart_data_dict.get("value_axis_title") or "").strip()
+            if x_title:
+                chart.category_axis.has_title = True
+                chart.category_axis.axis_title.text_frame.text = x_title[:80]
+            if y_title:
+                chart.value_axis.has_title = True
+                chart.value_axis.axis_title.text_frame.text = y_title[:80]
+            try:
+                chart.value_axis.has_major_gridlines = True
+            except Exception:
+                pass
+
+            try:
+                for ser in chart.series:
+                    ser.format.line.fill.solid()
+                    ser.format.line.fill.fore_color.rgb = self._rgb("green")
+            except Exception:
+                pass
+
+            self._set_shape_alt(graphic_frame, ctitle)
         except Exception as e:
-            logger.warning(f"Failed to render chart on slide '{item.get('title')}': {e}")
-            # Fallback: render as text
+            logger.warning("Failed to render chart on slide '%s': %s", item.get("title"), e)
             desc = self._safe_text(item.get("description"), f"A {chart_data_dict.get('type', 'chart')} chart")
             self._add_text(slide, 0.50, 1.5, 9.0, 3.5, desc, 14, "dark")
 
+        self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))
+
     def _render_section_divider_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int) -> None:
-        """Render section divider slide."""
         slide = self._blank_slide(prs)
-        self._add_rect(slide, 0.0, 0.0, 10.0, 5.625, "dark")
+        self._add_rect(slide, self._ix(0.0), self._iy(0.0), self._ix(10.0), self._iy(5.625), "dark")
 
         title = self._safe_text(item.get("title"), "New Section")
         self._add_text(slide, 0.60, 2.0, 8.80, 1.0, title, 40, "white", bold=True, align="center")
@@ -496,4 +781,4 @@ class PPTXDeliverable(IDeliverable):
         subtitle = self._safe_text(item.get("subtitle"), "")
         if subtitle:
             self._add_text(slide, 0.60, 3.2, 8.80, 0.6, subtitle, 18, "light_green", align="center")
-
+        self._set_slide_notes(slide, self._safe_text(item.get("notes"), ""))

@@ -47,7 +47,10 @@ def test_shared_user_context_appendix_includes_user_and_context() -> None:
     assert "Assembled project context" in appendix
     assert "Acme onboarding" in appendix
     assert "Prior narrative" in appendix
-    assert appendix.endswith("---\n\n")
+    assert "User instruction" in appendix
+    assert "Assembled project context" in appendix
+    assert "<untrusted" in appendix and "</untrusted>" in appendix
+    assert "---" in appendix
 
 
 def test_pptx_deterministic_slides_mandatory_sequence() -> None:
@@ -170,6 +173,7 @@ def test_pptx_quality_gate_invokes_json_remediation_when_score_low() -> None:
         user_id=None,
         raw_text="",
         user_instruction="",
+        user_intent_original="",
         process_model={},
         assembled_context="",
         output_type_representations={},

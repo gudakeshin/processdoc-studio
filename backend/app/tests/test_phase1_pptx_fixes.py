@@ -37,6 +37,7 @@ def test_pptx_agent_injects_metrics_into_prompt() -> None:
     ctx.run_id = "test_run_1"
     ctx.output_type = "pptx"
     ctx.user_instruction = "Generate executive deck for P2P process"
+    ctx.user_intent_original = "Generate executive deck for P2P process"
     ctx.process_model = {
         "steps": [{"role": f"Role{i}", "owner": "Owner"} for i in range(14)],
         "systems": ["SAP", "Portal", "Email"],
@@ -276,6 +277,7 @@ def test_pptx_agent_generates_populated_deck() -> None:
     ctx.run_id = "test_run_e2e"
     ctx.output_type = "pptx"
     ctx.user_instruction = "Generate executive deck"
+    ctx.user_intent_original = "Generate executive deck"
     ctx.process_model = {
         "process_name": "Procure-to-Pay",
         "steps": [{"role": f"Role{i % 5}", "owner": "Owner"} for i in range(14)],
@@ -373,6 +375,7 @@ def test_metrics_injection_prevents_empty_slides() -> None:
     ctx.process_model = {"steps": [], "systems": []}
     ctx.output_type = "pptx"
     ctx.user_instruction = "Generate deck"
+    ctx.user_intent_original = "Generate deck"
     ctx.assembled_context = ""
     ctx.prior_artifacts_excerpt = ""
     ctx.run_id = "test"

@@ -1,0 +1,40 @@
+{
+  "spike": "pptx_canvas_parity",
+  "sample_count": 3,
+  "supported_slide_types": [
+    "bullets",
+    "column_cards",
+    "section_divider",
+    "stack_layers",
+    "stat_cards",
+    "table",
+    "title"
+  ],
+  "results": [
+    {
+      "sample_name": "sample_finance_transform.json",
+      "slide_count": 4,
+      "unsupported_slide_types": [],
+      "missing_titles": 0,
+      "parity_score": 1.0,
+      "pass_threshold": true
+    },
+    {
+      "sample_name": "sample_ops_exec_review.json",
+      "slide_count": 3,
+      "unsupported_slide_types": [],
+      "missing_titles": 0,
+      "parity_score": 1.0,
+      "pass_threshold": true
+    },
+    {
+      "sample_name": "sample_supply_chain.json",
+      "slide_count": 3,
+      "unsupported_slide_types": [],
+      "missing_titles": 0,
+      "parity_score": 1.0,
+      "pass_threshold": true
+    }
+  ],
+  "overall_pass": true
+}

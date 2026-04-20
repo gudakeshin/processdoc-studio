@@ -41,6 +41,7 @@ def rows_from_process_model(pm: dict[str, Any]) -> list[list[str]]:
 
 
 def parse_markdown_blocks(md_text: str) -> list[dict[str, Any]]:
+    """Parse markdown into typed blocks: heading, paragraph, bullets, numbered, code, table."""
     lines = (md_text or "").splitlines()
     blocks: list[dict[str, Any]] = []
     i = 0
@@ -49,11 +50,30 @@ def parse_markdown_blocks(md_text: str) -> list[dict[str, Any]]:
         if not stripped:
             i += 1
             continue
+
+        # Fenced code block (``` or ~~~)
+        fence_match = re.match(r"^(```|~~~)", stripped)
+        if fence_match:
+            fence = fence_match.group(1)
+            code_lines: list[str] = []
+            i += 1
+            while i < len(lines):
+                if lines[i].strip().startswith(fence):
+                    i += 1
+                    break
+                code_lines.append(lines[i])
+                i += 1
+            blocks.append({"type": "code", "text": "\n".join(code_lines)})
+            continue
+
+        # ATX heading
         heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
         if heading_match:
             blocks.append({"type": "heading", "level": len(heading_match.group(1)), "text": heading_match.group(2).strip()})
             i += 1
             continue
+
+        # Markdown table
         if stripped.startswith("|") and "|" in stripped[1:]:
             table_lines: list[str] = []
             while i < len(lines):
@@ -66,16 +86,31 @@ def parse_markdown_blocks(md_text: str) -> list[dict[str, Any]]:
             if rows:
                 blocks.append({"type": "table", "rows": rows})
             continue
-        if re.match(r"^[-*]\s+.+$", stripped):
+
+        # Numbered list
+        if re.match(r"^\d+[.)]\s+.+$", stripped):
+            items: list[str] = []
+            while i < len(lines):
+                m = re.match(r"^\d+[.)]\s+(.+)$", lines[i].strip())
+                if not m:
+                    break
+                items.append(m.group(1).strip())
+                i += 1
+            blocks.append({"type": "numbered", "items": items})
+            continue
+
+        # Unordered bullet list
+        if re.match(r"^[-*+]\s+.+$", stripped):
             bullets: list[str] = []
             while i < len(lines):
-                m = re.match(r"^[-*]\s+(.+)$", lines[i].strip())
+                m = re.match(r"^[-*+]\s+(.+)$", lines[i].strip())
                 if not m:
                     break
                 bullets.append(m.group(1).strip())
                 i += 1
             blocks.append({"type": "bullets", "items": bullets})
             continue
+
         blocks.append({"type": "paragraph", "text": stripped})
         i += 1
     return blocks

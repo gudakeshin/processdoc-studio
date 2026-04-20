@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
 from app.services.claude import claude_generate_json, claude_generate_json_with_images, is_claude_enabled
 
 
@@ -155,6 +156,8 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
     hardcoded pass/fail pixel rules.
     """
     _empty = {"status": "skip", "summary": "", "per_slide_findings": [], "remediation_hints": []}
+    if not bool(getattr(settings, "pptx_visual_critic_enabled", True)):
+        return {**_empty, "summary": "PPTX visual critic disabled by configuration"}
     if not path.exists():
         return {**_empty, "summary": "PPTX not found"}
     metadata = _extract_pptx_metadata(path)
@@ -197,9 +200,17 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
     )
 
     try:
-        result = claude_generate_json(system=system, user=user, temperature=0.1, max_tokens=1400)
+        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or None
+        result = claude_generate_json(
+            system=system,
+            user=user,
+            model=critic_model,
+            temperature=0.1,
+            max_tokens=1400,
+        )
     except Exception:
-        return {**_empty, "summary": "Claude call failed during PPTX evaluation"}
+        # Fail-open: visual critic issues should not block pipeline progression.
+        return {**_empty, "summary": "PPTX visual critic call failed; continuing without critic output"}
 
     if not isinstance(result, dict):
         return {**_empty, "summary": "Invalid response from PPTX evaluation"}

@@ -561,6 +561,35 @@ def _latest_assistant_plan_metadata(messages: list[dict]) -> dict | None:
     return None
 
 
+def _find_prior_plan_instruction(db: Session, project_id: str, exclude_conv_id: str | None = None) -> str | None:
+    """
+    Search the most recent conversations for this project for a plan message
+    that has a stored instruction. Used to recover context for cross-session
+    "generate again" requests when the current conversation has no prior plan.
+
+    Returns the instruction string, or None if not found.
+    """
+    try:
+        recent_convs = db.scalars(
+            select(Conversation)
+            .where(Conversation.project_id == project_id)
+            .order_by(Conversation.updated_at.desc())
+            .limit(5)
+        ).all()
+        for conv in recent_convs:
+            if exclude_conv_id and conv.id == exclude_conv_id:
+                continue
+            msgs = _serialize_messages(db, conv.id)
+            meta = _latest_assistant_plan_metadata(msgs)
+            if meta:
+                instruction = str(meta.get("instruction") or "").strip()
+                if instruction:
+                    return instruction
+    except Exception:
+        pass
+    return None
+
+
 def _sanitize_decision_answers(raw: object) -> dict[str, list[str]]:
     if not isinstance(raw, dict):
         return {}
@@ -1323,7 +1352,16 @@ def post_project_conversation_message(
     )
     base_instruction = str((prior_plan_meta or {}).get("instruction") or "").strip()
     if _is_redo_followup(content) and base_instruction:
+        # Prior plan found in this conversation — append the follow-up
         combined_instruction = f"{base_instruction}\n\nUser follow-up: {content}".strip()
+    elif _is_redo_followup(content) and not base_instruction:
+        # No prior plan in this conversation — attempt cross-session recovery
+        recovered = _find_prior_plan_instruction(db, pid, exclude_conv_id=conv.id)
+        if recovered:
+            combined_instruction = f"{recovered}\n\nUser follow-up: {content}".strip()
+        else:
+            # Nothing found anywhere — ask for context rather than generating blindly
+            return _persist_clarification_message(db, conv, content)
     else:
         combined_instruction = f"{history_prompt}\nuser: {content}".strip()
 
@@ -1335,10 +1373,27 @@ def post_project_conversation_message(
     except Exception:
         template_ids, custom_output_types, output_type_representations, rationale, content_skill_hint = [], [], {}, "Unable to process", None
 
-    # If no deliverables recommended even on a commit intent, try conversational response
+    # If no deliverables recommended even on a commit intent, try one more pass before out-of-scope.
+    # If the user's message contains explicit format or deliverable keywords, construct the
+    # output types directly rather than declaring the request unsupported.
     if not template_ids and content.strip():
-        out_of_scope_response = _persist_out_of_scope_message(db, conv, content)
-        return out_of_scope_response
+        _quick_format_map: dict[str, list[str]] = {
+            "pptx": ["pptx", "ppt", "powerpoint", "slides", "slide deck", "presentation deck"],
+            "docx": ["docx", "word document", "word doc"],
+            "xlsx": ["excel", "spreadsheet", "xlsx"],
+        }
+        _allowed_ids = {item.get("output_type_id") for item in available_output_types if isinstance(item, dict)}
+        _lowered_content = content.lower()
+        emergency_types = [
+            ot for ot, phrases in _quick_format_map.items()
+            if any(p in _lowered_content for p in phrases) and ot in _allowed_ids
+        ]
+        if emergency_types:
+            template_ids = emergency_types
+            output_type_representations = {t: t for t in emergency_types}
+        else:
+            out_of_scope_response = _persist_out_of_scope_message(db, conv, content)
+            return out_of_scope_response
 
     content_skill_targets = _derive_content_skill_targets(
         instruction=combined_instruction,
