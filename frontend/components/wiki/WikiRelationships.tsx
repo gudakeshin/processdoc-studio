@@ -71,7 +71,7 @@ export const WikiRelationships: React.FC<WikiRelationshipsProps> = ({ wikiType, 
       }
     };
     fetchStats();
-  }, [wikiType, projectId]);
+  }, [wikiType, projectId, api]);
 
   useEffect(() => {
     if (!pageId) return;
@@ -86,7 +86,7 @@ export const WikiRelationships: React.FC<WikiRelationshipsProps> = ({ wikiType, 
       } catch {}
     };
     fetch_();
-  }, [wikiType, pageId, projectId]);
+  }, [wikiType, pageId, projectId, api]);
 
   const handleClassify = async () => {
     try {

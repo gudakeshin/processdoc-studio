@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/auth-context';
  * WikiSynthesis — knowledge synthesis and gap discovery.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { WikiTabNav } from './WikiTabNav';
@@ -65,7 +65,7 @@ export const WikiSynthesis: React.FC<WikiSynthesisProps> = ({ wikiType, projectI
   const [notice, setNotice]     = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'clusters' | 'contradictions' | 'principles'>('clusters');
 
-  const fetchInsights = async () => {
+  const fetchInsights = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -79,7 +79,7 @@ export const WikiSynthesis: React.FC<WikiSynthesisProps> = ({ wikiType, projectI
     } finally {
       setLoading(false);
     }
-  };
+  }, [projectId, wikiType, api]);
 
   const handleCreate = async () => {
     try {
@@ -103,7 +103,7 @@ export const WikiSynthesis: React.FC<WikiSynthesisProps> = ({ wikiType, projectI
     }
   };
 
-  useEffect(() => { fetchInsights(); }, [wikiType, projectId]);
+  useEffect(() => { fetchInsights(); }, [fetchInsights]);
 
   const tabsWithCounts = insights ? [
     { key: 'clusters',       label: `Clusters (${insights.synthesis_clusters.length})` },

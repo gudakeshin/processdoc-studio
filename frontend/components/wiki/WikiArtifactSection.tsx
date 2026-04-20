@@ -58,7 +58,7 @@ export const WikiArtifactSection: React.FC<WikiArtifactSectionProps> = ({
     };
 
     fetchArtifacts();
-  }, [runId, projectId]);
+  }, [runId, projectId, api]);
 
   if (loading) {
     return <div className="p-4 text-center text-gray-500">Loading artifacts...</div>;

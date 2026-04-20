@@ -12,7 +12,7 @@ import { useAuth } from '@/lib/auth-context';
  * - Responsive positioning
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 
 interface PageSummary {
@@ -51,7 +51,7 @@ export const WikiPagePreview: React.FC<WikiPagePreviewProps> = ({
   const triggerRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
 
-  const fetchPage = async () => {
+  const fetchPage = useCallback(async () => {
     if (page) return;
 
     try {
@@ -73,7 +73,7 @@ export const WikiPagePreview: React.FC<WikiPagePreviewProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, pageId, projectId, wikiType, api]);
 
   const updatePosition = () => {
     if (!triggerRef.current || !previewRef.current) return;
@@ -102,7 +102,7 @@ export const WikiPagePreview: React.FC<WikiPagePreviewProps> = ({
       const timer = setTimeout(updatePosition, 0);
       return () => clearTimeout(timer);
     }
-  }, [isOpen]);
+  }, [isOpen, fetchPage]);
 
   const handleMouseEnter = () => {
     if (trigger === 'hover') {

@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/auth-context';
  * WikiSchemaAnalysis — schema evolution and pattern discovery.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { WikiTabNav } from './WikiTabNav';
@@ -48,7 +48,7 @@ export const WikiSchemaAnalysis: React.FC<WikiSchemaAnalysisProps> = ({ wikiType
   const [error, setError]       = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'categories' | 'relationships' | 'synthesis'>('categories');
 
-  const fetchAnalysis = async () => {
+  const fetchAnalysis = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -68,9 +68,9 @@ export const WikiSchemaAnalysis: React.FC<WikiSchemaAnalysisProps> = ({ wikiType
     } finally {
       setLoading(false);
     }
-  };
+  }, [projectId, wikiType, api]);
 
-  useEffect(() => { fetchAnalysis(); }, [wikiType, projectId]);
+  useEffect(() => { fetchAnalysis(); }, [fetchAnalysis]);
 
   if (error && !analysis) return <p className="text-xs text-[var(--error)]">{error}</p>;
 

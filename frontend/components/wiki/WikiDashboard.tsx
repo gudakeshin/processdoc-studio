@@ -55,7 +55,7 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
     } finally {
       setLoading(false);
     }
-  }, [wikiType, projectId]);
+  }, [wikiType, projectId, api]);
 
   // Auto-sync project documents on mount
   useEffect(() => {
@@ -78,7 +78,7 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
       await fetchStats();
     };
     void syncAndFetch();
-  }, [wikiType, projectId, fetchStats]);
+  }, [wikiType, projectId, fetchStats, api]);
 
   if (loading || syncing) {
     return (

@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/auth-context';
  * WikiRefreshScheduler — source freshness and refresh priority.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { WikiTabNav } from './WikiTabNav';
@@ -60,7 +60,7 @@ export const WikiRefreshScheduler: React.FC<WikiRefreshSchedulerProps> = ({
   const [error, setError]         = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'schedule' | 'freshness'>('schedule');
 
-  const fetchSchedule = async () => {
+  const fetchSchedule = useCallback(async () => {
     try {
       setLoading(true);
       const params = new URLSearchParams({ batch_size: batchSize.toString() });
@@ -80,9 +80,9 @@ export const WikiRefreshScheduler: React.FC<WikiRefreshSchedulerProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [batchSize, projectId, wikiType, api]);
 
-  const checkFreshness = async () => {
+  const checkFreshness = useCallback(async () => {
     try {
       setChecking(true);
       const params = new URLSearchParams();
@@ -99,12 +99,12 @@ export const WikiRefreshScheduler: React.FC<WikiRefreshSchedulerProps> = ({
     } finally {
       setChecking(false);
     }
-  };
+  }, [projectId, wikiType, api]);
 
   useEffect(() => {
     fetchSchedule();
     checkFreshness();
-  }, [wikiType, projectId]);
+  }, [fetchSchedule, checkFreshness]);
 
   const tabs = [
     { key: 'schedule',  label: `Schedule (${schedule.length})` },

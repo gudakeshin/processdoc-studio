@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/auth-context';
  * WikiLint — health check and issue browser.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { severityBg, severityBorder } from '@/utils/wikiColors';
@@ -61,9 +61,7 @@ export const WikiLint: React.FC<WikiLintProps> = ({ wikiType, projectId, autoRun
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
   const [expandedIssue, setExpandedIssue]   = useState<string | null>(null);
 
-  useEffect(() => { if (autoRun) runLint(); }, []);
-
-  const runLint = async () => {
+  const runLint = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -77,7 +75,9 @@ export const WikiLint: React.FC<WikiLintProps> = ({ wikiType, projectId, autoRun
     } finally {
       setLoading(false);
     }
-  };
+  }, [autoFix, projectId, wikiType, api]);
+
+  useEffect(() => { if (autoRun) runLint(); }, [autoRun, runLint]);
 
   const visible = result?.issues.filter((i) =>
     (issueFilter === 'all' || i.type === issueFilter) &&

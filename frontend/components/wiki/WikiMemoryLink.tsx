@@ -56,7 +56,7 @@ export const WikiMemoryLink: React.FC<WikiMemoryLinkProps> = ({
     };
 
     fetchLinkedPages();
-  }, [memoryId, projectId]);
+  }, [memoryId, projectId, api]);
 
   const handleCreateWikiPage = async (title: string, category: string) => {
     try {
