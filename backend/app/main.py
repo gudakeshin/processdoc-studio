@@ -1,7 +1,7 @@
-import shutil
 import importlib.util
-import logging
 import json
+import logging
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -22,23 +22,29 @@ load_dotenv(_repo_root / ".env")
 load_dotenv(_backend_root / ".env", override=True)
 
 from app.api.routes import router
-from app.core.middleware import request_timing_middleware
-from app.db.session import engine, init_db
-from app.services.mcp.registry import shutdown_mcp_servers, startup_mcp_servers
-from app.services.otel_tracing import init_otel_if_enabled
-from app.services.run_worker import reconcile_stalled_approved_runs_on_startup, start_execution_worker
-from app.services.scheduled_tasks import start_scheduler_worker
-from app.services.observability import snapshot as observability_snapshot, prometheus_text
-from app.services.run_worker import admission_status, list_worker_heartbeats, queue_runtime_stats
 from app.core.config import log_memory_config_warnings, log_run_queue_startup_config, settings
-from app.core.rate_limit import limiter
-from app.core.request_context import get_correlation_id
 from app.core.deliverable import DeliverableRegistry
 from app.core.deliverable_docx import DOCXDeliverable
 from app.core.deliverable_pdf import PDFDeliverable
 from app.core.deliverable_pptx import PPTXDeliverable
 from app.core.deliverable_process_map import ProcessMapDeliverable
 from app.core.deliverable_xlsx import XLSXDeliverable
+from app.core.middleware import request_timing_middleware
+from app.core.rate_limit import limiter
+from app.core.request_context import get_correlation_id
+from app.db.session import engine, init_db
+from app.services.mcp.registry import shutdown_mcp_servers, startup_mcp_servers
+from app.services.observability import prometheus_text
+from app.services.observability import snapshot as observability_snapshot
+from app.services.otel_tracing import init_otel_if_enabled
+from app.services.run_worker import (
+    admission_status,
+    list_worker_heartbeats,
+    queue_runtime_stats,
+    reconcile_stalled_approved_runs_on_startup,
+    start_execution_worker,
+)
+from app.services.scheduled_tasks import start_scheduler_worker
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -60,10 +66,11 @@ if settings.structured_logging_enabled:
     if root.handlers:
         for h in root.handlers:
             h.setFormatter(JsonLogFormatter())
+from sqlalchemy.orm import Session
+
 from app.core.auth import get_current_user, require_project_role
 from app.db.models import User
 from app.db.session import get_db
-from sqlalchemy.orm import Session
 
 
 @asynccontextmanager
@@ -158,6 +165,7 @@ app.include_router(router, prefix="/api")
 
 # Wiki API — has its own /api/wiki prefix baked in
 from app.api.wiki import router as wiki_router
+
 app.include_router(wiki_router)
 
 

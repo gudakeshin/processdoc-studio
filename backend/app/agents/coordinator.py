@@ -1,26 +1,20 @@
-import json
-import re
-import time
 import asyncio
+import json
 import logging
+import re
 import threading
-from contextlib import contextmanager
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from sqlalchemy import select
 
-from app.services.claude import (
-    _extract_first_json_object,
-    claude_generate_with_thinking,
-    is_claude_enabled,
-)
-
 from app.agents.agent_types import AgentOutput, build_agent_context, merge_agent_output
-from app.agents.prompt_hygiene import UNTRUSTED_JSON_USER_NOTE, wrap_untrusted
 from app.agents.coordinator_teammate_integration import CoordinatorTeammateIntegration
+from app.agents.prompt_hygiene import UNTRUSTED_JSON_USER_NOTE, wrap_untrusted
 from app.agents.subagents import (
     run_docx_agent,
     run_drawio_agent,
@@ -30,33 +24,38 @@ from app.agents.subagents import (
     run_process_extraction,
     run_xlsx_agent,
 )
+from app.core.config import settings
+from app.core.deliverable import DeliverableRegistry
+from app.core.quality_framework import UnifiedQualityFramework
 from app.core.run_control import RunAborted
 from app.core.state import ProcessDocState
-from app.services.dpdp import DPDPService
-from app.services.guardrails import GuardrailPipeline
-from app.services.teammate_executor import TeammateExecutor
-from app.services.qa import QAAgentLoop
-from app.services.retrieval import TieredContextEngine
-from app.core.config import settings
 from app.db.models import MemoryEvent, MemoryItem, ProjectMemoryProfile, UserProjectPreference
 from app.db.session import SessionLocal
-from app.services.memory_context import merge_long_term_items_into_profile
+from app.schemas.llm_contracts import CoordinatorPlanResponse
+from app.services.branding_service import BrandingService
+from app.services.claude import (
+    _extract_first_json_object,
+    claude_generate_with_thinking,
+    is_claude_enabled,
+)
+from app.services.content_enrichment import ContentEnrichmentEngine
+from app.services.dpdp import DPDPService
+from app.services.guardrails import GuardrailPipeline
+from app.services.hooks import run_hooks_sync
 from app.services.langfuse_tracing import langfuse_span
+from app.services.memory_context import merge_long_term_items_into_profile
+from app.services.observability import increment
+from app.services.proposal_policy import derive_proposal_skill_targets
+from app.services.qa import QAAgentLoop
+from app.services.retrieval import TieredContextEngine
+from app.services.run_events import build_event_payload
 from app.services.run_todo_snapshot import (
     build_run_todo_rows,
     emit_run_todo_snapshot,
     todo_bulk_set,
     todo_set_status,
 )
-from app.services.proposal_policy import derive_proposal_skill_targets
-from app.services.hooks import run_hooks_sync
-from app.services.run_events import build_event_payload
-from app.services.observability import increment
-from app.schemas.llm_contracts import CoordinatorPlanResponse
-from app.services.branding_service import BrandingService
-from app.services.content_enrichment import ContentEnrichmentEngine
-from app.core.deliverable import DeliverableRegistry
-from app.core.quality_framework import UnifiedQualityFramework
+from app.services.teammate_executor import TeammateExecutor
 
 _OUTPUT_AGENTS: dict[str, object] = {
     "process_map": run_drawio_agent,
@@ -1678,9 +1677,9 @@ class Coordinator:
         will become the default and the old run() will be deprecated.
         """
         from app.agents.coordinator_state_manager import (
+            CoordinatorStateError,
             CoordinatorStateManager,
             ExecutionPlanSnapshot,
-            CoordinatorStateError,
         )
 
         with _coordinator_abort_scope(abort_check):
