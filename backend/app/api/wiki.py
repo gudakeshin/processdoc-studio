@@ -4,11 +4,20 @@ Wiki API endpoints for ingest, query, lint, and browse operations.
 Provides REST API for wiki operations with automatic retry, auto-correction, and QA.
 """
 
-from fastapi import APIRouter, HTTPException, Query
-from typing import Any, Dict, List, Optional
+import json
 import logging
+import re
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
+from sqlalchemy.orm import Session
+
+from app.core.auth import get_current_user, require_project_role
+from app.core.config import settings
+from app.db.models import User
+from app.db.session import get_db
 from app.services.wiki_operations import (
     wiki_ingest_with_retry,
     wiki_query_with_retry,
@@ -23,7 +32,6 @@ from app.services.wiki_analytics import get_wiki_recommender
 from app.services.wiki_corrections import DataCorrector
 from app.services.wiki_qa import WikiQAEvaluator
 from app.services.wiki_integrations import (
-    WikiMemoryIntegration,
     WikiRunIntegration,
     WikiConversationIntegration,
     WikiCoordinatorIntegration,
@@ -31,6 +39,63 @@ from app.services.wiki_integrations import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_PAGE_STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_WIKI_VIEW_ROLES = frozenset({"Owner", "Editor", "Viewer"})
+_WIKI_EDIT_ROLES = frozenset({"Owner", "Editor"})
+
+
+def _wiki_lp_admin_emails() -> frozenset[str]:
+    raw = (settings.wiki_lp_admin_emails or "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(e.strip().lower() for e in raw.split(",") if e.strip())
+
+
+def _wiki_require_access(
+    wiki_type: str,
+    project_id: Optional[str],
+    user: User,
+    db: Session,
+    *,
+    mutating: bool,
+) -> None:
+    """Enforce auth + project role for project wiki; LP mutations require an admin allowlist.
+
+    - ``wiki_type=project``: ``require_project_role`` on ``project_id`` (view vs. edit roles).
+    - ``wiki_type=leading_practice``:
+        * reads: any authenticated user (caller already passed ``get_current_user``).
+        * mutations: allowed only for emails listed in ``settings.wiki_lp_admin_emails``.
+          If the allowlist is empty AND ``processdoc_env == "development"``, mutations are
+          permitted (preserves the historical dev-only behavior); in staging/production an
+          empty allowlist denies all LP mutations so the shared LP wiki cannot be edited by
+          any authenticated user.
+    """
+    if wiki_type not in ("leading_practice", "project"):
+        raise HTTPException(status_code=400, detail="Invalid wiki_type")
+    if wiki_type == "project":
+        if not project_id or not _PROJECT_ID_RE.match(project_id):
+            raise HTTPException(status_code=400, detail="Invalid or missing project_id")
+        roles = _WIKI_EDIT_ROLES if mutating else _WIKI_VIEW_ROLES
+        require_project_role(project_id, roles, user, db)
+        return
+    # leading_practice
+    if not mutating:
+        return
+    admins = _wiki_lp_admin_emails()
+    if admins:
+        if (user.email or "").strip().lower() not in admins:
+            raise HTTPException(status_code=403, detail="Leading-practice wiki mutations are restricted to admins")
+        return
+    # No allowlist configured — only allow mutations in development.
+    env = (settings.processdoc_env or "development").strip().lower()
+    if env != "development":
+        raise HTTPException(
+            status_code=403,
+            detail="Leading-practice wiki mutations require wiki_lp_admin_emails to be configured",
+        )
+
 
 router = APIRouter(prefix="/api/wiki", tags=["wiki"])
 
@@ -44,6 +109,8 @@ async def ingest_source(
     source_data: Dict[str, Any],
     project_id: Optional[str] = None,
     max_retries: int = 3,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Ingest a source into the wiki with automatic retry and auto-correction.
@@ -66,6 +133,7 @@ async def ingest_source(
             "error": str (if failed)
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -106,31 +174,97 @@ async def ingest_memory_item(
     wiki_type: str,
     memory_item: Dict[str, Any],
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Ingest a memory item into wiki.
 
     Args:
         wiki_type: "leading_practice" or "project"
-        memory_item: Memory item dict with id, type, content, metadata
+        memory_item: Memory item dict with id, type, content, metadata (or memory_id / memory_content from UI)
         project_id: Project ID
 
     Returns:
-        {status, page_id, title, category, error}
+        {status, page, error}
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
+    if wiki_type == "project" and not project_id:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    raw = dict(memory_item or {})
+    if raw.get("memory_id") is not None and raw.get("id") is None:
+        meta: Dict[str, Any] = {}
+        if raw.get("title"):
+            meta["title"] = raw.get("title")
+        raw = {
+            "id": raw.get("memory_id"),
+            "type": raw.get("memory_type", "fact"),
+            "content": raw.get("memory_content", ""),
+            "metadata": meta,
+            "category": raw.get("category"),
+        }
+
     try:
-        wiki_page, error = WikiMemoryIntegration.ingest_memory_item_to_wiki(
-            memory_item, wiki_type, project_id
+        source_data = {
+            "memory_id": raw.get("id"),
+            "memory_type": raw.get("type", "fact"),
+            "memory_content": raw.get("content", ""),
+            "title": (raw.get("metadata") or {}).get("title") or raw.get("title"),
+            "category_hint": raw.get("category"),
+        }
+        result, error = wiki_ingest_with_retry(
+            source_type="memory",
+            source_data=source_data,
+            wiki_type=wiki_type,
+            project_id=project_id,
+            max_retries=3,
         )
 
         if error:
             return {"status": "error", "error": error}
 
+        from app.services.storage import workspace_path
+
+        page_ids = (result or {}).get("page_ids") or []
+        page_id = page_ids[0] if page_ids else None
+        title = str(source_data.get("title") or "Untitled")
+        category = str(raw.get("category") or "concept")
+        confidence = "medium"
+        if page_id:
+            if wiki_type == "leading_practice":
+                wiki_dir = workspace_path("leading_practices") / "wiki"
+            else:
+                wiki_dir = workspace_path(project_id) / "wiki"
+            pf = wiki_dir / f"{page_id}.md"
+            if pf.exists():
+                text = pf.read_text(encoding="utf-8")
+                m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+                if m:
+                    for line in m.group(1).split("\n"):
+                        if ":" not in line:
+                            continue
+                        k, v = line.split(":", 1)
+                        k, v = k.strip(), v.strip().strip('"')
+                        if k == "title":
+                            title = v
+                        elif k == "category":
+                            category = v
+                        elif k == "confidence":
+                            confidence = v
+
+        pid = page_id or ""
         return {
             "status": "success",
-            "page_id": memory_item.get("id"),
-            "title": wiki_page.get("title"),
-            "category": wiki_page.get("category"),
+            "page_id": pid,
+            "title": title,
+            "category": category,
+            "page": {
+                "id": pid,
+                "title": title,
+                "category": category,
+                "confidence": confidence,
+            },
         }
 
     except Exception as e:
@@ -145,6 +279,8 @@ async def ingest_run_artifacts(
     run_summary: Dict[str, Any],
     artifacts: List[Dict[str, Any]],
     project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Ingest run artifacts and learnings into wiki.
@@ -159,6 +295,7 @@ async def ingest_run_artifacts(
     Returns:
         {status, pages_created, run_id, error}
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type != "project":
         raise HTTPException(status_code=400, detail="Run ingest only for project wiki")
 
@@ -187,6 +324,8 @@ async def ingest_conversation(
     conversation_id: str,
     messages: List[Dict[str, Any]],
     project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Ingest conversation digest into wiki.
@@ -200,6 +339,7 @@ async def ingest_conversation(
     Returns:
         {status, page_id, title, error}
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type != "project":
         raise HTTPException(status_code=400, detail="Conversation ingest only for project wiki")
 
@@ -222,6 +362,156 @@ async def ingest_conversation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{wiki_type}/sync-documents")
+async def sync_project_documents_to_wiki(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Ingest every file from the project workspace ``source_docs`` folder into the project wiki."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
+    if wiki_type != "project" or not project_id:
+        raise HTTPException(status_code=400, detail="sync-documents requires project wiki and project_id")
+
+    from app.services.storage import workspace_path
+
+    source_dir = workspace_path(project_id) / "source_docs"
+    if not source_dir.is_dir():
+        return {
+            "status": "success",
+            "ingested": 0,
+            "skipped": 0,
+            "errors": [],
+            "message": "source_docs directory not found",
+        }
+
+    ingested = 0
+    skipped = 0
+    errors: List[Dict[str, str]] = []
+    for path in sorted(source_dir.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        result, err = wiki_ingest_with_retry(
+            source_type="document",
+            source_data={"filename": path.name},
+            wiki_type=wiki_type,
+            project_id=project_id,
+            max_retries=2,
+        )
+        if err:
+            errors.append({"file": path.name, "error": err})
+        elif result and (result.get("pages_created", 0) + result.get("pages_updated", 0)) > 0:
+            ingested += 1
+        else:
+            skipped += 1
+
+    return {"status": "success", "ingested": ingested, "skipped": skipped, "errors": errors}
+
+
+@router.get("/{wiki_type}/artifacts")
+async def list_wiki_pages_for_run(
+    wiki_type: str,
+    run_id: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """List wiki pages linked to a run (via frontmatter ``source_run_id``)."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    if wiki_type != "project" or not project_id:
+        raise HTTPException(status_code=400, detail="artifacts listing requires project wiki and project_id")
+    if not run_id or not _PAGE_STEM_RE.match(run_id):
+        raise HTTPException(status_code=400, detail="Invalid run_id")
+
+    from app.services.storage import workspace_path
+
+    wiki_dir = workspace_path(project_id) / "wiki"
+    artifacts: List[Dict[str, Any]] = []
+    if not wiki_dir.exists():
+        return {"status": "success", "artifacts": []}
+
+    for md_file in sorted(wiki_dir.glob("*.md")):
+        if md_file.name in ("index.md", "log.md"):
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            fm: Dict[str, str] = {}
+            m = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+            if m:
+                for line in m.group(1).split("\n"):
+                    if ":" not in line:
+                        continue
+                    k, v = line.split(":", 1)
+                    fm[k.strip()] = v.strip().strip('"')
+            if fm.get("source_run_id") != run_id:
+                continue
+            artifacts.append(
+                {
+                    "id": md_file.stem,
+                    "name": fm.get("title", md_file.stem),
+                    "type": fm.get("semantic_type", "artifact"),
+                    "category": fm.get("category", "artifact"),
+                    "created_at": fm.get("last_updated", fm.get("created_at", "")),
+                }
+            )
+        except Exception as ex:
+            logger.warning(f"artifacts scan skip {md_file.name}: {ex}")
+
+    return {"status": "success", "artifacts": artifacts}
+
+
+@router.get("/{wiki_type}/memory/{memory_id}/pages")
+async def list_wiki_pages_for_memory(
+    wiki_type: str,
+    memory_id: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """List wiki pages created from a given memory item id."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    if wiki_type != "project" or not project_id:
+        raise HTTPException(status_code=400, detail="memory pages requires project wiki and project_id")
+    if not memory_id or not _PAGE_STEM_RE.match(memory_id):
+        raise HTTPException(status_code=400, detail="Invalid memory_id")
+
+    from app.services.storage import workspace_path
+
+    wiki_dir = workspace_path(project_id) / "wiki"
+    pages: List[Dict[str, Any]] = []
+    if not wiki_dir.exists():
+        return {"status": "success", "pages": []}
+
+    for md_file in sorted(wiki_dir.glob("*.md")):
+        if md_file.name in ("index.md", "log.md"):
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            fm: Dict[str, str] = {}
+            m = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+            if m:
+                for line in m.group(1).split("\n"):
+                    if ":" not in line:
+                        continue
+                    k, v = line.split(":", 1)
+                    fm[k.strip()] = v.strip().strip('"')
+            if fm.get("source_memory_id") != memory_id:
+                continue
+            pages.append(
+                {
+                    "id": md_file.stem,
+                    "title": fm.get("title", md_file.stem),
+                    "category": fm.get("category", "concept"),
+                    "confidence": fm.get("confidence", "medium"),
+                }
+            )
+        except Exception as ex:
+            logger.warning(f"memory pages scan skip {md_file.name}: {ex}")
+
+    return {"status": "success", "pages": pages}
+
+
 # ===== Query Operations =====
 
 @router.post("/{wiki_type}/query")
@@ -231,6 +521,8 @@ async def query_wiki(
     project_id: Optional[str] = None,
     include_qa: bool = False,
     max_retries: int = 3,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Query the wiki to answer a question.
@@ -252,6 +544,7 @@ async def query_wiki(
             "error": str (if failed)
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         result, error = wiki_query_with_retry(
             question=question,
@@ -285,6 +578,8 @@ async def get_wiki_context(
     wiki_type: str,
     question: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get wiki context for coordinator run planning.
@@ -302,6 +597,7 @@ async def get_wiki_context(
             "recommendations": [str]
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         context = WikiCoordinatorIntegration.query_wiki_for_context(
             question, wiki_type, project_id
@@ -325,6 +621,8 @@ async def lint_wiki(
     project_id: Optional[str] = None,
     max_retries: int = 3,
     auto_fix: bool = False,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Run health check on wiki.
@@ -346,6 +644,7 @@ async def lint_wiki(
             "error": str (if failed)
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     try:
         result, error = wiki_lint_with_retry(
             wiki_type=wiki_type,
@@ -383,6 +682,8 @@ async def list_pages(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     sort_by: str = "updated_at",
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     List wiki pages with filtering and pagination.
@@ -407,6 +708,7 @@ async def list_pages(
             }
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         from app.services.storage import workspace_path
         from pathlib import Path
@@ -439,11 +741,11 @@ async def list_pages(
                 try:
                     content = md_file.read_text(encoding="utf-8")
 
-                    # Parse frontmatter
+                    # Parse frontmatter (use page_category — do not shadow query param ``category``)
                     frontmatter = {}
                     title = md_file.stem.replace("_", " ").title()
                     confidence = "medium"
-                    category = "artifact"
+                    page_category = "concept"
                     updated_at = md_file.stat().st_mtime
 
                     # Extract frontmatter
@@ -459,7 +761,7 @@ async def list_pages(
 
                         title = frontmatter.get("title", title)
                         confidence = frontmatter.get("confidence", confidence)
-                        category = frontmatter.get("category", category)
+                        page_category = frontmatter.get("category", page_category)
 
                     # Extract summary from content
                     summary = None
@@ -482,26 +784,26 @@ async def list_pages(
                                 god_node_rank = gn["rank"]
                                 break
 
-                    # Apply filters
-                    if category and category != "artifact":
-                        continue  # For now, only show artifact pages
-                    if category == category:  # Category filter
-                        page_dict = {
-                            "id": page_id,
-                            "title": title,
-                            "category": category,
-                            "confidence": confidence,
-                            "updated_at": updated_at,
-                            "summary": summary,
-                            "inbound_links": inbound_count,
-                            "outbound_links": rel_counts.get(page_id, {}).get("outbound", 0),
-                        }
-                        if community_info:
-                            page_dict["community_id"] = community_info["community_id"]
-                            page_dict["community_concepts"] = community_info.get("top_concepts", [])
-                        if god_node_rank:
-                            page_dict["god_node_rank"] = god_node_rank
-                        pages.append(page_dict)
+                    # Optional query filter: ``category`` limits to that page category
+                    if category and page_category != category:
+                        continue
+
+                    page_dict = {
+                        "id": page_id,
+                        "title": title,
+                        "category": page_category,
+                        "confidence": confidence,
+                        "updated_at": updated_at,
+                        "summary": summary,
+                        "inbound_links": inbound_count,
+                        "outbound_links": rel_counts.get(page_id, {}).get("outbound", 0),
+                    }
+                    if community_info:
+                        page_dict["community_id"] = community_info["community_id"]
+                        page_dict["community_concepts"] = community_info.get("top_concepts", [])
+                    if god_node_rank:
+                        page_dict["god_node_rank"] = god_node_rank
+                    pages.append(page_dict)
                 except Exception as e:
                     logger.warning(f"Failed to parse wiki page {md_file.name}: {e}")
                     continue
@@ -536,11 +838,125 @@ async def list_pages(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{wiki_type}/pages/{page_id}/preview")
+async def get_page_preview(
+    wiki_type: str,
+    page_id: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Return a short summary of a wiki page for hover previews."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    if not _PAGE_STEM_RE.match(page_id):
+        raise HTTPException(status_code=400, detail="Invalid page_id")
+
+    from app.services.storage import workspace_path
+    from app.services.wiki_operations import _get_relationship_counts
+
+    if wiki_type == "leading_practice":
+        wiki_dir = workspace_path("leading_practices") / "wiki"
+    else:
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id required for project wiki")
+        wiki_dir = workspace_path(project_id) / "wiki"
+
+    page_path = wiki_dir / f"{page_id}.md"
+    if not page_path.is_file():
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    content = page_path.read_text(encoding="utf-8")
+    title = page_id.replace("_", " ").title()
+    category = "artifact"
+    confidence = "medium"
+    m = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+    if m:
+        for line in m.group(1).split("\n"):
+            if ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            k, v = k.strip(), v.strip().strip('"')
+            if k == "title":
+                title = v
+            elif k == "category":
+                category = v
+            elif k == "confidence":
+                confidence = v
+
+    summary = ""
+    for line in content.split("\n"):
+        ln = line.strip()
+        if ln and not ln.startswith("#") and not ln.startswith("-") and not ln.startswith("["):
+            summary = ln[:280]
+            break
+
+    rel_counts = _get_relationship_counts(wiki_type, project_id)
+    rc = rel_counts.get(page_id, {})
+    pages_linking = int(rc.get("inbound", 0) or 0)
+    outbound_links_count = int(rc.get("outbound", 0) or 0)
+    updated_ts = page_path.stat().st_mtime
+    updated_at = datetime.fromtimestamp(updated_ts, tz=timezone.utc).isoformat()
+
+    return {
+        "status": "success",
+        "page": {
+            "id": page_id,
+            "title": title,
+            "category": category,
+            "confidence": confidence,
+            "summary": summary,
+            "updated_at": updated_at,
+            "pages_linking": pages_linking,
+            "outbound_links_count": outbound_links_count,
+        },
+    }
+
+
+@router.get("/{wiki_type}/pages/{page_id}/related")
+async def get_related_wiki_pages(
+    wiki_type: str,
+    page_id: str,
+    project_id: Optional[str] = None,
+    max_depth: int = Query(2, ge=1, le=5),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Transitively related pages (typed relationship graph)."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    if not _PAGE_STEM_RE.match(page_id):
+        raise HTTPException(status_code=400, detail="Invalid page_id")
+
+    from app.services.wiki_relationships import RelationshipGraph, get_transitive_related_pages
+
+    related_ids = get_transitive_related_pages(page_id, wiki_type, project_id, max_depth=max_depth)
+    graph = RelationshipGraph(wiki_type, project_id)
+    related_pages: List[Dict[str, Any]] = []
+    for tid in related_ids:
+        if tid == page_id:
+            continue
+        rtype = "related_to"
+        conf = 0.5
+        for rel in graph.relationships:
+            if rel.get("source_id") == page_id and rel.get("target_id") == tid:
+                rtype = str(rel.get("relation_type", "related_to"))
+                conf = float(rel.get("confidence_score") or rel.get("confidence") or 0.5)
+                break
+            if rel.get("source_id") == tid and rel.get("target_id") == page_id:
+                rtype = str(rel.get("relation_type", "related_to"))
+                conf = float(rel.get("confidence_score") or rel.get("confidence") or 0.5)
+                break
+        related_pages.append({"page_id": tid, "relation_type": rtype, "confidence": conf})
+
+    return {"status": "success", "related_pages": related_pages}
+
+
 @router.get("/{wiki_type}/pages/{page_id}")
 async def get_page(
     wiki_type: str,
     page_id: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get a specific wiki page.
@@ -565,26 +981,102 @@ async def get_page(
             }
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    if not _PAGE_STEM_RE.match(page_id):
+        raise HTTPException(status_code=400, detail="Invalid page_id")
     try:
-        # Stub implementation - would fetch from database
+        from datetime import datetime, timezone as _tz
+
+        from app.services.storage import workspace_path
+        from app.services.wiki_operations import _get_community_for_page
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"  # type: ignore[arg-type]
+        md_file = wiki_dir / f"{page_id}.md"
+        try:
+            md_file.resolve().relative_to(wiki_dir.resolve())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid page_id")
+        if not md_file.exists():
+            raise HTTPException(status_code=404, detail="Page not found")
+
+        content = md_file.read_text(encoding="utf-8")
+        frontmatter: Dict[str, Any] = {}
+        body = content
+        fm_match = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
+        if fm_match:
+            for line in fm_match.group(1).split("\n"):
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    frontmatter[k.strip()] = v.strip().strip('"')
+            body = fm_match.group(2)
+
+        title = frontmatter.get("title") or page_id.replace("_", " ").title()
+        category = frontmatter.get("category") or "concept"
+        confidence = frontmatter.get("confidence") or "medium"
+
+        stat = md_file.stat()
+        updated_at = datetime.fromtimestamp(stat.st_mtime, tz=_tz.utc).isoformat()
+        created_at = datetime.fromtimestamp(stat.st_ctime, tz=_tz.utc).isoformat()
+
+        # Resolve same-wiki inbound / outbound links from relationships.json.
+        title_by_id: Dict[str, str] = {}
+        for md in wiki_dir.glob("*.md"):
+            if md.name in ("index.md", "log.md"):
+                continue
+            try:
+                head = md.read_text(encoding="utf-8")[:512]
+                m = re.search(r'^title:\s*"?([^"\n]+)"?', head, re.MULTILINE)
+                title_by_id[md.stem] = (m.group(1).strip() if m else md.stem)
+            except Exception as exc:
+                logger.debug("title read failed for %s: %s", md.name, exc)
+                title_by_id[md.stem] = md.stem
+
+        inbound: List[Dict[str, str]] = []
+        outbound: List[Dict[str, str]] = []
+        rels_file = wiki_dir / "relationships.json"
+        if rels_file.exists():
+            try:
+                rels_data = json.loads(rels_file.read_text(encoding="utf-8"))
+                for rel in rels_data.get("relationships", []):
+                    src = str(rel.get("source_id") or "")
+                    tgt = str(rel.get("target_id") or "")
+                    if tgt == page_id and src:
+                        inbound.append({"id": src, "title": title_by_id.get(src, src), "type": "inbound"})
+                    elif src == page_id and tgt:
+                        outbound.append({"id": tgt, "title": title_by_id.get(tgt, tgt), "type": "outbound"})
+            except Exception as exc:
+                logger.debug("relationships.json parse failed: %s", exc)
+
+        community = _get_community_for_page(wiki_type, project_id, page_id) or None
+
         page = {
             "id": page_id,
-            "title": "Page Title",
-            "category": "entity",
-            "content": "Page content",
-            "confidence": "medium",
-            "updated_at": "2026-04-11T00:00:00Z",
-            "inbound_links": [],
-            "outbound_links": [],
+            "title": title,
+            "category": category,
+            "confidence": confidence,
+            "content": body.strip(),
+            "created_at": frontmatter.get("created_at") or created_at,
+            "updated_at": frontmatter.get("updated_at") or updated_at,
+            "created_by": frontmatter.get("created_by"),
+            "source_memory_ids": [],
+            "source_run_ids": [],
+            "inbound_links": inbound,
+            "outbound_links": outbound,
+            "pages_linking_count": len(inbound),
+            "frontmatter": frontmatter,
         }
+        if community:
+            page["community"] = community
 
-        return {
-            "status": "success",
-            "page": page,
-        }
+        return {"status": "success", "page": page}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Get page failed: {e}")
+        logger.exception("Get page failed for %s/%s", wiki_type, page_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -596,6 +1088,8 @@ async def search_pages(
     category: Optional[str] = None,
     confidence: Optional[str] = None,
     limit: int = Query(20, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Full-text search wiki pages.
@@ -620,24 +1114,102 @@ async def search_pages(
             }
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    query_text = (q or "").strip()
+    if not query_text:
+        raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
     try:
-        # Stub implementation - would search database/index
-        results = []
-        facets = {
-            "category": {},
-            "confidence": {},
-        }
+        from datetime import datetime, timezone as _tz
+
+        from app.services.storage import workspace_path
+
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"  # type: ignore[arg-type]
+
+        results: List[Dict[str, Any]] = []
+        cat_facets: Dict[str, int] = {}
+        conf_facets: Dict[str, int] = {}
+
+        if wiki_dir.exists():
+            q_lower = query_text.lower()
+            for md_file in wiki_dir.glob("*.md"):
+                if md_file.name in ("index.md", "log.md"):
+                    continue
+                try:
+                    content = md_file.read_text(encoding="utf-8")
+                except Exception as exc:
+                    logger.debug("search: read failed for %s: %s", md_file.name, exc)
+                    continue
+
+                frontmatter: Dict[str, str] = {}
+                body = content
+                fm_match = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
+                if fm_match:
+                    for line in fm_match.group(1).split("\n"):
+                        if ":" in line:
+                            k, v = line.split(":", 1)
+                            frontmatter[k.strip()] = v.strip().strip('"')
+                    body = fm_match.group(2)
+
+                page_title = frontmatter.get("title") or md_file.stem.replace("_", " ").title()
+                page_category = frontmatter.get("category") or "concept"
+                page_confidence = frontmatter.get("confidence") or "medium"
+
+                if category and page_category != category:
+                    continue
+                if confidence and page_confidence != confidence:
+                    continue
+
+                title_l = page_title.lower()
+                body_l = body.lower()
+                if q_lower not in title_l and q_lower not in body_l:
+                    continue
+
+                score = 0
+                if q_lower in title_l:
+                    score += 5
+                score += body_l.count(q_lower)
+
+                idx = body_l.find(q_lower)
+                if idx >= 0:
+                    start = max(0, idx - 80)
+                    end = min(len(body), idx + len(q_lower) + 80)
+                    snippet = body[start:end].strip().replace("\n", " ")
+                else:
+                    snippet = body.strip()[:200]
+
+                stat = md_file.stat()
+                updated_at = datetime.fromtimestamp(stat.st_mtime, tz=_tz.utc).isoformat()
+
+                results.append({
+                    "id": md_file.stem,
+                    "title": page_title,
+                    "category": page_category,
+                    "confidence": page_confidence,
+                    "updated_at": updated_at,
+                    "snippet": snippet,
+                    "score": score,
+                })
+                cat_facets[page_category] = cat_facets.get(page_category, 0) + 1
+                conf_facets[page_confidence] = conf_facets.get(page_confidence, 0) + 1
+
+        results.sort(key=lambda r: r["score"], reverse=True)
+        results = results[:limit]
 
         return {
             "status": "success",
             "results": results,
-            "query": q,
+            "query": query_text,
             "count": len(results),
-            "facets": facets,
+            "facets": {"category": cat_facets, "confidence": conf_facets},
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Search failed: {e}")
+        logger.exception("Wiki search failed for q=%r", query_text)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -649,6 +1221,8 @@ async def promote_to_lp(
     page_id: str,
     project_id: str,
     reason: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Propose a project page as a leading practice.
@@ -667,6 +1241,7 @@ async def promote_to_lp(
             "error": str (if failed)
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type != "project":
         raise HTTPException(status_code=400, detail="Can only promote from project wiki")
 
@@ -698,12 +1273,42 @@ async def promote_to_lp(
 
 # ===== Relationship Operations =====
 
+@router.get("/{wiki_type}/relationships/validate")
+async def validate_wiki_relationships_route(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Validate relationship graph and return statistics plus issues."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    from app.services.wiki_relationships import validate_relationships
+
+    return validate_relationships(wiki_type, project_id)
+
+
+@router.post("/{wiki_type}/relationships/classify")
+async def classify_wiki_relationships_route(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Auto-classify untyped relationships."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
+    from app.services.wiki_relationships import classify_all_relationships
+
+    return classify_all_relationships(wiki_type, project_id)
+
+
 @router.get("/{wiki_type}/relationships/{page_id}")
 async def get_page_relationships(
     wiki_type: str,
     page_id: str,
     project_id: Optional[str] = None,
     relationship_type: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get relationships for a specific page.
@@ -724,6 +1329,7 @@ async def get_page_relationships(
             "total_outbound": int
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         from app.services.storage import workspace_path
         import json
@@ -785,6 +1391,8 @@ async def get_page_relationships(
 async def get_communities(
     wiki_type: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get all wiki communities (functional clusters).
@@ -809,6 +1417,7 @@ async def get_communities(
             "last_updated": ISO datetime
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         from app.services.storage import workspace_path
         import json
@@ -851,6 +1460,8 @@ async def get_community_details(
     wiki_type: str,
     community_id: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get details for a specific community.
@@ -871,6 +1482,7 @@ async def get_community_details(
             "pages": [page objects with full details]
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         from app.services.storage import workspace_path
         import json
@@ -932,6 +1544,8 @@ async def get_god_nodes(
     wiki_type: str,
     project_id: Optional[str] = None,
     limit: int = Query(10, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get the most important pages (god nodes) in the wiki.
@@ -963,6 +1577,7 @@ async def get_god_nodes(
             "avg_importance": float
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         from app.services.wiki_operations import _get_god_nodes
 
@@ -1008,12 +1623,14 @@ async def get_god_nodes(
 async def query_wiki_graph(
     wiki_type: str,
     q: str,
-    query_type: str = Query("neighbors", regex="^(neighbors|bfs|shortest_path|related)$"),
+    query_type: str = Query("neighbors", pattern="^(neighbors|bfs|shortest_path|related)$"),
     start_node: Optional[str] = None,
     end_node: Optional[str] = None,
     max_distance: int = Query(3, ge=1, le=5),
     max_results: int = Query(20, ge=1, le=100),
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Query the wiki knowledge graph using relationship traversal.
@@ -1052,6 +1669,7 @@ async def query_wiki_graph(
             "truncated": bool
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         from app.services.wiki_operations import _execute_graph_query
 
@@ -1085,6 +1703,8 @@ async def query_wiki_graph(
 async def get_graph_stats(
     wiki_type: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get statistics about the wiki knowledge graph.
@@ -1101,6 +1721,7 @@ async def get_graph_stats(
             }
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         from app.services.wiki_operations import _load_persistent_graph
         import networkx as nx
@@ -1147,6 +1768,8 @@ async def get_graph_stats(
 async def get_wiki_stats(
     wiki_type: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get wiki statistics and health summary.
@@ -1172,6 +1795,7 @@ async def get_wiki_stats(
             }
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
         from app.services.storage import workspace_path
         from datetime import datetime, timedelta, timezone
@@ -1317,6 +1941,8 @@ async def get_wiki_stats(
 async def build_cross_wiki_index(
     wiki_type: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Build cross-wiki relationship index (LP <-> Project).
@@ -1334,6 +1960,7 @@ async def build_cross_wiki_index(
             "error": str (if failed)
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1360,6 +1987,8 @@ async def get_cross_wiki_references(
     wiki_type: str,
     page_id: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get cross-wiki references for a page.
@@ -1379,6 +2008,7 @@ async def get_cross_wiki_references(
             "error": str (if failed)
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1407,6 +2037,8 @@ async def get_cross_wiki_references(
 async def get_wiki_performance(
     wiki_type: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get wiki performance metrics for monitoring.
@@ -1425,6 +2057,7 @@ async def get_wiki_performance(
             "manifest_version": int,
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1449,6 +2082,8 @@ async def get_wiki_performance(
 async def detect_wiki_changes(
     wiki_type: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Detect changed pages since last index update.
@@ -1468,6 +2103,7 @@ async def detect_wiki_changes(
             "changed_pages": [page_ids],
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1494,7 +2130,7 @@ async def detect_wiki_changes(
 # ===== Cache Management (Phase 5) =====
 
 @router.get("/cache/stats")
-async def get_cache_statistics() -> Dict[str, Any]:
+async def get_cache_statistics(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Dict[str, Any]:
     """
     Get wiki query cache statistics.
 
@@ -1532,6 +2168,8 @@ async def get_cache_statistics() -> Dict[str, Any]:
 @router.post("/cache/invalidate")
 async def invalidate_cache(
     pattern: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Invalidate cache entries.
@@ -1573,6 +2211,8 @@ async def invalidate_cache(
 async def warmup_cache(
     wiki_type: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Pre-warm cache with hot data (god nodes, communities, etc).
@@ -1588,6 +2228,7 @@ async def warmup_cache(
             "message": str,
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1616,6 +2257,8 @@ async def search_wiki(
     query: str,
     project_id: Optional[str] = None,
     limit: int = Query(10, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Search wiki using cached full-text index.
@@ -1635,6 +2278,7 @@ async def search_wiki(
             "cached": bool,
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1666,6 +2310,8 @@ async def record_page_view(
     page_id: str,
     project_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Record a page view for analytics.
@@ -1683,6 +2329,7 @@ async def record_page_view(
             "recorded_at": ISO timestamp
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1710,6 +2357,8 @@ async def record_search(
     query: str,
     result_count: int = 0,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Record a search query for analytics.
@@ -1727,6 +2376,7 @@ async def record_search(
             "recorded_at": ISO timestamp
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1753,6 +2403,8 @@ async def get_popular_pages(
     wiki_type: str,
     project_id: Optional[str] = None,
     limit: int = Query(10, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get most viewed pages (trending).
@@ -1772,6 +2424,7 @@ async def get_popular_pages(
             "count": int
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1798,6 +2451,8 @@ async def get_trending_searches(
     wiki_type: str,
     project_id: Optional[str] = None,
     limit: int = Query(10, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get trending search queries.
@@ -1817,6 +2472,7 @@ async def get_trending_searches(
             "count": int
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1845,6 +2501,8 @@ async def get_page_recommendations(
     project_id: Optional[str] = None,
     user_id: Optional[str] = None,
     limit: int = Query(5, ge=1, le=20),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get recommendations for a specific page.
@@ -1880,6 +2538,7 @@ async def get_page_recommendations(
             ]
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1920,6 +2579,8 @@ async def update_analytics_from_wiki(
     pages: List[Dict[str, Any]],
     relationships: List[Dict[str, Any]],
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Update recommender with current wiki state.
@@ -1938,6 +2599,7 @@ async def update_analytics_from_wiki(
             "updated_at": ISO timestamp
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -1964,6 +2626,8 @@ async def update_analytics_from_wiki(
 async def get_wiki_insights(
     wiki_type: str,
     project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
     Get comprehensive wiki insights and analytics.
@@ -1996,6 +2660,7 @@ async def get_wiki_insights(
             }
         }
     """
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type not in ["leading_practice", "project"]:
         raise HTTPException(status_code=400, detail="Invalid wiki_type")
 
@@ -2016,10 +2681,145 @@ async def get_wiki_insights(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ===== Schema, synthesis & refresh =====
+
+@router.get("/{wiki_type}/schema/analyze")
+async def analyze_wiki_schema(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Analyze wiki content against schema conventions and suggest evolution."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
+    from app.services.wiki_schema_analyzer import analyze_schema
+
+    return analyze_schema(wiki_type, project_id)
+
+
+@router.get("/{wiki_type}/schema", response_class=PlainTextResponse)
+async def get_wiki_schema_markdown(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PlainTextResponse:
+    """Return ``WIKI_SCHEMA.md`` for editing in the UI."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    from app.services.storage import workspace_path
+    from app.services.wiki_ingest import _ensure_wiki_schema
+
+    if wiki_type == "leading_practice":
+        wiki_dir = workspace_path("leading_practices") / "wiki"
+    else:
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id required for project wiki")
+        wiki_dir = workspace_path(project_id) / "wiki"
+
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_wiki_schema(wiki_dir)
+    schema_path = wiki_dir / "WIKI_SCHEMA.md"
+    text = schema_path.read_text(encoding="utf-8") if schema_path.exists() else ""
+    return PlainTextResponse(text, media_type="text/markdown; charset=utf-8")
+
+
+@router.put("/{wiki_type}/schema")
+async def put_wiki_schema_markdown(
+    wiki_type: str,
+    payload: Dict[str, Any],
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Replace ``WIKI_SCHEMA.md`` (conventions for ingest/query)."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
+    content = payload.get("content")
+    if not isinstance(content, str):
+        raise HTTPException(status_code=400, detail="JSON body must include string 'content'")
+
+    from app.services.storage import workspace_path
+    from app.services.wiki_ingest import _ensure_wiki_schema
+
+    if wiki_type == "leading_practice":
+        wiki_dir = workspace_path("leading_practices") / "wiki"
+    else:
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id required for project wiki")
+        wiki_dir = workspace_path(project_id) / "wiki"
+
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_wiki_schema(wiki_dir)
+    (wiki_dir / "WIKI_SCHEMA.md").write_text(content, encoding="utf-8")
+    return {"status": "success"}
+
+
+@router.get("/{wiki_type}/synthesis/insights")
+async def get_wiki_synthesis_insights(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    from app.services.wiki_synthesis import get_synthesis_insights
+
+    data = get_synthesis_insights(wiki_type, project_id)
+    if data.get("status") == "error":
+        raise HTTPException(status_code=500, detail=data.get("error", "synthesis failed"))
+    return data
+
+
+@router.post("/{wiki_type}/synthesis/create")
+async def create_wiki_synthesis_pages(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    max_pages: int = Query(5, ge=1, le=50),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
+    from app.services.wiki_synthesis import create_synthesis_pages
+
+    data = create_synthesis_pages(wiki_type, project_id, max_pages=max_pages)
+    if data.get("status") == "error":
+        raise HTTPException(status_code=500, detail=data.get("error", "synthesis create failed"))
+    return data
+
+
+@router.get("/{wiki_type}/refresh/schedule")
+async def get_wiki_refresh_schedule(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    batch_size: int = Query(10, ge=1, le=500),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    from app.services.wiki_refresh import get_refresh_schedule
+
+    return get_refresh_schedule(wiki_type, project_id, batch_size=batch_size)
+
+
+@router.post("/{wiki_type}/sources/check-freshness")
+async def post_wiki_check_source_freshness(
+    wiki_type: str,
+    project_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    from app.services.wiki_refresh import check_wiki_source_freshness
+
+    data = check_wiki_source_freshness(wiki_type, project_id)
+    if data.get("status") == "error":
+        raise HTTPException(status_code=500, detail=data.get("error", "freshness check failed"))
+    return data
+
+
 # ===== Health Check =====
 
 @router.get("/health")
-async def health_check() -> Dict[str, Any]:
+async def health_check(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "ok",

@@ -9,8 +9,11 @@ import time
 import json
 import logging
 import hashlib
+import re
 from typing import Any, Optional, Tuple
 from datetime import datetime, timezone
+
+from app.services.wiki_ingest import _parse_source, _extract_text_from_file
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +115,47 @@ def classify_error(error: Exception) -> str:
     return "transient"
 
 
+def search_wiki(
+    query: str,
+    *,
+    project_id: Optional[str] = None,
+    max_results: int = 8,
+) -> list[dict[str, Any]]:
+    """BM25 search over project wiki pages.
+
+    Reuses TieredContextEngine (which has its own mtime cache) so repeated
+    calls within a session are cheap.  Returns results ordered by relevance.
+
+    Return format mirrors web_search / search_leading_practices:
+        [{"id": str, "title": str, "snippet": str, "score": float}, ...]
+    """
+    try:
+        from app.services.retrieval import TieredContextEngine
+
+        engine = TieredContextEngine()
+        chunks = engine._load_wiki_chunks(project_id)
+        if not chunks:
+            return []
+
+        scores = engine._bm25_scores(chunks, query or "")
+        ranked = sorted(enumerate(scores), key=lambda kv: kv[1], reverse=True)
+        results: list[dict[str, Any]] = []
+        for idx, score in ranked[:max_results]:
+            chunk = chunks[idx]
+            # Extract title from the [Wiki: title] prefix.
+            m = re.search(r"\[Wiki:\s*([^\]]+)\]", chunk)
+            title = m.group(1).strip() if m else f"Page {idx + 1}"
+            # Snippet: body without the prefix line, capped at 600 chars.
+            body = chunk[m.end():].strip() if m else chunk
+            snippet = body[:600]
+            chunk_id = hashlib.sha256(chunk[:128].encode()).hexdigest()[:16]
+            results.append({"id": chunk_id, "title": title, "snippet": snippet, "score": round(score, 4)})
+        return results
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("search_wiki failed: %s", exc)
+        return []
+
+
 def wiki_ingest_with_retry(
     source_type: str,
     source_data: dict,
@@ -151,7 +195,7 @@ def wiki_ingest_with_retry(
             logger.debug(f"Wiki ingest attempt {attempt + 1}/{max_retries} | source={source_type}")
 
             # Parse and extract
-            extracted = _parse_source(source_type, source_data)
+            extracted = _parse_source(source_type, source_data, project_id)
             if not extracted:
                 return None, f"Failed to extract content from {source_type} source"
 
@@ -174,6 +218,7 @@ def wiki_ingest_with_retry(
             result = {
                 "pages_created": pages_result.get("created", 0),
                 "pages_updated": pages_result.get("updated", 0),
+                "page_ids": pages_result.get("page_ids", []),
                 "corrections_made": len(pages_result.get("corrections", [])),
                 "log_entry_id": log_entry_id,
                 "performance": {
@@ -375,106 +420,48 @@ def wiki_lint_with_retry(
     return None, last_error
 
 
-# ===== Helper Functions (Stubs for Phase 2+) =====
-
-def _parse_source(source_type: str, source_data: dict) -> Optional[dict]:
-    """Parse source and extract key information."""
+def _llm_enrich_page(raw_title: str, content: str) -> dict:
+    """Use Claude to generate a structured wiki page from document content. Falls back gracefully."""
     try:
-        if source_type == "document":
-            # For documents, filename is in source_data
-            filename = source_data.get("filename", "")
-            project_id = source_data.get("project_id", "")
+        from app.services.claude import claude_generate_json, is_claude_enabled
+        if not is_claude_enabled():
+            return {}
 
-            if not filename or not project_id:
-                logger.warning(f"Document ingest missing filename or project_id: {source_data}")
-                return None
-
-            from app.services.storage import workspace_path
-            import hashlib
-
-            source_file = workspace_path(project_id) / "source_docs" / filename
-
-            # Try to read the source file directly as fallback
-            if source_file.exists():
-                try:
-                    content = source_file.read_bytes()
-                    digest = hashlib.sha256(content).hexdigest()
-
-                    # First try to get parsed document
-                    parsed_docs_dir = workspace_path(project_id) / "parsed_docs"
-                    if parsed_docs_dir.exists():
-                        parsed_file = parsed_docs_dir / f"{digest}.json"
-                        if parsed_file.exists():
-                            try:
-                                parsed_data = json.loads(parsed_file.read_text())
-                                logger.debug(f"Using parsed document for {filename}")
-                                return {
-                                    "title": filename,
-                                    "content": parsed_data.get("text", ""),
-                                    "source_url": f"document://{project_id}/{filename}",
-                                    "chunk_count": parsed_data.get("chunk_count", 0),
-                                    "entities": [],
-                                    "concepts": [],
-                                }
-                            except json.JSONDecodeError as je:
-                                logger.warning(f"Failed to parse JSON for {filename}: {je}")
-
-                    # Fallback: extract text directly from source file
-                    logger.debug(f"Using fallback text extraction for {filename}")
-                    text = _extract_text_from_file(filename, content)
-                    return {
-                        "title": filename,
-                        "content": text,
-                        "source_url": f"document://{project_id}/{filename}",
-                        "chunk_count": max(1, len(text) // 1200),  # Estimate chunks
-                        "entities": [],
-                        "concepts": [],
-                    }
-                except Exception as read_err:
-                    logger.error(f"Error reading source file {filename}: {read_err}")
-                    return None
-            else:
-                logger.warning(f"Source file not found: {source_file}")
-                return None
-
-        # For other source types, return basic extracted content
-        return {
-            "title": source_data.get("title", "Untitled"),
-            "content": source_data.get("content", ""),
-            "source_url": source_data.get("url", ""),
-            "entities": [],
-            "concepts": [],
-        }
+        snippet = content[:6000]
+        result = claude_generate_json(
+            system=(
+                "You are a knowledge-management assistant. Given a document, produce a structured "
+                "wiki page. Be concise and precise. Return only valid JSON."
+            ),
+            user=(
+                f"Document filename: {raw_title}\n\n"
+                f"Document content:\n{snippet}\n\n"
+                "Return JSON with these fields:\n"
+                '{"title": "short title, 3-6 words, no org name prefix (e.g. \'P2P Kickoff Meeting\' not \'Varroc BPR P2P Transformation Kickoff Meeting\')", '
+                '"summary": "2-3 sentence executive summary", '
+                '"category": "document|reference|note|artifact", '
+                '"semantic_type": "topic|concept|process|project|resource", '
+                '"confidence": "high|medium|low", '
+                '"key_insights": ["concise insight 1", "concise insight 2", ...], '
+                '"sections": [{"heading": "Section title", "body": "section content"}]}'
+            ),
+            temperature=0.1,
+            max_tokens=1500,
+        )
+        return result if isinstance(result, dict) else {}
     except Exception as e:
-        logger.error(f"Error parsing source: {e}")
-        return None
-
-
-def _extract_text_from_file(filename: str, content: bytes) -> str:
-    """Extract text from file bytes (simple fallback)."""
-    try:
-        lower = (filename or "").lower()
-
-        # Try UTF-8 first
-        if lower.endswith((".txt", ".md", ".csv", ".json")):
-            return content.decode("utf-8", errors="ignore")
-
-        # For binary formats, at least try to decode
-        return content.decode("utf-8", errors="ignore")
-    except Exception as e:
-        logger.warning(f"Failed to extract text from {filename}: {e}")
-        return f"[Unable to extract text from {filename}]"
+        logger.warning(f"LLM enrichment failed, falling back to basic format: {e}")
+        return {}
 
 
 def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str]) -> dict:
-    """Create/update wiki pages from extracted content and rebuild relationships."""
+    """Create/update wiki pages from extracted content, using Claude for enrichment."""
     try:
         if not extracted or not extracted.get("content"):
             return {"created": 0, "updated": 0, "page_ids": [], "corrections": []}
 
         from app.services.storage import workspace_path
 
-        # Determine wiki directory
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
         else:
@@ -482,46 +469,78 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str
 
         wiki_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create a document page
-        page_title = extracted.get("title", "Document")
-        page_id = page_title.lower().replace(" ", "_").replace(".", "")[:50]
+        raw_title = extracted.get("title", "Document")
+        content = extracted.get("content", "")
 
-        # Create frontmatter
-        frontmatter = {
-            "title": page_title,
-            "category": "artifact",
-            "confidence": "medium",
-            "source_count": 1,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
+        # Enrich with LLM
+        enriched = _llm_enrich_page(raw_title, content)
 
-        # Format content with frontmatter
-        content_text = "---\n"
-        for key, value in frontmatter.items():
-            if isinstance(value, str):
-                content_text += f'{key}: "{value}"\n'
-            else:
-                content_text += f"{key}: {value}\n"
-        content_text += "---\n\n"
-        content_text += f"# {page_title}\n\n"
+        title = enriched.get("title") or raw_title
+        summary = enriched.get("summary", "")
+        category = enriched.get("category", "artifact")
+        hint = extracted.get("category_hint")
+        if isinstance(hint, str) and hint.strip():
+            category = hint.strip()[:64]
+        semantic_type = enriched.get("semantic_type", "resource")
+        confidence = enriched.get("confidence", "medium")
+        key_insights = enriched.get("key_insights", [])
+        sections = enriched.get("sections", [])
 
-        # Add first 500 chars of content
-        preview = extracted.get("content", "")[:500]
-        content_text += preview + "\n\n"
-        content_text += f"[{extracted.get('chunk_count', 0)} chunks from source]\n"
+        page_id = title.lower().replace(" ", "_").replace(".", "").replace("/", "").replace("\\", "")[:60]
+        now = datetime.now(timezone.utc).isoformat()
 
-        # Save page
+        # Build frontmatter
+        fm_lines = [
+            "---",
+            f'title: "{title}"',
+            f'category: "{category}"',
+            f'semantic_type: "{semantic_type}"',
+            f'confidence: "{confidence}"',
+            f'source_url: "{extracted.get("source_url", "")}"',
+            f'source_count: 1',
+            f'last_updated: "{now}"',
+            f'created_at: "{now}"',
+        ]
+        mem_id = extracted.get("source_memory_id")
+        if mem_id:
+            fm_lines.append(f'source_memory_id: "{mem_id}"')
+        fm_lines.append("---")
+
+        # Build body
+        body_parts = [f"# {title}", ""]
+        if summary:
+            body_parts += [summary, ""]
+        if key_insights:
+            body_parts.append("## Key Insights")
+            for insight in key_insights:
+                body_parts.append(f"- {insight}")
+            body_parts.append("")
+        if sections:
+            for sec in sections:
+                heading = sec.get("heading", "")
+                body = sec.get("body", "")
+                if heading:
+                    body_parts.append(f"## {heading}")
+                if body:
+                    body_parts.append(body)
+                body_parts.append("")
+        else:
+            # No sections from LLM — include the full source content
+            body_parts.append("## Content")
+            body_parts.append(content)
+
+        page_md = "\n".join(fm_lines) + "\n\n" + "\n".join(body_parts)
+
         page_file = wiki_dir / f"{page_id}.md"
-        page_file.write_text(content_text)
+        existed = page_file.exists()
+        page_file.write_text(page_md, encoding="utf-8")
 
-        # Rebuild relationships for all pages after adding new page
         rel_result = _build_and_persist_relationships(wiki_type, project_id)
         logger.info(f"Rebuilt relationships: {rel_result}")
 
         return {
-            "created": 1,
-            "updated": 0,
+            "created": 0 if existed else 1,
+            "updated": 1 if existed else 0,
             "page_ids": [page_id],
             "corrections": [],
         }
@@ -1003,6 +1022,77 @@ def _load_persistent_graph(
         return None, {}, None
 
 
+def _llm_find_relationships(pages: dict) -> list:
+    """
+    Use Claude to identify semantic relationships between wiki pages.
+    Catches connections that regex-based extraction misses (e.g. no [[links]] in content).
+
+    Args:
+        pages: {page_id: {"title": str, "content": str}}
+
+    Returns:
+        List of relationship dicts with confidence="SEMANTIC"
+    """
+    try:
+        from app.services.claude import claude_generate_json, is_claude_enabled
+        if not is_claude_enabled() or len(pages) < 2:
+            return []
+
+        import re
+
+        page_list = []
+        for pid, data in pages.items():
+            content = data.get("content", "")
+            # Extract summary from frontmatter or first body paragraph
+            sm = re.search(r'^summary:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+            if sm:
+                summary = sm.group(1)
+            else:
+                body = re.sub(r"^---.*?---", "", content, flags=re.DOTALL).strip()
+                paras = [p.strip() for p in body.split("\n") if p.strip() and not p.startswith("#")]
+                summary = paras[0][:200] if paras else ""
+            page_list.append({"id": pid, "title": data["title"], "summary": summary})
+
+        result = claude_generate_json(
+            system="You are a knowledge management assistant. Identify semantic relationships between wiki pages.",
+            user=(
+                f"Wiki pages:\n{json.dumps(page_list, indent=2)}\n\n"
+                "Identify all pairs of pages that are meaningfully related (share topics, "
+                "reference each other's subject matter, or one supports the other). "
+                "Return JSON: {\"relationships\": [{\"source_id\": \"page_id\", "
+                "\"target_id\": \"page_id\", "
+                "\"relation_type\": \"related|supports|extends|references\"}]}"
+            ),
+            temperature=0.1,
+            max_tokens=800,
+        )
+
+        if not isinstance(result, dict):
+            return []
+
+        all_ids = set(pages.keys())
+        now = datetime.now(timezone.utc).isoformat()
+        return [
+            {
+                "source_id": r["source_id"],
+                "target_id": r["target_id"],
+                "relation_type": r.get("relation_type", "related"),
+                "confidence": "SEMANTIC",
+                "confidence_score": 0.7,
+                "source_location": "semantic",
+                "created_at": now,
+            }
+            for r in result.get("relationships", [])
+            if isinstance(r, dict)
+            and r.get("source_id") in all_ids
+            and r.get("target_id") in all_ids
+            and r.get("source_id") != r.get("target_id")
+        ]
+    except Exception as e:
+        logger.warning(f"LLM relationship extraction failed: {e}")
+        return []
+
+
 def _build_and_persist_relationships(
     wiki_type: str,
     project_id: Optional[str],
@@ -1069,6 +1159,20 @@ def _build_and_persist_relationships(
             all_relationships.extend(relationships)
             if relationships:
                 pages_with_links += 1
+
+        # Supplement with LLM semantic relationships.
+        # Regex only finds [[wiki-links]] or exact title repetitions ≥2×; LLM catches everything else.
+        llm_rels = _llm_find_relationships(pages)
+        if llm_rels:
+            existing_pairs = {
+                (r["source_id"], r["target_id"]) for r in all_relationships
+            }
+            for rel in llm_rels:
+                pair = (rel["source_id"], rel["target_id"])
+                rev = (rel["target_id"], rel["source_id"])
+                if pair not in existing_pairs and rev not in existing_pairs:
+                    all_relationships.append(rel)
+                    existing_pairs.add(pair)
 
         # Persist to relationships.json
         relationships_file = wiki_dir / "relationships.json"

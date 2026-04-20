@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     auth_refresh_rate_limit: str = "60/minute"
     scheduler_enabled: bool = True
     auth_allow_self_signup: bool = False
+    # Comma-separated emails permitted to mutate the shared leading_practice wiki.
+    # Empty in development = any authenticated user (matches historical behavior);
+    # in staging/production, an empty list blocks all LP mutations.
+    wiki_lp_admin_emails: str = ""
     otel_sdk_enabled: bool = False
 
     anthropic_api_key: str = ""

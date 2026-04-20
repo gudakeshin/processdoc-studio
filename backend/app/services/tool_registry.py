@@ -19,6 +19,7 @@ from app.services.swarm_tool_handlers import (
     swarm_send_message,
     swarm_update_task,
 )
+from app.services.web_capture import web_capture as _web_capture_impl
 
 ToolHandler = Callable[..., Any]
 _LOG = logging.getLogger(__name__)
@@ -211,43 +212,142 @@ def retrieve_context(*_: Any, **__: Any) -> dict[str, Any]:
     }
 
 
-def web_search(*_: Any, **__: Any) -> list[dict[str, Any]]:
-    """web_search implementation (Brave primary; optional Google fallback)."""
+def _format_search_results(
+    results: list[dict[str, Any]],
+    *,
+    source_label: str,
+    url_key: str | None = None,
+    snippet_key: str = "snippet",
+    title_key: str = "title",
+    score_key: str | None = None,
+) -> str:
+    """Format a list of search-result dicts into a numbered human-readable string."""
+    if not results:
+        return f"No {source_label} results found."
+    lines: list[str] = [f"{source_label} results ({len(results)} found):\n"]
+    for i, r in enumerate(results, 1):
+        title = str(r.get(title_key) or "Untitled")
+        snippet = str(r.get(snippet_key) or "")[:500]
+        parts = [f"[{i}] {title}"]
+        if url_key and r.get(url_key):
+            parts.append(f"URL: {r[url_key]}")
+        if score_key and r.get(score_key) is not None:
+            parts.append(f"Score: {r[score_key]:.3f}")
+        parts.append(snippet)
+        lines.append("\n".join(parts))
+    return "\n\n".join(lines)
 
-    # Import inside the function to keep this registry lightweight.
+
+def web_capture(*_: Any, **__: Any) -> dict[str, Any]:
+    """web_capture(url, max_chars?, max_bytes?, timeout?): SSRF-safe HTTPS fetch.
+
+    Returns a structured dict with ``ok``, ``title``, ``text``, ``text_chars``,
+    ``truncated``, ``content_type``, and ``error`` keys so agents can reason
+    about the capture without parsing a free-form string. Only ``https://`` URLs
+    are accepted; private/loopback/metadata addresses are blocked.
+    """
+
+    url = __.get("url") if "url" in __ else (_[0] if _ else None)
+    kwargs: dict[str, Any] = {}
+    if "max_chars" in __ and __["max_chars"] is not None:
+        try:
+            kwargs["max_chars"] = int(__["max_chars"])
+        except (TypeError, ValueError):
+            pass
+    if "max_bytes" in __ and __["max_bytes"] is not None:
+        try:
+            kwargs["max_bytes"] = int(__["max_bytes"])
+        except (TypeError, ValueError):
+            pass
+    if "timeout" in __ and __["timeout"] is not None:
+        try:
+            kwargs["timeout"] = float(__["timeout"])
+        except (TypeError, ValueError):
+            pass
+    try:
+        return _web_capture_impl(url, **kwargs)
+    except Exception as exc:  # final safety net; tool must never crash the loop
+        _LOG.warning("web_capture tool handler failed: %s", exc)
+        return {
+            "url": str(url or ""),
+            "ok": False,
+            "title": "",
+            "text": "",
+            "text_chars": 0,
+            "truncated": False,
+            "content_type": "",
+            "error": f"web_capture error: {exc}",
+        }
+
+
+def web_search(*_: Any, **__: Any) -> str:
+    """web_search implementation (Brave primary; optional Google fallback).
+
+    Returns a formatted string so agents can read results directly.
+    """
     query = __.get("query") if "query" in __ else None
     project_id = __.get("project_id")
     if query is None and _:
-        # Support simple positional usage: web_search(query, project_id=...)
         query = _[0]
 
     try:
         from app.services.web_search import web_search_service
 
         if query is None:
-            return []
-        return web_search_service.search(str(query), project_id=project_id)
+            return "No query provided."
+        results = web_search_service.search(str(query), project_id=project_id)
+        return _format_search_results(results, source_label="Web search", url_key="url")
     except Exception:
-        return []
+        return "Web search unavailable."
 
 
-def search_leading_practices(*_: Any, **__: Any) -> list[dict[str, Any]]:
-    """search_leading_practices(query): LP library retrieval (local-mode for now)."""
+def search_leading_practices(*_: Any, **__: Any) -> str:
+    """search_leading_practices(query): LP library retrieval.
 
+    Returns a formatted string so agents can read results directly.
+    """
     query = __.get("query") if "query" in __ else None
     project_id = __.get("project_id")
     if query is None and _:
         query = _[0]
 
     if query is None:
-        return []
+        return "No query provided."
 
     try:
         from app.services.leading_practices import leading_practice_library_service
 
-        return leading_practice_library_service.search(str(query), project_id=project_id)
+        results = leading_practice_library_service.search(str(query), project_id=project_id)
+        return _format_search_results(
+            results,
+            source_label="Leading Practice Library",
+            snippet_key="text",
+            title_key="heading",
+            score_key="relevance_score",
+        )
     except Exception:
-        return []
+        return "Leading practice search unavailable."
+
+
+def search_wiki(*_: Any, **__: Any) -> str:
+    """search_wiki(query): BM25 search over project wiki pages.
+
+    Returns a formatted string so agents can read results directly.
+    """
+    query = __.get("query") if "query" in __ else None
+    project_id = __.get("project_id")
+    max_results = int(__.get("max_results") or 8)
+    if query is None and _:
+        query = _[0]
+    if query is None:
+        return "No query provided."
+    try:
+        from app.services.wiki_operations import search_wiki as _search_wiki
+
+        results = _search_wiki(str(query), project_id=project_id, max_results=max_results)
+        return _format_search_results(results, source_label="Project Wiki", score_key="score")
+    except Exception:
+        return "Wiki search unavailable."
 
 
 def validate_references(*_: Any, **__: Any) -> dict[str, Any]:
@@ -1012,7 +1112,9 @@ TOOL_REGISTRY: dict[str, ToolHandler] = {
     "memory_lookup": memory_lookup,
     "memory_items": memory_items,
     "web_search": web_search,
+    "web_capture": web_capture,
     "search_leading_practices": search_leading_practices,
+    "search_wiki": search_wiki,
     "validate_references": validate_references,
     "check_brand_compliance": check_brand_compliance,
     "drawio_process_model_to_xml": drawio_process_model_to_xml,
@@ -1082,11 +1184,54 @@ _TOOL_METADATA: dict[str, dict[str, Any]] = {
             "required": ["query"],
         },
     },
-    "search_leading_practices": {
-        "description": "Search the leading-practices library for relevant guidance.",
+    "web_capture": {
+        "description": (
+            "Fetch a single public HTTPS URL and return title + readable text (SSRF-safe). "
+            "Rejects non-HTTPS schemes, private/loopback/metadata IPs, and oversized responses. "
+            "Use after web_search when you need the actual content of a result."
+        ),
         "input_schema": {
             "type": "object",
-            "properties": {"query": {"type": "string"}},
+            "properties": {
+                "url": {"type": "string", "description": "Public HTTPS URL to capture"},
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Upper bound on returned text length (default 8000, max 32000)",
+                },
+                "max_bytes": {
+                    "type": "integer",
+                    "description": "Upper bound on response body bytes (falls back to server default)",
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Request timeout in seconds (falls back to server default)",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    "search_leading_practices": {
+        "description": "Search the leading-practices library for relevant guidance, templates, and best-practice patterns.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Topic or question to look up"}},
+            "required": ["query"],
+        },
+    },
+    "search_wiki": {
+        "description": (
+            "Search the project wiki for relevant pages. Use when the user asks about process details, "
+            "roles, domain knowledge, or any topic that might be documented in the project wiki."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum wiki pages to return (default 8, max 20)",
+                },
+            },
             "required": ["query"],
         },
     },
@@ -1422,19 +1567,23 @@ _TOOL_METADATA: dict[str, dict[str, Any]] = {
 }
 
 _DEFAULT_TOOLS_BY_OUTPUT: dict[str, list[str]] = {
-    # process_map: context + LP library + process model query + deterministic XML builder + XML validator
+    # process_map: context + all search tools + process model query + deterministic XML builder + validator
     "process_map": [
         "retrieve_context",
+        "search_wiki",
         "search_leading_practices",
+        "web_search",
         "process_model_query",
         "drawio_process_model_to_xml",
         "diagram_builder",
         "qa_validator",
     ],
-    # docx: context + LP library + process model query + draft revision + structural validators
+    # docx: context + all search tools + process model query + draft revision + structural validators
     "docx": [
         "retrieve_context",
+        "search_wiki",
         "search_leading_practices",
+        "web_search",
         "process_model_query",
         "save_draft",
         "load_draft",
@@ -1444,9 +1593,12 @@ _DEFAULT_TOOLS_BY_OUTPUT: dict[str, list[str]] = {
         "qa_validator",
         "style_enforcer",
     ],
-    # pptx: context + process model query + format_table for slide tables + draft revision + JSON validator
+    # pptx: context + all search tools + process model query + format_table + draft revision + validator
     "pptx": [
         "retrieve_context",
+        "search_wiki",
+        "search_leading_practices",
+        "web_search",
         "process_model_query",
         "format_table",
         "save_draft",
@@ -1454,20 +1606,24 @@ _DEFAULT_TOOLS_BY_OUTPUT: dict[str, list[str]] = {
         "qa_validator",
         "style_enforcer",
     ],
-    # xlsx: context + process model query + format_table (deterministic) + table validator
+    # xlsx: context + all search tools + process model query + format_table + table validator
     "xlsx": [
         "retrieve_context",
+        "search_wiki",
+        "search_leading_practices",
+        "web_search",
         "process_model_query",
         "format_table",
         "table_builder",
         "qa_validator",
     ],
-    # pdf: context + LP library + process model query + draft revision + cross-reference + structural check
+    # pdf: context + all search tools + process model query + draft revision + cross-reference + structural check
     "pdf": [
         "retrieve_context",
+        "search_wiki",
         "search_leading_practices",
-        "process_model_query",
         "web_search",
+        "process_model_query",
         "save_draft",
         "load_draft",
         "cross_reference_checker",
