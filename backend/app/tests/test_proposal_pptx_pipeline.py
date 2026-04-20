@@ -811,6 +811,72 @@ class TestImprovements:
                         "Hardcoded process-doc sequence should NOT appear when skill provides sequence"
                     )
 
+    def test_discovery_length_budget_overrides_step_based_guidance(self):
+        from app.agents.subagents import run_pptx_agent
+
+        ctx = AgentContext(
+            output_type="pptx",
+            project_id="test",
+            run_id="test",
+            user_id="test",
+            raw_text="Create proposal",
+            user_instruction="Create a finance transformation proposal",
+            user_intent_original="Create a finance transformation proposal",
+            process_model={"steps": [{"id": "1", "name": "Step1"}]},
+            assembled_context="Context",
+            output_type_representations={},
+            skill_instructions_by_output={"pptx": "Generate proposal slides"},
+            skill_card={
+                "primary_skill_by_output_type": {
+                    "pptx": {"id": "proposal_finance_transformation_v1", "prompt_instructions": "Create proposal"}
+                }
+            },
+            plan_payload={"discovery": {"length_budget": {"pptx": 12}}},
+        )
+
+        with patch("app.agents.subagents.is_claude_enabled") as mock_enabled:
+            mock_enabled.return_value = True
+            with patch("app.agents.subagents._run_subagent_tool_loop_text") as mock_tool_loop:
+                mock_tool_loop.return_value = None
+                with patch("app.agents.subagents.claude_generate_json") as mock_claude:
+                    mock_claude.return_value = {"slides": [{"slide_type": "title", "title": "Test"}]}
+                    run_pptx_agent(ctx)
+                    user_prompt = mock_tool_loop.call_args[1].get("user", "")
+                    assert "Create a 12 slides executive presentation" in user_prompt
+
+    def test_discovery_narrative_arc_scqa_in_prompt(self):
+        from app.agents.subagents import run_pptx_agent
+
+        ctx = AgentContext(
+            output_type="pptx",
+            project_id="test",
+            run_id="test",
+            user_id="test",
+            raw_text="Create proposal",
+            user_instruction="Create a finance transformation proposal",
+            user_intent_original="Create a finance transformation proposal",
+            process_model={"steps": [{"id": "1", "name": "Step1"}]},
+            assembled_context="Context",
+            output_type_representations={},
+            skill_instructions_by_output={"pptx": "Generate proposal slides"},
+            skill_card={
+                "primary_skill_by_output_type": {
+                    "pptx": {"id": "proposal_finance_transformation_v1", "prompt_instructions": "Create proposal"}
+                }
+            },
+            plan_payload={"discovery": {"narrative_arc": "scqa"}},
+        )
+
+        with patch("app.agents.subagents.is_claude_enabled") as mock_enabled:
+            mock_enabled.return_value = True
+            with patch("app.agents.subagents._run_subagent_tool_loop_text") as mock_tool_loop:
+                mock_tool_loop.return_value = None
+                with patch("app.agents.subagents.claude_generate_json") as mock_claude:
+                    mock_claude.return_value = {"slides": [{"slide_type": "title", "title": "Test"}]}
+                    run_pptx_agent(ctx)
+                    user_prompt = mock_tool_loop.call_args[1].get("user", "")
+                    assert "Slide ordering mandate (scqa)" in user_prompt
+
     # ========== Improvement 5: Post-Processor Merged Into Primary ==========
 
     def test_post_processor_skipped_when_primary_skill_present(self):

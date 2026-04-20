@@ -47,6 +47,20 @@ export type ChatMessage = {
       selected_values?: string[];
     }>;
     unresolved_prompt_ids?: string[];
+    discovery?: {
+      client?: { name?: string; industry?: string };
+      outcome?: { primary?: string; decision?: string };
+      win_themes?: string[];
+      audience?: string;
+      narrative_arc?: string;
+      tone?: string;
+      length_budget?: { pptx?: number; docx_pages?: number };
+      edited_by_user?: boolean;
+    };
+    deck_outline_preview?: {
+      slides?: Array<{ title?: string; slide_type?: string; purpose?: string }>;
+      rationale?: string;
+    };
     kind?: string;
     run_id?: string;
     status?: string;
@@ -595,6 +609,49 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       setChatMessages(mapped);
     } catch (e) {
       setArtifactsError(e instanceof Error ? e.message : "Failed to apply decisions");
+    } finally {
+      setDecisionBusy(false);
+    }
+  }
+
+  async function updateConversationOutline(
+    slides: Array<{ title: string; slide_type: string; purpose?: string }>
+  ) {
+    if (!pid || !conversationId || !latestAssistantMetadata?.plan_hash) return;
+    setDecisionBusy(true);
+    setArtifactsError(null);
+    try {
+      const res = await api(`/api/projects/${encodeURIComponent(pid)}/conversation/outline`, {
+        method: "POST",
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          plan_hash: latestAssistantMetadata.plan_hash,
+          slides,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        detail?: string;
+        messages?: Array<{
+          id: number;
+          role: "user" | "assistant";
+          content: string;
+          metadata?: ChatMessage["metadata"];
+          created_at?: string | null;
+        }>;
+      };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to update outline"));
+      const mapped = Array.isArray(data.messages)
+        ? data.messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            metadata: m.metadata,
+            ts: m.created_at ? Date.parse(m.created_at) : Date.now(),
+          }))
+        : [];
+      setChatMessages(mapped);
+    } catch (e) {
+      setArtifactsError(e instanceof Error ? e.message : "Failed to update outline");
     } finally {
       setDecisionBusy(false);
     }
@@ -1244,6 +1301,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     sendChatMessage,
     savePlan,
     submitDecisionAnswers: submitDecisionAnswers,
+    updateConversationOutline,
     applyTaskAction,
     controlRun,
     regenerateSlide,

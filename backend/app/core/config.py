@@ -178,6 +178,8 @@ class Settings(BaseSettings):
     run_dead_letter_replay_cooldown_sec: int = 10
     format_negotiation_v2_enabled: bool = True
     instruction_decision_prompts_enabled: bool = False
+    proposal_discovery_enabled: bool = True
+    proposal_discovery_prompts_enabled: bool = True
     scratchpad_visibility_enabled: bool = True
     # Phase C: LLM strategy options + execution_strategy decision prompt (extra Anthropic call per plan message).
     strategy_options_planning_enabled: bool = False
@@ -272,6 +274,8 @@ class Settings(BaseSettings):
         "auth_allow_self_signup",
         "format_negotiation_v2_enabled",
         "instruction_decision_prompts_enabled",
+        "proposal_discovery_enabled",
+        "proposal_discovery_prompts_enabled",
         "scratchpad_visibility_enabled",
         "strategy_options_planning_enabled",
         "memory_v2_retrieval_enabled",

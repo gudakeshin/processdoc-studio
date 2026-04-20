@@ -111,6 +111,7 @@ def generate_deck_outline_preview(
     instruction: str,
     output_type: str = "pptx",
     skill_id: str | None = None,
+    discovery: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """
     Generate a lightweight slide outline preview during plan creation.
@@ -129,6 +130,16 @@ def generate_deck_outline_preview(
     contract = proposal_prompt_contract(output_type, skill_id=skill_id)
     sections = contract.get("sections") or []
 
+    discovery = discovery if isinstance(discovery, dict) else {}
+    length_budget = discovery.get("length_budget") if isinstance(discovery.get("length_budget"), dict) else {}
+    target_slides = int(length_budget.get("pptx")) if str(length_budget.get("pptx") or "").isdigit() else 10
+    target_slides = max(6, min(target_slides, 20))
+    audience = str(discovery.get("audience") or "mixed").strip()
+    narrative_arc = str(discovery.get("narrative_arc") or "pyramid").strip()
+    tone = str(discovery.get("tone") or "consultative").strip()
+    win_themes = discovery.get("win_themes") if isinstance(discovery.get("win_themes"), list) else []
+    win_themes_text = ", ".join(str(x).strip() for x in win_themes if str(x).strip())[:300]
+
     system = (
         "You are a presentation strategist. Given a user instruction and required sections, "
         "produce a slide outline for a PowerPoint deck. Return JSON with keys:\n"
@@ -136,11 +147,15 @@ def generate_deck_outline_preview(
         "  rationale: string (1 sentence explaining the deck structure)\n"
         "slide_type must be one of: title, bullets, stat_cards, column_cards, stack_layers, table, chart, section_divider.\n"
         "purpose: 1 sentence (≤20 words) describing what the slide communicates.\n"
-        "Produce 8-12 slides. Always start with a title slide and end with a next-steps slide."
+        f"Produce exactly {target_slides} slides. Always start with a title slide and end with a next-steps slide."
     )
     user = (
         f"Instruction: {instruction}\n\n"
         f"Required sections to cover: {', '.join(sections)}\n\n"
+        f"Audience: {audience}\n"
+        f"Narrative arc: {narrative_arc}\n"
+        f"Tone: {tone}\n"
+        f"Win themes: {win_themes_text or 'N/A'}\n\n"
         "Generate the slide outline."
     )
     try:

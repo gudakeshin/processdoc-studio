@@ -11,9 +11,11 @@ Verifies that the agent behaves like a colleague, not a plan-generating machine:
 import pytest
 
 from app.api.projects import (
+    _has_sufficient_discovery,
     _is_acknowledgment,
     _is_commit_intent,
     _is_contextual_followup,
+    _is_proposal_instruction,
     _is_vague_instruction,
 )
 
@@ -263,3 +265,27 @@ class TestConversationRouting:
     def test_what_options_is_not_commit(self) -> None:
         msg = "What options do we have for structuring the proposal?"
         assert _is_commit_intent(msg) is False
+
+
+class TestProposalDiscoveryHelpers:
+    def test_is_proposal_instruction_true_for_proposal_signals(self) -> None:
+        assert _is_proposal_instruction("Create a finance transformation proposal deck", ["pptx"]) is True
+
+    def test_is_proposal_instruction_false_for_non_proposal(self) -> None:
+        assert _is_proposal_instruction("Create a process map for procurement", ["process_map"]) is False
+
+    def test_has_sufficient_discovery_true(self) -> None:
+        payload = {
+            "client": {"name": "Varroc", "industry": "Manufacturing"},
+            "outcome": {"primary": "Secure steering committee approval", "decision": "Fund phase 1"},
+            "win_themes": ["Control uplift", "Fast value"],
+        }
+        assert _has_sufficient_discovery(payload) is True
+
+    def test_has_sufficient_discovery_false_without_outcome(self) -> None:
+        payload = {
+            "client": {"name": "Varroc", "industry": "Manufacturing"},
+            "outcome": {"primary": "", "decision": ""},
+            "win_themes": ["Control uplift"],
+        }
+        assert _has_sufficient_discovery(payload) is False

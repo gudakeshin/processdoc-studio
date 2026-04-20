@@ -170,6 +170,7 @@ export function ZoneAInstruction({
   decisionPrompts,
   unresolvedPromptIds,
   onSubmitDecisions,
+  onUpdateOutline,
   decisionBusy,
   thinkingStatements = [],
   hasThinkingTrace = false,
@@ -191,6 +192,7 @@ export function ZoneAInstruction({
   decisionPrompts: DecisionPrompt[];
   unresolvedPromptIds: string[];
   onSubmitDecisions: (answers: Record<string, string[]>) => Promise<void>;
+  onUpdateOutline?: (slides: Array<{ title: string; slide_type: string; purpose?: string }>) => Promise<void>;
   decisionBusy: boolean;
   thinkingStatements?: string[];
   hasThinkingTrace?: boolean;
@@ -208,6 +210,32 @@ export function ZoneAInstruction({
     }
     return "";
   }, [chatMessages]);
+
+  const latestAssistantMeta = useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
+      const m = chatMessages[i];
+      if (m.role === "assistant" && m.metadata) return m.metadata;
+    }
+    return undefined;
+  }, [chatMessages]);
+  const discovery = latestAssistantMeta?.discovery;
+  const outlineSlides = Array.isArray(latestAssistantMeta?.deck_outline_preview?.slides)
+    ? latestAssistantMeta?.deck_outline_preview?.slides
+    : [];
+  const [decisionDraft, setDecisionDraft] = useState<Record<string, string[]>>({});
+  const [outlineDraft, setOutlineDraft] = useState<Array<{ title: string; slide_type: string; purpose?: string }>>([]);
+  const [outlineDirty, setOutlineDirty] = useState(false);
+
+  useEffect(() => {
+    if (!Array.isArray(outlineSlides)) return;
+    const normalized = outlineSlides.map((s) => ({
+      title: String(s?.title || "").trim(),
+      slide_type: String(s?.slide_type || "bullets").trim() || "bullets",
+      purpose: String(s?.purpose || "").trim(),
+    }));
+    setOutlineDraft(normalized);
+    setOutlineDirty(false);
+  }, [latestAssistantMeta?.plan_hash]);
 
   // Auto-scroll to bottom when messages change or thinking indicator appears
   useEffect(() => {
@@ -384,6 +412,150 @@ export function ZoneAInstruction({
           </details>
         </div>
       )}
+
+      {showGuidedDecisions && (decisionPrompts.length > 0 || discovery || outlineDraft.length > 0) ? (
+        <div className="border-t border-[var(--surface-border)] px-4 py-3 space-y-3">
+          {discovery ? (
+            <div className="rounded border border-[var(--surface-border)] bg-[var(--surface-muted)] p-2">
+              <p className="text-2xs font-semibold text-[var(--text-default)]">Discovery</p>
+              <ul className="mt-1 list-disc pl-4 text-2xs text-[var(--text-muted)]">
+                <li>Client: {discovery.client?.name || "—"} ({discovery.client?.industry || "—"})</li>
+                <li>Outcome: {discovery.outcome?.primary || "—"}</li>
+                <li>Decision: {discovery.outcome?.decision || "—"}</li>
+                <li>Themes: {Array.isArray(discovery.win_themes) && discovery.win_themes.length > 0 ? discovery.win_themes.join(", ") : "—"}</li>
+              </ul>
+            </div>
+          ) : null}
+
+          {decisionPrompts.length > 0 ? (
+            <div className="rounded border border-[var(--surface-border)] p-2">
+              <p className="text-2xs font-semibold text-[var(--text-default)]">Plan Decisions</p>
+              <div className="mt-2 space-y-2">
+                {decisionPrompts.map((prompt) => {
+                  const selected = decisionDraft[prompt.id] ?? prompt.selected_values ?? [];
+                  return (
+                    <label key={prompt.id} className="block text-2xs text-[var(--text-muted)]">
+                      <span className="mb-1 block">{prompt.label}</span>
+                      <select
+                        className="w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-xs text-[var(--text-default)]"
+                        value={selected[0] ?? ""}
+                        onChange={(e) => setDecisionDraft((prev) => ({ ...prev, [prompt.id]: [e.target.value] }))}
+                      >
+                        <option value="">Select...</option>
+                        {prompt.options.map((opt) => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="mt-2 flex items-center justify-between">
+                <p className="text-2xs text-[var(--text-muted)]">
+                  Pending: {unresolvedPromptIds.length}
+                </p>
+                <Button
+                  type="button"
+                  disabled={decisionBusy}
+                  onClick={() => void onSubmitDecisions(decisionDraft)}
+                  className="px-2 py-1 text-2xs"
+                >
+                  {decisionBusy ? "Saving..." : "Save decisions"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {outlineDraft.length > 0 ? (
+            <details className="rounded border border-[var(--surface-border)] p-2">
+              <summary className="cursor-pointer text-2xs font-semibold text-[var(--text-default)]">Edit outline</summary>
+              <div className="mt-2 space-y-2">
+                {outlineDraft.map((slide, idx) => (
+                  <div key={`outline-${idx}`} className="grid grid-cols-12 gap-1">
+                    <input
+                      className="col-span-6 rounded border border-[var(--surface-border)] px-2 py-1 text-2xs"
+                      value={slide.title}
+                      onChange={(e) => {
+                        setOutlineDraft((prev) => prev.map((s, i) => i === idx ? { ...s, title: e.target.value } : s));
+                        setOutlineDirty(true);
+                      }}
+                    />
+                    <input
+                      className="col-span-3 rounded border border-[var(--surface-border)] px-2 py-1 text-2xs"
+                      value={slide.slide_type}
+                      onChange={(e) => {
+                        setOutlineDraft((prev) => prev.map((s, i) => i === idx ? { ...s, slide_type: e.target.value } : s));
+                        setOutlineDirty(true);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="col-span-1 rounded border border-[var(--surface-border)] text-2xs"
+                      onClick={() => {
+                        if (idx === 0) return;
+                        setOutlineDraft((prev) => {
+                          const next = [...prev];
+                          [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                          return next;
+                        });
+                        setOutlineDirty(true);
+                      }}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="col-span-1 rounded border border-[var(--surface-border)] text-2xs"
+                      onClick={() => {
+                        if (idx >= outlineDraft.length - 1) return;
+                        setOutlineDraft((prev) => {
+                          const next = [...prev];
+                          [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
+                          return next;
+                        });
+                        setOutlineDirty(true);
+                      }}
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      className="col-span-1 rounded border border-[var(--surface-border)] text-2xs"
+                      onClick={() => {
+                        setOutlineDraft((prev) => prev.filter((_, i) => i !== idx));
+                        setOutlineDirty(true);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="px-2 py-1 text-2xs"
+                    onClick={() => {
+                      setOutlineDraft((prev) => [...prev, { title: "New slide", slide_type: "bullets", purpose: "" }]);
+                      setOutlineDirty(true);
+                    }}
+                  >
+                    + Add slide
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={!outlineDirty || decisionBusy || !onUpdateOutline}
+                    className="px-2 py-1 text-2xs"
+                    onClick={() => void onUpdateOutline?.(outlineDraft)}
+                  >
+                    Save outline
+                  </Button>
+                </div>
+              </div>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* ── Input area ── */}
       <div className="border-t border-[var(--surface-border)] px-4 py-3">

@@ -40,6 +40,7 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
     decisionPrompts,
     unresolvedPromptIds,
     submitDecisionAnswers,
+    updateConversationOutline,
     decisionBusy,
     runChecklistTodos,
     parsedRunEvents,
@@ -136,13 +137,14 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
           decisionPrompts={decisionPrompts}
           unresolvedPromptIds={unresolvedPromptIds}
           onSubmitDecisions={submitDecisionAnswers}
+          onUpdateOutline={updateConversationOutline}
           decisionBusy={decisionBusy}
           thinkingStatements={coworkThinkingStatements}
           hasThinkingTrace={coworkHasThinkingTrace}
           thinkingTrace={coworkThinkingTrace}
           thinkingExpanded={coworkThinkingExpanded}
           onToggleThinkingTrace={() => setCoworkThinkingExpanded((v) => !v)}
-          showGuidedDecisions={false}
+          showGuidedDecisions={process.env.NEXT_PUBLIC_PROPOSAL_DISCOVERY_ENABLED !== "false"}
         />
         <ZoneCLiveMonitor
           events={liveEvents}

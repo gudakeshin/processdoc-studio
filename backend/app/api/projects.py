@@ -31,7 +31,12 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.schemas.common import ProjectSummary
-from app.services.proposal_policy import derive_proposal_skill_targets, generate_deck_outline_preview
+from app.services.proposal_policy import (
+    derive_proposal_skill_targets,
+    generate_deck_outline_preview,
+    has_proposal_intent,
+    is_finance_proposal_intent,
+)
 from app.services.run_worker import append_run_event
 from app.services.storage import ensure_workspace, workspace_path
 
@@ -253,6 +258,175 @@ def _is_acknowledgment(content: str) -> bool:
             if lowered == pattern or lowered == pattern + "!":
                 return True
     return False
+
+
+_PROPOSAL_DISCOVERY_OUTPUT_TYPES = {"pptx", "docx"}
+
+
+def _is_proposal_instruction(content: str, template_ids: list[str]) -> bool:
+    targets = {str(x).strip().lower() for x in (template_ids or []) if str(x).strip()}
+    if targets & _PROPOSAL_DISCOVERY_OUTPUT_TYPES:
+        return True
+    lowered = (content or "").strip()
+    if not lowered:
+        return False
+    return bool(is_finance_proposal_intent(lowered) or has_proposal_intent(lowered) or "rfp" in lowered.lower())
+
+
+def _normalize_discovery(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, object] = {}
+    client = raw.get("client")
+    if isinstance(client, dict):
+        name = str(client.get("name") or "").strip()
+        industry = str(client.get("industry") or "").strip()
+        if name or industry:
+            out["client"] = {"name": name, "industry": industry}
+    outcome = raw.get("outcome")
+    if isinstance(outcome, dict):
+        primary = str(outcome.get("primary") or "").strip()
+        decision = str(outcome.get("decision") or "").strip()
+        if primary or decision:
+            out["outcome"] = {"primary": primary, "decision": decision}
+    themes = raw.get("win_themes")
+    if isinstance(themes, list):
+        vals = [str(x).strip() for x in themes if str(x).strip()]
+        if vals:
+            out["win_themes"] = vals[:3]
+    audience = str(raw.get("audience") or "").strip().lower()
+    if audience:
+        out["audience"] = audience
+    narrative_arc = str(raw.get("narrative_arc") or "").strip().lower()
+    if narrative_arc:
+        out["narrative_arc"] = narrative_arc
+    tone = str(raw.get("tone") or "").strip().lower()
+    if tone:
+        out["tone"] = tone
+    length_budget = raw.get("length_budget")
+    if isinstance(length_budget, dict):
+        lb: dict[str, int] = {}
+        try:
+            pptx = int(length_budget.get("pptx")) if length_budget.get("pptx") is not None else None
+            if pptx and 4 <= pptx <= 30:
+                lb["pptx"] = pptx
+        except Exception:
+            pass
+        try:
+            docx_pages = int(length_budget.get("docx_pages")) if length_budget.get("docx_pages") is not None else None
+            if docx_pages and 2 <= docx_pages <= 120:
+                lb["docx_pages"] = docx_pages
+        except Exception:
+            pass
+        if lb:
+            out["length_budget"] = lb
+    edited_by_user = raw.get("edited_by_user")
+    if isinstance(edited_by_user, bool):
+        out["edited_by_user"] = edited_by_user
+    return out
+
+
+def _merge_discovery(base: object, incoming: object) -> dict:
+    merged = _normalize_discovery(base)
+    extra = _normalize_discovery(incoming)
+    if not extra:
+        return merged
+    for key in ("client", "outcome", "length_budget"):
+        if key in extra:
+            b = merged.get(key) if isinstance(merged.get(key), dict) else {}
+            i = extra.get(key) if isinstance(extra.get(key), dict) else {}
+            merged[key] = {**b, **i}
+    for key in ("audience", "narrative_arc", "tone", "edited_by_user"):
+        if key in extra:
+            merged[key] = extra[key]
+    if "win_themes" in extra:
+        existing = merged.get("win_themes")
+        cur = existing if isinstance(existing, list) else []
+        nxt = extra.get("win_themes") if isinstance(extra.get("win_themes"), list) else []
+        merged["win_themes"] = (cur + [x for x in nxt if x not in cur])[:3]
+    return merged
+
+
+def _has_sufficient_discovery(discovery: object) -> bool:
+    data = _normalize_discovery(discovery)
+    client = data.get("client") if isinstance(data.get("client"), dict) else {}
+    outcome = data.get("outcome") if isinstance(data.get("outcome"), dict) else {}
+    themes = data.get("win_themes") if isinstance(data.get("win_themes"), list) else []
+    return bool(str(client.get("name") or "").strip() and str(outcome.get("primary") or "").strip() and themes)
+
+
+def _propose_discovery_questions(db: Session, conv: Conversation, instruction: str, prior_messages: list[dict]) -> dict:
+    from app.services.claude import claude_generate_json
+
+    prior_context = "\n".join(
+        f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
+        for m in prior_messages[-8:]
+        if str(m.get("content") or "").strip()
+    )
+    questions: list[str] = []
+    try:
+        payload = claude_generate_json(
+            system=(
+                "Generate exactly 3 concise discovery questions for a consulting proposal kickoff. "
+                "Questions must cover: (1) client/company + industry context, "
+                "(2) desired audience outcome/decision, (3) top differentiators or proof points. "
+                "Return JSON: {\"questions\": [\"...\", \"...\", \"...\"]}."
+            ),
+            user=f"Instruction:\n{instruction}\n\nRecent context:\n{prior_context}",
+            temperature=0.2,
+            max_tokens=300,
+        )
+        raw_q = payload.get("questions") if isinstance(payload, dict) else None
+        if isinstance(raw_q, list):
+            questions = [str(q).strip() for q in raw_q if str(q).strip()][:3]
+    except Exception:
+        questions = []
+    if len(questions) < 3:
+        questions = [
+            "Who is the client (name + industry), and what transformation problem are we solving?",
+            "Who is the primary audience, and what decision should this proposal help them make?",
+            "What 2-3 win themes or proof points must we emphasize?",
+        ]
+    message = "Before I draft the proposal plan, I need 3 quick inputs:\n- " + "\n- ".join(questions)
+    msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=message,
+        metadata_json=json.dumps({"kind": "discovery_questions", "discovery_questions": questions}),
+    )
+    db.add(msg)
+    conv.updated_at = datetime.utcnow()
+    db.commit()
+    return {
+        "conversation_id": conv.id,
+        "messages": _serialize_messages(db, conv.id),
+        "open_questions": questions,
+        "ready_for_confirmation": False,
+        "plan_hash": None,
+    }
+
+
+def _extract_discovery_answers(user_message: str, prior_messages: list[dict]) -> dict:
+    from app.services.claude import claude_generate_json
+
+    context = "\n".join(
+        f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
+        for m in prior_messages[-8:]
+        if str(m.get("content") or "").strip()
+    )
+    try:
+        payload = claude_generate_json(
+            system=(
+                "Extract proposal discovery details from a user's response. "
+                "Return JSON only with keys: client{name,industry}, outcome{primary,decision}, win_themes[array max 3]."
+            ),
+            user=f"Recent chat context:\n{context}\n\nLatest user response:\n{user_message}",
+            temperature=0.1,
+            max_tokens=300,
+        )
+        return _normalize_discovery(payload)
+    except Exception:
+        return {}
 
 
 def _persist_conversational_response(
@@ -485,6 +659,18 @@ class ConversationConfirmRequest(BaseModel):
     plan_hash: str | None = None
 
 
+class OutlineSlideUpdate(BaseModel):
+    title: str
+    slide_type: str
+    purpose: str | None = None
+
+
+class ConversationOutlineUpdateRequest(BaseModel):
+    conversation_id: str | None = None
+    plan_hash: str | None = None
+    slides: list[OutlineSlideUpdate]
+
+
 class UserProjectPreferencesBody(BaseModel):
     """Lines merged into coordinator NonNegotiables (assemble_v2) for this user+project."""
 
@@ -534,6 +720,7 @@ def _build_plan_hash(
     reps: dict[str, str],
     content_skill_targets: dict[str, str] | None = None,
     regeneration_directive: str | None = None,
+    discovery: dict | None = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -543,6 +730,7 @@ def _build_plan_hash(
             "output_type_representations": reps,
             "content_skill_targets": content_skill_targets or {},
             "regeneration_directive": (regeneration_directive or "").strip(),
+            "discovery": _normalize_discovery(discovery or {}),
         },
         sort_keys=True,
     )
@@ -614,7 +802,10 @@ def _build_decision_prompts(
     confirmation.  ``soft_hints`` are advisory messages shown to the user but
     they never prevent plan confirmation.
     """
-    if not settings.instruction_decision_prompts_enabled:
+    is_proposal = bool({str(x).strip().lower() for x in (template_ids or [])} & _PROPOSAL_DISCOVERY_OUTPUT_TYPES)
+    if not settings.instruction_decision_prompts_enabled and not (
+        settings.proposal_discovery_prompts_enabled and is_proposal
+    ):
         return [], [], [], []
     prompts: list[dict] = []
     unresolved: list[str] = []
@@ -669,6 +860,86 @@ def _build_decision_prompts(
 
     if len(content.split()) < 8:
         soft_hints.append("💡 Quick tip: More detail on scope, audience, and depth = better results. Worth adding?")
+
+    if settings.proposal_discovery_prompts_enabled and is_proposal:
+        narrative_selected = current_answers.get("narrative_arc", [])
+        prompts.append(
+            {
+                "id": "narrative_arc",
+                "label": "Narrative arc",
+                "mode": "single_select",
+                "required": True,
+                "options": [
+                    {"value": "scqa", "label": "SCQA"},
+                    {"value": "pyramid", "label": "Pyramid"},
+                    {"value": "case_led", "label": "Case-led"},
+                    {"value": "compare", "label": "Compare options"},
+                ],
+                "selected_values": narrative_selected[:1],
+            }
+        )
+        if not narrative_selected:
+            unresolved.append("narrative_arc")
+            open_questions.append("Choose the storyline structure (SCQA, Pyramid, Case-led, or Compare).")
+
+        audience_selected = current_answers.get("audience_role", [])
+        prompts.append(
+            {
+                "id": "audience_role",
+                "label": "Primary audience",
+                "mode": "single_select",
+                "required": True,
+                "options": [
+                    {"value": "cfo", "label": "CFO / Finance leadership"},
+                    {"value": "board", "label": "Board / ExCo"},
+                    {"value": "buying_committee", "label": "Buying committee"},
+                    {"value": "mixed", "label": "Mixed stakeholders"},
+                ],
+                "selected_values": audience_selected[:1],
+            }
+        )
+        if not audience_selected:
+            unresolved.append("audience_role")
+            open_questions.append("Who is the primary audience for this proposal?")
+
+        length_selected = current_answers.get("slide_length_budget", [])
+        prompts.append(
+            {
+                "id": "slide_length_budget",
+                "label": "Slide budget",
+                "mode": "single_select",
+                "required": True,
+                "options": [
+                    {"value": "8", "label": "8 slides"},
+                    {"value": "10", "label": "10 slides"},
+                    {"value": "12", "label": "12 slides"},
+                    {"value": "15", "label": "15 slides"},
+                ],
+                "selected_values": length_selected[:1],
+            }
+        )
+        if not length_selected:
+            unresolved.append("slide_length_budget")
+            open_questions.append("How many slides should the initial draft target?")
+
+        tone_selected = current_answers.get("tone", [])
+        prompts.append(
+            {
+                "id": "tone",
+                "label": "Narrative tone",
+                "mode": "single_select",
+                "required": True,
+                "options": [
+                    {"value": "formal", "label": "Formal"},
+                    {"value": "consultative", "label": "Consultative"},
+                    {"value": "punchy", "label": "Punchy"},
+                ],
+                "selected_values": tone_selected[:1],
+            }
+        )
+        if not tone_selected:
+            unresolved.append("tone")
+            open_questions.append("Select the tone style for the proposal narrative.")
 
     return prompts, unresolved, open_questions, soft_hints
 
@@ -903,6 +1174,7 @@ def _persist_assistant_plan_message(
     decision_answers: dict[str, list[str]] | None = None,
     content_skill_targets: dict[str, str] | None = None,
     regeneration_directive: str | None = None,
+    discovery: dict | None = None,
 ) -> dict:
     decision_answers = decision_answers or {}
     content_skill_targets = {
@@ -911,6 +1183,22 @@ def _persist_assistant_plan_message(
         if str(k).strip() and str(v).strip()
     }
     regeneration_directive = (regeneration_directive or "").strip()
+    discovery = _normalize_discovery(discovery or {})
+    if decision_answers:
+        mapped: dict[str, object] = {}
+        if decision_answers.get("audience_role"):
+            mapped["audience"] = str(decision_answers.get("audience_role", [""])[0] or "").strip().lower()
+        if decision_answers.get("narrative_arc"):
+            mapped["narrative_arc"] = str(decision_answers.get("narrative_arc", [""])[0] or "").strip().lower()
+        if decision_answers.get("tone"):
+            mapped["tone"] = str(decision_answers.get("tone", [""])[0] or "").strip().lower()
+        if decision_answers.get("slide_length_budget"):
+            try:
+                mapped["length_budget"] = {"pptx": int(str(decision_answers["slide_length_budget"][0]))}
+            except Exception:
+                pass
+        discovery = _merge_discovery(discovery, mapped)
+
     decision_prompts, unresolved_prompt_ids, open_questions, soft_hints = _build_decision_prompts(
         content=content,
         template_ids=template_ids,
@@ -946,8 +1234,11 @@ def _persist_assistant_plan_message(
                     open_questions = [
                         "Select one of the proposed execution approaches (see Approaches below).",
                     ] + open_questions
-    # When decision prompts are disabled, always ready — the LLM handles clarification via conversation.
+    # When decision prompts are disabled, proposal discovery can still gate readiness.
     ready_for_confirmation = True if not settings.instruction_decision_prompts_enabled else len(unresolved_prompt_ids) == 0
+    proposal_targets = {str(x).strip().lower() for x in (template_ids or []) if str(x).strip()}
+    if settings.proposal_discovery_enabled and (proposal_targets & _PROPOSAL_DISCOVERY_OUTPUT_TYPES):
+        ready_for_confirmation = ready_for_confirmation and _has_sufficient_discovery(discovery)
     display_open_questions = open_questions + soft_hints
     # ── Deck outline preview (lightweight Claude call for PPTX proposals) ──
     deck_outline_preview: dict | None = None
@@ -958,6 +1249,7 @@ def _persist_assistant_plan_message(
                 instruction=instruction,
                 output_type="pptx",
                 skill_id=pptx_skill or None,
+                discovery=discovery,
             )
         except Exception:
             deck_outline_preview = None
@@ -969,6 +1261,7 @@ def _persist_assistant_plan_message(
         reps=output_type_representations,
         content_skill_targets=content_skill_targets,
         regeneration_directive=regeneration_directive,
+        discovery=discovery,
     )
     approval_reason = "Plan is ready for confirmation." if ready_for_confirmation else "Clarification required before confirmation."
 
@@ -1031,6 +1324,7 @@ def _persist_assistant_plan_message(
         "soft_hints": soft_hints,
         "decision_prompts": decision_prompts,
         "decision_answers": decision_answers,
+        "discovery": discovery,
         "unresolved_prompt_ids": unresolved_prompt_ids,
         "ready_for_confirmation": ready_for_confirmation,
         "requires_confirmation": True,
@@ -1064,6 +1358,7 @@ def _persist_assistant_plan_message(
         "soft_hints": soft_hints,
         "decision_prompts": decision_prompts,
         "decision_answers": decision_answers,
+        "discovery": discovery,
         "unresolved_prompt_ids": unresolved_prompt_ids,
         "ready_for_confirmation": ready_for_confirmation,
         "requires_confirmation": True,
@@ -1392,6 +1687,32 @@ def post_project_conversation_message(
             out_of_scope_response = _persist_out_of_scope_message(db, conv, content)
             return out_of_scope_response
 
+    discovery: dict = {}
+    if isinstance(prior_plan_meta, dict):
+        discovery = _merge_discovery(discovery, prior_plan_meta.get("discovery"))
+    for m in reversed(prior_messages):
+        md = m.get("metadata")
+        if isinstance(md, dict) and md.get("discovery"):
+            discovery = _merge_discovery(discovery, md.get("discovery"))
+            break
+    if settings.proposal_discovery_enabled and _is_proposal_instruction(content, template_ids):
+        last_assistant = next((m for m in reversed(prior_messages) if m.get("role") == "assistant"), None)
+        last_kind = (
+            str((last_assistant.get("metadata") or {}).get("kind") or "").strip()
+            if isinstance(last_assistant, dict)
+            else ""
+        )
+        if not _has_sufficient_discovery(discovery):
+            if last_kind == "discovery_questions":
+                extracted = _extract_discovery_answers(content, prior_messages)
+                discovery = _merge_discovery(discovery, extracted)
+                user_msg.metadata_json = json.dumps(
+                    {"discovery": discovery, "kind": "discovery_answer", "captured": bool(extracted)}
+                )
+                db.flush()
+            if not _has_sufficient_discovery(discovery):
+                return _propose_discovery_questions(db, conv, combined_instruction, prior_messages)
+
     content_skill_targets = _derive_content_skill_targets(
         instruction=combined_instruction,
         template_ids=template_ids,
@@ -1410,6 +1731,7 @@ def post_project_conversation_message(
         rationale=rationale,
         content_skill_targets=content_skill_targets,
         regeneration_directive=regeneration_directive,
+        discovery=discovery,
     )
     response["memory_quick_add"] = {
         "memory_page_path": "/memory",
@@ -1463,6 +1785,21 @@ def post_project_conversation_decisions(
 
     prior_answers = _sanitize_decision_answers(plan_meta.get("decision_answers"))
     merged_answers = {**prior_answers, **answers_map}
+    discovery = _merge_discovery({}, plan_meta.get("discovery"))
+    if merged_answers.get("audience_role"):
+        discovery = _merge_discovery(discovery, {"audience": merged_answers["audience_role"][0]})
+    if merged_answers.get("narrative_arc"):
+        discovery = _merge_discovery(discovery, {"narrative_arc": merged_answers["narrative_arc"][0]})
+    if merged_answers.get("tone"):
+        discovery = _merge_discovery(discovery, {"tone": merged_answers["tone"][0]})
+    if merged_answers.get("slide_length_budget"):
+        try:
+            discovery = _merge_discovery(
+                discovery,
+                {"length_budget": {"pptx": int(str(merged_answers["slide_length_budget"][0]))}},
+            )
+        except Exception:
+            pass
     assistant_instruction = str(plan_meta.get("instruction") or "").strip()
     if not assistant_instruction:
         raise HTTPException(
@@ -1511,7 +1848,96 @@ def post_project_conversation_decisions(
         if isinstance(plan_meta.get("content_skill_targets"), dict)
         else {},
         regeneration_directive=str(plan_meta.get("regeneration_directive") or ""),
+        discovery=discovery,
     )
+
+
+@router.post("/{pid}/conversation/outline")
+def post_project_conversation_outline(
+    pid: str,
+    body: ConversationOutlineUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    conv = _get_or_create_conversation(db, pid=pid, user_id=user.id, user=user)
+    if body.conversation_id and body.conversation_id != conv.id:
+        raise HTTPException(
+            status_code=400,
+            detail=_detail("conversation_id_mismatch", "conversation_id does not match current conversation"),
+        )
+    if not isinstance(body.slides, list) or len(body.slides) < 1:
+        raise HTTPException(status_code=400, detail=_detail("slides_missing", "slides must include at least one slide"))
+    normalized_slides: list[dict[str, str]] = []
+    allowed_types = {"title", "bullets", "stat_cards", "column_cards", "stack_layers", "table", "chart", "section_divider"}
+    for slide in body.slides:
+        title = str(slide.title or "").strip()
+        slide_type = str(slide.slide_type or "").strip()
+        purpose = str(slide.purpose or "").strip()
+        if not title:
+            continue
+        if slide_type not in allowed_types:
+            raise HTTPException(status_code=400, detail=_detail("invalid_slide_type", f"Unsupported slide_type: {slide_type}"))
+        normalized_slides.append({"title": title, "slide_type": slide_type, "purpose": purpose})
+    if not normalized_slides:
+        raise HTTPException(status_code=400, detail=_detail("slides_invalid", "No valid slides were provided"))
+
+    messages = _serialize_messages(db, conv.id)
+    plan_meta = _latest_assistant_plan_metadata(messages)
+    if not plan_meta:
+        raise HTTPException(status_code=409, detail=_detail("plan_missing", "No assistant plan is available to update"))
+    latest_plan_hash = str(plan_meta.get("plan_hash") or "")
+    if body.plan_hash and body.plan_hash != latest_plan_hash:
+        raise HTTPException(
+            status_code=409,
+            detail=_detail("plan_changed", "Plan changed. Please edit outline on the latest plan", latest_plan_hash=latest_plan_hash),
+        )
+
+    plan_message_id = next(
+        (
+            int(m.get("id"))
+            for m in reversed(messages)
+            if m.get("role") == "assistant"
+            and isinstance(m.get("metadata"), dict)
+            and str((m.get("metadata") or {}).get("plan_hash") or "") == latest_plan_hash
+        ),
+        0,
+    )
+    row = db.scalar(select(ConversationMessage).where(ConversationMessage.id == plan_message_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail=_detail("plan_message_missing", "Plan message no longer exists"))
+
+    metadata = plan_meta if isinstance(plan_meta, dict) else {}
+    outline = metadata.get("deck_outline_preview") if isinstance(metadata.get("deck_outline_preview"), dict) else {}
+    updated_discovery = _merge_discovery(metadata.get("discovery"), {"edited_by_user": True})
+    outline = {
+        **outline,
+        "slides": normalized_slides,
+        "rationale": str(outline.get("rationale") or "Updated by user"),
+    }
+    new_hash = _build_plan_hash(
+        instruction=str(metadata.get("instruction") or ""),
+        template_ids=metadata.get("template_output_types") or [],
+        custom_output_types=metadata.get("custom_output_types") or [],
+        reps=metadata.get("output_type_representations") or {},
+        content_skill_targets=metadata.get("content_skill_targets") if isinstance(metadata.get("content_skill_targets"), dict) else {},
+        regeneration_directive=str(metadata.get("regeneration_directive") or ""),
+        discovery=updated_discovery,
+    )
+    metadata["deck_outline_preview"] = outline
+    metadata["discovery"] = updated_discovery
+    metadata["plan_hash"] = new_hash
+    row.metadata_json = json.dumps(metadata)
+    conv.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "conversation_id": conv.id,
+        "plan_hash": new_hash,
+        "deck_outline_preview": outline,
+        "discovery": updated_discovery,
+        "messages": _serialize_messages(db, conv.id),
+    }
 
 
 @router.delete("/{pid}/conversation")
@@ -1568,6 +1994,18 @@ def confirm_project_conversation_plan(
                 open_questions=plan_meta.get("open_questions") or [],
             ),
         )
+    if (
+        settings.proposal_discovery_enabled
+        and _is_proposal_instruction(str(plan_meta.get("instruction") or ""), plan_meta.get("template_output_types") or [])
+        and not _has_sufficient_discovery(plan_meta.get("discovery"))
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=_detail(
+                "proposal_discovery_incomplete",
+                "Please complete discovery inputs before confirming this proposal plan",
+            ),
+        )
     plan_hash = str(plan_meta.get("plan_hash") or "")
     if body.plan_hash and body.plan_hash != plan_hash:
         raise HTTPException(
@@ -1599,6 +2037,7 @@ def confirm_project_conversation_plan(
                 "decision_answers": da,
                 "strategy_dossier": dossier,
                 "selected_strategy": selected_strategy,
+                "discovery": _normalize_discovery(plan_meta.get("discovery")),
             }
         ),
     )
@@ -1617,6 +2056,7 @@ def confirm_project_conversation_plan(
         if isinstance(plan_meta.get("content_skill_targets"), dict)
         else {},
         "regeneration_directive": str(plan_meta.get("regeneration_directive") or ""),
+        "discovery": _normalize_discovery(plan_meta.get("discovery")),
     }
 
 

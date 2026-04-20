@@ -1505,6 +1505,8 @@ class Coordinator:
         plan_targets: dict[str, str] = {}
         if isinstance(plan_payload, dict):
             plan_targets = _sanitize_content_skill_targets(plan_payload.get("content_skill_targets"))
+            if isinstance(plan_payload.get("discovery"), dict):
+                state["proposal_discovery"] = dict(plan_payload.get("discovery") or {})
             regen = str(plan_payload.get("regeneration_directive") or "").strip()
             if regen:
                 state["user_instruction"] = (
@@ -2031,6 +2033,8 @@ class Coordinator:
             plan_targets: dict[str, str] = {}
             if isinstance(plan_payload, dict):
                 plan_targets = _sanitize_content_skill_targets(plan_payload.get("content_skill_targets"))
+                if isinstance(plan_payload.get("discovery"), dict):
+                    state["proposal_discovery"] = dict(plan_payload.get("discovery") or {})
                 regen = str(plan_payload.get("regeneration_directive") or "").strip()
                 if regen:
                     state["user_instruction"] = (

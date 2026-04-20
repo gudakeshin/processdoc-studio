@@ -1657,6 +1657,19 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
             contract = proposal_prompt_contract(
                 "docx", skill_id=_sid, skill_card=p_skill if isinstance(p_skill, dict) else None
             )
+            discovery = (ctx.plan_payload or {}).get("discovery") if isinstance((ctx.plan_payload or {}).get("discovery"), dict) else {}
+            discovery_client = discovery.get("client") if isinstance(discovery.get("client"), dict) else {}
+            discovery_outcome = discovery.get("outcome") if isinstance(discovery.get("outcome"), dict) else {}
+            discovery_themes = discovery.get("win_themes") if isinstance(discovery.get("win_themes"), list) else []
+            discovery_block = (
+                "Discovery context:\n"
+                f"- Client: {discovery_client.get('name', '')} ({discovery_client.get('industry', '')})\n"
+                f"- Target outcome: {discovery_outcome.get('primary', '')}\n"
+                f"- Decision to enable: {discovery_outcome.get('decision', '')}\n"
+                f"- Win themes: {', '.join(str(x) for x in discovery_themes[:3])}\n\n"
+                if discovery
+                else ""
+            )
             sections = "\n".join(f"- {s}" for s in contract.get("sections", []))
             constraints = "\n".join(f"- {c}" for c in contract.get("constraints", []))
             user = (
@@ -1670,8 +1683,9 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "- Add a quantified value case with assumptions and confidence levels.\n"
                 "- Include implementation workstreams, sequencing, and ownership by role.\n"
                 "- Include risks, mitigations, and measurable success criteria.\n\n"
-                f"{process_model_json_block(pm)}\n"
-                f"{context_excerpt_block(actx, 4000)}"
+                + discovery_block
+                + f"{process_model_json_block(pm)}\n"
+                + f"{context_excerpt_block(actx, 4000)}"
             )
         elif deliverable == "brd":
             user = (
@@ -2326,8 +2340,14 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 "RULE: Do NOT generate empty stat_cards=[], column_cards=[], or table.rows=[]. Always populate with real data.\n"
             ),
         )
+        plan_discovery = (ctx.plan_payload or {}).get("discovery") if isinstance((ctx.plan_payload or {}).get("discovery"), dict) else {}
+        is_proposal_skill = bool(str(primary.get("id") or "").startswith("proposal_")) if isinstance(primary, dict) else False
         n_steps = len(pm.get("steps") or [])
-        if n_steps <= 3:
+        discovery_budget = (plan_discovery.get("length_budget") if isinstance(plan_discovery.get("length_budget"), dict) else {})
+        budget_pptx = int(discovery_budget.get("pptx")) if str(discovery_budget.get("pptx") or "").isdigit() else None
+        if is_proposal_skill and budget_pptx:
+            n_slides_guidance = f"{max(6, min(budget_pptx, 20))} slides"
+        elif n_steps <= 3:
             n_slides_guidance = "6 slides"
         elif n_steps <= 6:
             n_slides_guidance = "7–8 slides"
@@ -2436,36 +2456,73 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 + _slide_schema
             )
         else:
-            # Default process-documentation slide sequence (fallback)
+            # Default sequence (proposal-aware when discovery is available)
+            arc = str(plan_discovery.get("narrative_arc") or "").strip().lower()
+            proposal_mandate = {
+                "scqa": (
+                    "1. Situation/Context\n2. Complication\n3. Key Question\n4. Answer/Hypothesis\n"
+                    "5. Evidence & Value\n6. Delivery approach\n7. Risks & mitigations\n8. Next actions"
+                ),
+                "pyramid": (
+                    "1. Governing thought\n2-4. Supporting arguments\n5-6. Evidence and proof\n"
+                    "7. Implementation roadmap\n8. Decision ask and next actions"
+                ),
+                "case_led": (
+                    "1. Client context\n2. Case for change\n3. Target outcomes\n4-5. Proposed approach\n"
+                    "6. Proof points\n7. Commercial view\n8. Next actions"
+                ),
+                "compare": (
+                    "1. Decision context\n2. Option criteria\n3-5. Option comparison\n6. Recommended option\n"
+                    "7. Delivery implications\n8. Next actions"
+                ),
+            }.get(arc)
             user_core = (
                 f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
                 "below (user instruction, assembled context, prior narrative/document drafts).\n"
                 "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
                 f"Presentation title (use exactly): \"{presentation_title}\"\n"
                 + data_for_slide_2 + data_for_slide_7 + "\n"
-                "Slide ordering mandate (follow this sequence):\n"
-                f"1. slide_type=\"title\" — title=\"{presentation_title}\", subtitle=\"Process Overview\",\n"
-                "   badges=[up to 4 short capability phrases from ProcessModel context]\n"
-                "2. slide_type=\"stat_cards\" — exactly 3 cards quantifying scale/impact metrics;\n"
-                "   derive from step count, role count, or ProcessModel.metadata; fills: dark, mid_dark, gray\n"
-                "   each card MUST have a description: 1 sentence (10–20 words) explaining the metric's significance\n"
-                "3. slide_type=\"column_cards\" — exactly 3 columns representing the three core pillars\n"
-                "   of this process (e.g. Intelligence / Quality / Productivity); accent: green, dark, gray\n"
-                "4. slide_type=\"stack_layers\" — 3–6 rows showing workflow phases or architecture layers;\n"
-                "   fills rotate: green, mid_dark, dark, gray, mid, dark_green\n"
-                "5. slide_type=\"bullets\" — Process Overview: one bullet per role mandate\n"
-                "6. slide_type=\"table\" — Workflow Walkthrough: headers=[Step, Owner, Inputs → Outputs];\n"
-                "   one row per ProcessModel.steps entry\n"
-                "7. slide_type=\"stat_cards\" — 3 Key Metrics or Controls derived from the process\n"
-                "   (error rate, SLA, compliance gates, cycle time, etc.);\n"
-                "   each card must have stat, label, description; use [TBC] only if truly unquantifiable\n"
-                "   Prefer stat_cards here — use column_cards only if all 3 items are purely qualitative pillars\n"
-                "8+ (if more slides needed): slide_type=\"bullets\" or \"column_cards\" for workflow phases\n"
-                "Final slide: slide_type=\"bullets\", title=\"Recommended Next Actions\",\n"
-                "   bullets=[exactly 3 numbered actions specific to this process, each ≤15 words]\n\n"
+                + (
+                    f"Slide ordering mandate ({arc or 'default'}):\n{proposal_mandate}\n\n"
+                    if is_proposal_skill and proposal_mandate
+                    else
+                    "Slide ordering mandate (follow this sequence):\n"
+                    f"1. slide_type=\"title\" — title=\"{presentation_title}\", subtitle=\"Process Overview\",\n"
+                    "   badges=[up to 4 short capability phrases from ProcessModel context]\n"
+                    "2. slide_type=\"stat_cards\" — exactly 3 cards quantifying scale/impact metrics;\n"
+                    "   derive from step count, role count, or ProcessModel.metadata; fills: dark, mid_dark, gray\n"
+                    "   each card MUST have a description: 1 sentence (10–20 words) explaining the metric's significance\n"
+                    "3. slide_type=\"column_cards\" — exactly 3 columns representing the three core pillars\n"
+                    "   of this process (e.g. Intelligence / Quality / Productivity); accent: green, dark, gray\n"
+                    "4. slide_type=\"stack_layers\" — 3–6 rows showing workflow phases or architecture layers;\n"
+                    "   fills rotate: green, mid_dark, dark, gray, mid, dark_green\n"
+                    "5. slide_type=\"bullets\" — Process Overview: one bullet per role mandate\n"
+                    "6. slide_type=\"table\" — Workflow Walkthrough: headers=[Step, Owner, Inputs → Outputs];\n"
+                    "   one row per ProcessModel.steps entry\n"
+                    "7. slide_type=\"stat_cards\" — 3 Key Metrics or Controls derived from the process\n"
+                    "   (error rate, SLA, compliance gates, cycle time, etc.);\n"
+                    "   each card must have stat, label, description; use [TBC] only if truly unquantifiable\n"
+                    "   Prefer stat_cards here — use column_cards only if all 3 items are purely qualitative pillars\n"
+                    "8+ (if more slides needed): slide_type=\"bullets\" or \"column_cards\" for workflow phases\n"
+                    "Final slide: slide_type=\"bullets\", title=\"Recommended Next Actions\",\n"
+                    "   bullets=[exactly 3 numbered actions specific to this process, each ≤15 words]\n\n"
+                )
                 + _slide_schema
             )
         appendix = _shared_user_context_appendix(ctx)
+        if plan_discovery:
+            discovery_lines = []
+            client = plan_discovery.get("client") if isinstance(plan_discovery.get("client"), dict) else {}
+            outcome = plan_discovery.get("outcome") if isinstance(plan_discovery.get("outcome"), dict) else {}
+            themes = plan_discovery.get("win_themes") if isinstance(plan_discovery.get("win_themes"), list) else []
+            if client:
+                discovery_lines.append(f"Client context: {client.get('name', '')} ({client.get('industry', '')})")
+            if outcome:
+                discovery_lines.append(f"Desired outcome: {outcome.get('primary', '')}; decision: {outcome.get('decision', '')}")
+            if themes:
+                discovery_lines.append("Win themes: " + ", ".join(str(x) for x in themes[:3]))
+            if discovery_lines:
+                appendix = appendix + "\n\nDiscovery inputs:\n- " + "\n- ".join(discovery_lines)
         user = user_core + appendix + f"{process_model_json_block(pm)}"
         visual_feedback: list[dict] = (ctx.plan_payload or {}).get("pptx_visual_feedback") or []
         if visual_feedback and isinstance(visual_feedback, list):

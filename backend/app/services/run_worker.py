@@ -1039,8 +1039,12 @@ def _execute_run_job(
         except Exception:
             plan_payload_obj = {}
         workspace_ready = bool(workspace_path(project_id).exists())
+        # Keep human approval sticky across remediation/retry cycles:
+        # once a run has approved_by set, permission evaluation should not
+        # regress purely because an intermediate attempt marked status=failed.
+        effective_run_status = "approved" if run.approved_by else str(run.status or "")
         gate_decisions = evaluate_permission_pipeline(
-            run_status=str(run.status or ""),
+            run_status=effective_run_status,
             has_approval=bool(run.approved_by),
             requested_outputs=requested_for_gate if isinstance(requested_for_gate, list) else [],
             workspace_ready=workspace_ready,
