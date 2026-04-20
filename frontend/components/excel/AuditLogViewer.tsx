@@ -128,8 +128,8 @@ export function AuditLogViewer({
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Select
               value={filters.eventType}
-              onChange={(value) =>
-                setFilters({ ...filters, eventType: value })
+              onChange={(e) =>
+                setFilters({ ...filters, eventType: e.target.value })
               }
             >
               <option value="">All Event Types</option>
@@ -142,7 +142,7 @@ export function AuditLogViewer({
 
             <Select
               value={filters.user}
-              onChange={(value) => setFilters({ ...filters, user: value })}
+              onChange={(e) => setFilters({ ...filters, user: e.target.value })}
             >
               <option value="">All Users</option>
               {users.map((user) => (
@@ -154,7 +154,7 @@ export function AuditLogViewer({
 
             <Select
               value={filters.severity}
-              onChange={(value) => setFilters({ ...filters, severity: value })}
+              onChange={(e) => setFilters({ ...filters, severity: e.target.value })}
             >
               <option value="">All Severities</option>
               <option value="info">Info</option>
@@ -215,7 +215,7 @@ export function AuditLogViewer({
           <div className="flex gap-2">
             <Select
               value={exportFormat}
-              onChange={(value) => setExportFormat(value as ExportFormat)}
+              onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
             >
               <option value="csv">CSV</option>
               <option value="json">JSON</option>

@@ -130,7 +130,7 @@ export function EnhancedConflictResolution({
       <div className="grid gap-3 sm:grid-cols-3">
         <Select
           value={filters.sheet}
-          onChange={(value) => setFilters({ ...filters, sheet: value })}
+          onChange={(e) => setFilters({ ...filters, sheet: e.target.value })}
         >
           <option value="">All sheets</option>
           {sheets.map((s) => (
@@ -142,7 +142,7 @@ export function EnhancedConflictResolution({
 
         <Select
           value={filters.severity}
-          onChange={(value) => setFilters({ ...filters, severity: value })}
+          onChange={(e) => setFilters({ ...filters, severity: e.target.value })}
         >
           <option value="">All severities</option>
           <option value="high">High</option>
@@ -152,7 +152,7 @@ export function EnhancedConflictResolution({
 
         <Select
           value={filters.status}
-          onChange={(value) => setFilters({ ...filters, status: value })}
+          onChange={(e) => setFilters({ ...filters, status: e.target.value })}
         >
           <option value="">All statuses</option>
           <option value="open">Open</option>

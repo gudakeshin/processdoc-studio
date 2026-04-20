@@ -100,7 +100,7 @@ export function ConsolidatedFinancialDashboard({
         <div className="flex gap-2">
           <Select
             value={selectedScenario}
-            onChange={(value) => setSelectedScenario(value)}
+            onChange={(e) => setSelectedScenario(e.target.value)}
           >
             <option value="base">Base Case</option>
             <option value="upside">Upside</option>

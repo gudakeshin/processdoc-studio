@@ -92,8 +92,8 @@ export function FinancialReportGenerator({
                 </label>
                 <Select
                   value={state.reportType}
-                  onChange={(value) =>
-                    setState({ ...state, reportType: value as ReportType })
+                  onChange={(e) =>
+                    setState({ ...state, reportType: e.target.value as ReportType })
                   }
                   className="mt-1"
                 >
