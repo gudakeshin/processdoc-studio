@@ -3,14 +3,12 @@
 Tests for task board-driven execution, lifecycle validation, and DAG management.
 """
 
-import json
 import pytest
-from unittest.mock import Mock, patch
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker
 
 from app.db.models import Base, RunTask
-from app.services.run_tasks import validate_task_status_transition, VALID_STATUS_TRANSITIONS
+from app.services.run_tasks import VALID_STATUS_TRANSITIONS, validate_task_status_transition
 from app.services.swarm import validate_task_dag, validate_task_dag_from_run_tasks
 
 

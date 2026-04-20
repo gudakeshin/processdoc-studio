@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
-import base64
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 from app.core.config import settings
 from app.services.run_budget import charge_llm_usage, extract_usage_counts
@@ -33,7 +33,7 @@ def _record_failure() -> None:
     global _CB_FAIL_COUNT, _CB_OPEN_UNTIL
     with _CB_LOCK:
         _CB_FAIL_COUNT += 1
-        if _CB_FAIL_COUNT >= max(1, int(settings.anthropic_circuit_breaker_failures)):
+        if max(1, int(settings.anthropic_circuit_breaker_failures)) <= _CB_FAIL_COUNT:
             _CB_OPEN_UNTIL = time.time() + max(1, int(settings.anthropic_circuit_breaker_reset_sec))
 
 
@@ -119,9 +119,9 @@ def claude_generate(
     *,
     system: str,
     user: str,
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
     cache_system: bool = True,
 ) -> str:
     """Low-level Claude call; returns raw text."""
@@ -195,9 +195,9 @@ def claude_generate_with_thinking(
     *,
     system: str,
     user: str,
-    model: Optional[str] = None,
-    max_tokens: Optional[int] = None,
-    budget_tokens: Optional[int] = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
+    budget_tokens: int | None = None,
 ) -> dict[str, Any]:
     """
     Messages API call with extended thinking enabled.
@@ -244,9 +244,9 @@ def claude_generate_json(
     *,
     system: str,
     user: str,
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
 ) -> Any:
     """Claude call that expects a JSON object response."""
     text = claude_generate(
@@ -264,9 +264,9 @@ def claude_generate_json_with_images(
     system: str,
     user: str,
     image_bytes: list[bytes],
-    model: Optional[str] = None,
-    temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
 ) -> Any:
     """Claude multimodal JSON response with image inputs."""
     if not is_claude_enabled():

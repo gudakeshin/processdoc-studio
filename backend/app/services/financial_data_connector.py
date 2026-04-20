@@ -1,16 +1,16 @@
 """Financial data source integration for external data imports and lineage tracking."""
 
-from datetime import datetime, timezone
-from typing import Any
-from pathlib import Path
+import csv
 import json
 from collections import defaultdict
-import csv
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:
@@ -143,7 +143,7 @@ def parse_data_source(
         raise ValueError(f"Data source file not found: {file_path}")
 
     if file_type == "csv":
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
@@ -218,7 +218,7 @@ def create_data_source_connector(
         raise ValueError(f"Column mapping validation failed: {validation['issues']}")
 
     connector = {
-        "id": f"connector_{datetime.now(timezone.utc).timestamp()}",
+        "id": f"connector_{datetime.now(UTC).timestamp()}",
         "model_id": model_id,
         "source_name": source_name,
         "file_path": file_path,

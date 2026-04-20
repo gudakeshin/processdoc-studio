@@ -1,13 +1,11 @@
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
 from typing import Any
-
-log = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from openpyxl import Workbook
@@ -18,7 +16,14 @@ from app.core.auth import get_current_user, require_project_role
 from app.core.upload_validation import validate_excel_upload
 from app.db.models import User
 from app.db.session import get_db
-from app.services.storage import ensure_workspace, workspace_path
+from app.services.budget_vs_actual import (
+    calculate_period_variance,
+    calculate_ytd_variance,
+    create_budget_setup,
+    forecast_full_year,
+    generate_budget_vs_actual_report,
+    record_actual_results,
+)
 from app.services.conflict_resolution import (
     create_conflict,
     get_conflict,
@@ -26,6 +31,34 @@ from app.services.conflict_resolution import (
     reopen_conflict,
     resolve_conflict,
     unresolved_high_risk_count,
+)
+from app.services.financial_calculations import (
+    calculate_dcf,
+    calculate_financial_metrics,
+    calculate_irr,
+    calculate_npv,
+    sensitivity_analysis,
+)
+from app.services.financial_data_connector import (
+    build_data_lineage_graph,
+    create_data_source_connector,
+    detect_data_drift,
+    get_data_lineage,
+    list_data_sources,
+    sync_data_source,
+)
+from app.services.financial_statements import (
+    generate_balance_sheet,
+    generate_cash_flow_statement,
+    generate_income_statement,
+)
+from app.services.forecasting import (
+    calculate_arima_simple,
+    calculate_exponential_smoothing,
+    calculate_linear_regression,
+    calculate_moving_average,
+    compare_forecast_methods,
+    forecast_with_confidence,
 )
 from app.services.graph_sync import (
     ensure_cell_ref_map,
@@ -37,75 +70,38 @@ from app.services.graph_sync import (
     save_checkpoint,
     simulate_sync_tick,
 )
-from app.services.model_realtime import append_model_event, broadcast_model_event, replay_model_events
-from app.services.observability import increment, observe_latency, snapshot as observability_snapshot
-from app.services.xlsx_parser import parse_workbook, quality_gate_failed
-from app.services.financial_calculations import (
-    calculate_npv,
-    calculate_irr,
-    calculate_dcf,
-    sensitivity_analysis,
-    calculate_financial_metrics,
-)
-from app.services.scenario_runner import (
-    run_scenario_calculation,
-    save_scenario_results,
-    load_scenario_results,
-    load_all_scenario_results,
-    refresh_all_scenario_results,
-    compare_scenarios,
-    get_scenario_rankings,
-)
-from app.services.financial_statements import (
-    generate_income_statement,
-    generate_balance_sheet,
-    generate_cash_flow_statement,
-    calculate_financial_ratios,
-)
-from app.services.forecasting import (
-    calculate_linear_regression,
-    calculate_exponential_smoothing,
-    calculate_moving_average,
-    calculate_arima_simple,
-    compare_forecast_methods,
-    forecast_with_confidence,
-)
-from app.services.variance_analysis import (
-    calculate_simple_variance,
-    calculate_line_item_variances,
-    analyze_price_volume_mix,
-    analyze_trend_variance,
-    identify_variance_drivers,
-    generate_variance_report,
-)
 from app.services.model_links import (
+    build_model_dependency_graph,
     create_model_link,
-    list_model_links,
     get_link_impact,
+    list_model_links,
     resolve_cell_reference,
     sync_linked_cells,
     validate_all_links,
-    build_model_dependency_graph,
 )
-from app.services.financial_data_connector import (
-    create_data_source_connector,
-    parse_data_source,
-    sync_data_source,
-    list_data_sources,
-    get_data_lineage,
-    detect_data_drift,
-    build_data_lineage_graph,
+from app.services.model_realtime import append_model_event, broadcast_model_event, replay_model_events
+from app.services.observability import increment, observe_latency
+from app.services.observability import snapshot as observability_snapshot
+from app.services.scenario_runner import (
+    compare_scenarios,
+    get_scenario_rankings,
+    load_all_scenario_results,
+    load_scenario_results,
+    refresh_all_scenario_results,
+    run_scenario_calculation,
+    save_scenario_results,
 )
-from app.services.budget_vs_actual import (
-    create_budget_setup,
-    record_actual_results,
-    calculate_period_variance,
-    calculate_ytd_variance,
-    forecast_full_year,
-    identify_budget_drivers,
-    build_variance_waterfall,
-    generate_budget_vs_actual_report,
+from app.services.storage import ensure_workspace, workspace_path
+from app.services.variance_analysis import (
+    analyze_price_volume_mix,
+    analyze_trend_variance,
+    calculate_line_item_variances,
+    calculate_simple_variance,
+    generate_variance_report,
 )
+from app.services.xlsx_parser import parse_workbook, quality_gate_failed
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 OBSERVABILITY_COUNTERS = {
@@ -156,7 +152,7 @@ def _emit_model_event(pid: str, mid: str, event_type: str, payload: dict[str, An
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class ModelCreateRequest(BaseModel):
@@ -366,7 +362,7 @@ def _write_json(path: Path, payload: Any) -> None:
 def _snapshot_version(project_id: str, model_id: str, reason: str) -> dict[str, Any]:
     mdir = _model_dir(project_id, model_id)
     meta = _read_json(_meta_path(project_id, model_id), {})
-    version_id = f"{model_id}_v_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    version_id = f"{model_id}_v_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
     payload = {
         "version_id": version_id,
         "created_at": _now_iso(),
@@ -700,7 +696,6 @@ def excel_export(
 
         # Correct periods (clamp to [1, 100])
         periods_val = model.get("periods", 5)
-        periods_orig = periods_val
         periods_val, period_correction = DataCorrector.correct_periods(periods_val)
         if period_correction:
             log.info(f"Auto-correction: {period_correction}")
@@ -708,7 +703,7 @@ def excel_export(
 
         # Correct scenarios (filter malformed)
         if scenarios:
-            scenarios_orig = scenarios.copy()
+            scenarios.copy()
             scenarios, scenario_corrections = DataCorrector.correct_scenarios(scenarios)
             for corr in scenario_corrections:
                 log.info(f"Auto-correction: {corr}")
@@ -717,7 +712,7 @@ def excel_export(
 
         # Correct historical data (remove NaN/Inf)
         if historical:
-            historical_orig = historical.copy()
+            historical.copy()
             historical, historical_corrections = DataCorrector.correct_historical_data(historical)
             for corr in historical_corrections:
                 log.info(f"Auto-correction: {corr}")
@@ -726,7 +721,7 @@ def excel_export(
 
         # Correct budget data (ensure numeric)
         if budget_data:
-            budget_data_orig = budget_data.copy()
+            budget_data.copy()
             budget_data, budget_corrections = DataCorrector.correct_budget_data(budget_data)
             for corr in budget_corrections:
                 log.info(f"Auto-correction: {corr}")
@@ -735,7 +730,7 @@ def excel_export(
 
         # Correct actuals_by_period (validate structure)
         if actuals:
-            actuals_orig = actuals.copy()
+            actuals.copy()
             actuals, actuals_corrections = DataCorrector.correct_actuals_by_period(actuals)
             for corr in actuals_corrections:
                 log.info(f"Auto-correction: {corr}")
@@ -744,8 +739,8 @@ def excel_export(
 
         # ===== Cowork Alignment: Tier 1 - Automatic Retry Loop =====
         # Compose with retry on transient failures
-        from app.services.excel_model_composer import compose_financial_model_with_retry
         from app.core.deliverable_xlsx import apply_cells_to_workbook
+        from app.services.excel_model_composer import compose_financial_model_with_retry
 
         log.info("Composing financial model with retry (Tier 1)")
 
@@ -773,12 +768,12 @@ def excel_export(
 
         except ValueError as e:
             log.error(f"Model composition validation failed: {e}")
-            raise HTTPException(status_code=400, detail=f"Invalid model data: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Invalid model data: {str(e)}") from e
         except HTTPException:
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
             log.error(f"Model composition failed: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Model export generation failed")
+            raise HTTPException(status_code=500, detail="Model export generation failed") from e
 
         log.debug(f"Composed financial model: {len(xlsx_cells)} cells")
 
@@ -788,12 +783,12 @@ def excel_export(
             apply_cells_to_workbook(wb, xlsx_cells)
         except Exception as e:
             log.error(f"Workbook creation failed: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to create Excel workbook")
+            raise HTTPException(status_code=500, detail="Failed to create Excel workbook") from e
 
         # Save with timestamp
         export_dir = _model_dir(pid, mid) / "excel"
         export_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.xlsx"
+        fname = f"export_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.xlsx"
         out_path = export_dir / fname
 
         try:
@@ -817,13 +812,13 @@ def excel_export(
 
         except ValueError as e:
             log.error(f"Export file size validation failed: {e}")
-            raise HTTPException(status_code=413, detail=f"Export too large: {str(e)}")
-        except IOError as e:
+            raise HTTPException(status_code=413, detail=f"Export too large: {str(e)}") from e
+        except OSError as e:
             log.error(f"Export file write failed: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to write export file to disk")
+            raise HTTPException(status_code=500, detail="Failed to write export file to disk") from e
         except Exception as e:
             log.error(f"Export file save failed: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to save export file")
+            raise HTTPException(status_code=500, detail="Failed to save export file") from e
 
         # Phase 2 Hardening: Comprehensive metrics & observability
         elapsed = (perf_counter() - started) * 1000.0
@@ -905,7 +900,7 @@ def excel_export(
         log.error(f"Unexpected error in export endpoint: {e}", exc_info=True)
         OBSERVABILITY_COUNTERS["excel_export_errors"] = OBSERVABILITY_COUNTERS.get("excel_export_errors", 0) + 1
         increment("excel_export_error")
-        raise HTTPException(status_code=500, detail="Unexpected export error")
+        raise HTTPException(status_code=500, detail="Unexpected export error") from e
 
 
 @router.post("/projects/{pid}/models/{mid}/excel/sync")
@@ -1109,10 +1104,10 @@ def excel_schema_diff(
 
     left = flatten(from_payload)
     right = flatten(to_payload)
-    added = sorted(k for k in right.keys() if k not in left)
-    removed = sorted(k for k in left.keys() if k not in right)
+    added = sorted(k for k in right if k not in left)
+    removed = sorted(k for k in left if k not in right)
     changed: list[dict[str, Any]] = []
-    for key in sorted(k for k in right.keys() if k in left):
+    for key in sorted(k for k in right if k in left):
         if left[key] != right[key]:
             changed.append({"cell": key, "from": left[key], "to": right[key]})
 
@@ -1267,7 +1262,7 @@ def calculate_model_npv(
         result = calculate_npv(cash_flows=body.cash_flows, discount_rate=body.discount_rate)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/calculate/irr")
@@ -1284,7 +1279,7 @@ def calculate_model_irr(
         result = calculate_irr(cash_flows=body.cash_flows, guess=body.guess)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/calculate/dcf")
@@ -1310,7 +1305,7 @@ def calculate_model_dcf(
         )
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/calculate/sensitivity")
@@ -1350,7 +1345,7 @@ def calculate_model_sensitivity(
         )
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/projects/{pid}/models/{mid}/scenarios/{sid}/results")
@@ -1511,7 +1506,7 @@ def calculate_model_metrics(
         )
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/generate/income-statement")
@@ -1535,7 +1530,7 @@ def generate_income_statement_endpoint(
         )
         return result
     except (ValueError, TypeError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/generate/balance-sheet")
@@ -1567,7 +1562,7 @@ def generate_balance_sheet_endpoint(
         )
         return result
     except (ValueError, TypeError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/generate/cash-flow-statement")
@@ -1591,7 +1586,7 @@ def generate_cash_flow_statement_endpoint(
         )
         return result
     except (ValueError, TypeError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/linear-regression")
@@ -1608,7 +1603,7 @@ def forecast_linear_regression(
         result = calculate_linear_regression(body.historical_data, body.forecast_periods)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/exponential-smoothing")
@@ -1630,7 +1625,7 @@ def forecast_exponential_smoothing(
         )
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/moving-average")
@@ -1647,7 +1642,7 @@ def forecast_moving_average(
         result = calculate_moving_average(body.historical_data, body.window_size, body.forecast_periods)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/arima")
@@ -1664,7 +1659,7 @@ def forecast_arima(
         result = calculate_arima_simple(body.historical_data, body.forecast_periods)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/compare-methods")
@@ -1681,7 +1676,7 @@ def forecast_compare_methods(
         result = compare_forecast_methods(body.historical_data, body.forecast_periods)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/ensemble-with-confidence")
@@ -1702,7 +1697,7 @@ def forecast_ensemble_with_confidence(
         )
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/variance/simple")
@@ -1766,7 +1761,7 @@ def variance_trend(
         result = analyze_trend_variance(body.actual_periods, body.budget_periods)
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/projects/{pid}/models/{mid}/variance/report")
@@ -1823,7 +1818,7 @@ def create_link(
 
         return link
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/projects/{pid}/models/{mid}/links")

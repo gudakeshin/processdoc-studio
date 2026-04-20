@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import html
-import textwrap
 import hashlib
-import time
-
+import html
 import json
+import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from app.agents.prompt_hygiene import (
     wrap_untrusted,
     wrap_untrusted_bundle,
 )
+from app.core.config import settings
 from app.core.state import ProcessDocState, ProcessModel
 from app.services.claude import (
     _extract_first_json_object,
@@ -30,14 +30,14 @@ from app.services.claude import (
 )
 from app.services.claude_tools import run_subagent_tool_loop
 from app.services.drawio_builder import process_model_to_drawio_xml
+from app.services.observability import increment
 from app.services.process_extraction import extract_process_model
-from app.core.config import settings
+from app.services.proposal_policy import PROPOSAL_SKILL_ID, proposal_prompt_contract
 from app.services.tool_registry import (
     anthropic_tool_definitions,
     default_tools_for_output_type,
     tool_names_for_skill,
 )
-from app.services.observability import increment
 
 _SWARM_TOOL_NAMES: tuple[str, ...] = (
     "swarm_list_tasks",
@@ -47,7 +47,6 @@ _SWARM_TOOL_NAMES: tuple[str, ...] = (
     "swarm_send_message",
     "swarm_broadcast",
 )
-from app.services.proposal_policy import PROPOSAL_SKILL_ID, proposal_prompt_contract
 
 _DEBUG_LOG_PATH = Path("/Users/pallavchaturvedi/Agentic Projects/Process Doc v2/.cursor/debug-a9841a.log")
 _DEBUG_SESSION_ID = "a9841a"
@@ -100,7 +99,7 @@ def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str,
         _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort, non-fatal
         pass
 
 
@@ -181,7 +180,7 @@ def run_process_extraction(state: ProcessDocState) -> ProcessDocState:
             if isinstance(pm, dict) and isinstance(pm.get("steps"), list):
                 state["process_model"] = pm  # type: ignore[assignment]
                 return state
-        except Exception:  # noqa: BLE001 — fallback
+        except Exception:  # noqa: BLE001, S110 — fallback
             pass
 
     state["process_model"] = extract_process_model(raw, ctx)
@@ -625,7 +624,7 @@ def _apply_quality_gate(
                 "issues": issues,
                 "action": "remediation_pass",
             })
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110, SIM105
             pass
 
     remediation_prompt = (
@@ -660,7 +659,7 @@ def _apply_quality_gate(
             )
             if isinstance(improved, str) and improved.strip():
                 return improved
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     return content
 
@@ -732,7 +731,7 @@ def _run_post_processor(ctx: AgentContext, content: str) -> str:
                     "output_type": ctx.output_type,
                 },
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110, SIM105
             pass
 
     try:
@@ -748,7 +747,7 @@ def _run_post_processor(ctx: AgentContext, content: str) -> str:
                         "output_type": ctx.output_type,
                     },
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110, SIM105
                 pass
         return out
     except Exception:  # noqa: BLE001
@@ -763,7 +762,7 @@ def _run_post_processor(ctx: AgentContext, content: str) -> str:
                         "error": True,
                     },
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110, SIM105
                 pass
         return content
 
@@ -813,7 +812,7 @@ def _run_pptx_post_processor(ctx: AgentContext, slides: list[dict[str, Any]]) ->
                     "output_type": "pptx",
                 },
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110, SIM105
             pass
 
     try:
@@ -839,10 +838,10 @@ def _run_pptx_post_processor(ctx: AgentContext, slides: list[dict[str, Any]]) ->
                                 "output_type": "pptx",
                             },
                         )
-                    except Exception:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001, S110, SIM105
                         pass
                 return merged
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     if emit:
         try:
@@ -855,7 +854,7 @@ def _run_pptx_post_processor(ctx: AgentContext, slides: list[dict[str, Any]]) ->
                     "error": True,
                 },
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110, SIM105
             pass
     return slides
 
@@ -2289,7 +2288,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             "primary_skill_id": str(primary.get("id") or ""),
             "primary_skill_display_name": str(primary.get("display_name") or ""),
             "assembled_context_chars": len(str(ctx.assembled_context or "")),
-            "process_model_steps": len((pm.get("steps") or [])) if isinstance(pm, dict) else 0,
+            "process_model_steps": len(pm.get("steps") or []) if isinstance(pm, dict) else 0,
             "skill_instruction_chars": len(str(_skill_instruction(ctx, "pptx") or "")),
         },
     )
@@ -2340,13 +2339,13 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
         analytics = getattr(enrichment, "process_analytics", None) if enrichment else None
         steps_count = analytics.steps_count if analytics else n_steps
         roles_count = analytics.roles_count if analytics else len(set(s.get("role") or s.get("owner") for s in pm.get("steps", []) if isinstance(s, dict)))
-        decision_points = analytics.decision_points if analytics else len(pm.get("decisions", []) or [])
+        analytics.decision_points if analytics else len(pm.get("decisions", []) or [])
         systems_count = len(pm.get("systems", [])) if isinstance(pm.get("systems"), list) else 3
 
         # Extract risks and value drivers from enrichment
         risk_profile = getattr(enrichment, "risk_profile", None) if enrichment else None
-        risks = risk_profile.risks if risk_profile else pm.get("risks", [])
-        value_drivers = getattr(enrichment, "value_drivers", []) if enrichment else pm.get("improvement_opportunities", [])
+        risk_profile.risks if risk_profile else pm.get("risks", [])
+        getattr(enrichment, "value_drivers", []) if enrichment else pm.get("improvement_opportunities", [])
 
         # Build data injection for key slides
         data_for_slide_2 = (
@@ -2536,7 +2535,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 slides2 = obj2.get("slides") if isinstance(obj2, dict) else None
                 if isinstance(slides2, list) and slides2:
                     slide_dicts = [s for s in slides2 if isinstance(s, dict)] or slide_dicts
-            except Exception:
+            except Exception:  # noqa: S110 — best-effort, non-fatal
                 pass
             slide_dicts = _run_pptx_post_processor(ctx, slide_dicts)
             slide_dicts = _normalize_pptx_slide_identities(slide_dicts)
@@ -2568,7 +2567,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                     slides2 = obj2.get("slides") if isinstance(obj2, dict) else None
                     if isinstance(slides2, list) and slides2:
                         slide_dicts = [s for s in slides2 if isinstance(s, dict)] or slide_dicts
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
                 slide_dicts = _run_pptx_post_processor(ctx, slide_dicts)
                 slide_dicts = _normalize_pptx_slide_identities(slide_dicts)

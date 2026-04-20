@@ -9,8 +9,10 @@ No new financial logic lives here — this module is a pure *composer*.
 
 from __future__ import annotations
 
-import math
+import contextlib
 import logging
+import math
+import time
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -181,10 +183,8 @@ def _compose_assumptions_sheet(
         placed_keys.add(key)
 
         val = assumptions[key]
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             val = float(val)
-        except (TypeError, ValueError):
-            pass
 
         fill = YELLOW_BG if (is_key or key in KEY_ASSUMPTIONS) else None
         cells.append(_cell(SH_ASSUMPTIONS, row, 1, value=label))
@@ -200,10 +200,8 @@ def _compose_assumptions_sheet(
             continue
         placed_keys.add(key)
 
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             val = float(val)
-        except (TypeError, ValueError):
-            pass
 
         display_name = key.replace("_", " ").title()
         cells.append(_cell(SH_ASSUMPTIONS, row, 1, value=display_name))
@@ -521,7 +519,7 @@ def _compose_cash_flow(
 
     # Phase 1 Hardening: Validate row reference before using in formula
     if ni_row <= 0:
-        log.warning(f"Cash Flow sheet: net_income row not found in Income Statement, skipping sheet")
+        log.warning("Cash Flow sheet: net_income row not found in Income Statement, skipping sheet")
         return [], {}
 
     row_map["net_income"] = r
@@ -807,7 +805,6 @@ def _compose_valuation(
     r += 1
 
     # Enterprise Value
-    ev_r = r
     cells.append(_cell(sheet, r, 1, value="Enterprise Value", bold=True, fill_color=SUBTOTAL_BG))
     cells.append(_cell(sheet, r, 2,
                         formula=f"B{sum_pv_r}+B{pv_tv_r}",
@@ -1053,14 +1050,6 @@ def _compose_budget_vs_actual(
     if not budget_data or not actuals_by_period:
         return []
 
-    try:
-        from app.services.budget_vs_actual import (
-            create_budget_setup,
-            generate_budget_vs_actual_report,
-        )
-    except ImportError:
-        return []
-
     cells: list[dict[str, Any]] = []
     sheet = SH_BUDGET
 
@@ -1237,8 +1226,6 @@ def compose_financial_model(
 # ---------------------------------------------------------------------------
 # Cowork Alignment: Tier 1 - Automatic Retry Loop with Exponential Backoff
 # ---------------------------------------------------------------------------
-
-import time
 
 MAX_RETRY_ATTEMPTS = 3
 BASE_RETRY_DELAY = 0.25  # seconds

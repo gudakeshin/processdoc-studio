@@ -9,6 +9,7 @@ Manages independent Claude Code processes for teammate execution with:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 _LOG = logging.getLogger(__name__)
 
@@ -30,8 +31,8 @@ class ProcessHealth:
     runtime_sec: float
     memory_mb: float
     cpu_percent: float
-    exit_code: Optional[int] = None
-    error: Optional[str] = None
+    exit_code: int | None = None
+    error: str | None = None
 
 
 @dataclass
@@ -43,7 +44,7 @@ class TeammateProcess:
     process: subprocess.Popen
     spawn_time: float
     last_heartbeat: float = field(default_factory=time.time)
-    exit_code: Optional[int] = None
+    exit_code: int | None = None
     output: str = ""
     error: str = ""
 
@@ -190,7 +191,7 @@ class TeammateExecutor:
             _LOG.error(f"Failed to spawn teammate {teammate_id} for task {task_id}: {e}")
             raise
 
-    def poll_teammate(self, teammate_proc: TeammateProcess) -> tuple[bool, Optional[dict[str, Any]]]:
+    def poll_teammate(self, teammate_proc: TeammateProcess) -> tuple[bool, dict[str, Any] | None]:
         """Poll a teammate process for completion.
 
         Args:
@@ -265,7 +266,7 @@ class TeammateExecutor:
                         if line.startswith("VmRSS"):
                             memory_mb = int(line.split()[1]) / 1024  # KB to MB
                             break
-            except (IOError, ValueError):
+            except (OSError, ValueError):
                 pass
 
         error = None
@@ -329,7 +330,5 @@ class TeammateExecutor:
 
     def __del__(self) -> None:
         """Cleanup on deletion."""
-        try:
+        with contextlib.suppress(Exception):
             self.cleanup_all(timeout=2.0)
-        except Exception:
-            pass

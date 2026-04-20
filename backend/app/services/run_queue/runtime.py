@@ -6,7 +6,8 @@ import json
 import os
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import redis
 
@@ -215,7 +216,7 @@ class RunQueueRuntime:
                 payload = json.loads(raw)
                 if isinstance(payload, dict):
                     out.append(payload)
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
         out.sort(key=lambda x: int(x.get("last_heartbeat_ms", 0)), reverse=True)
         return out
@@ -263,7 +264,7 @@ class RunQueueRuntime:
                     continue
                 try:
                     payload = json.loads(raw)
-                except Exception:
+                except Exception:  # noqa: S112 — best-effort, non-fatal
                     continue
                 if project_id and payload.get("project_id") != project_id:
                     continue

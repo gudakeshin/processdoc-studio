@@ -3,8 +3,8 @@ import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.db.session import SessionLocal
 from app.db.models import Membership, User
+from app.db.session import SessionLocal
 from app.main import app
 from app.tests.plan_helpers import confirm_plan_for_project
 

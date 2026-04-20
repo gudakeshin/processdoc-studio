@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from app.core.config import settings
 from app.services.bash_executor import get_bash_executor, new_session_id
 from app.services.claude import is_claude_enabled
-from app.services.text_editor_executor import execute_text_editor_tool
-from app.services.observability import increment
 from app.services.langfuse_tracing import langfuse_span
+from app.services.observability import increment
+from app.services.text_editor_executor import execute_text_editor_tool
 from app.services.tool_registry import resolve_tool_call, tool_result_to_text
 
 _LOG = logging.getLogger(__name__)

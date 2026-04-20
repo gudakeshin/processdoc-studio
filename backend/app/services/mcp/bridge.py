@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from app.services.mcp.protocol import (
     format_json_rpc_request,
@@ -88,7 +88,7 @@ async def call_mcp_tool(
                 loop.run_in_executor(None, read_response),
                 timeout=timeout_sec,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(f"MCP tool call timeout for {tool_name}")
             return None
 
@@ -97,7 +97,7 @@ async def call_mcp_tool(
             return None
 
         # Parse JSON-RPC response
-        response_obj = json.loads(response_str)
+        json.loads(response_str)
         response = parse_json_rpc_response(response_str.encode())
 
         if response is None:
@@ -112,7 +112,7 @@ async def call_mcp_tool(
 
         return response.result
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error(f"MCP tool call timeout for {tool_name}")
         return None
     except Exception as e:

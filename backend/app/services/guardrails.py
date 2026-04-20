@@ -4,8 +4,8 @@ import re
 from typing import Any
 
 from app.services.claude import claude_generate_json, is_claude_enabled
-from app.services.observability import increment
 from app.services.langfuse_tracing import langfuse_span
+from app.services.observability import increment
 
 
 class GuardrailPipeline:

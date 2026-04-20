@@ -1,20 +1,20 @@
 """Scenario analysis engine for running calculations across model scenarios."""
 
-from datetime import datetime, timezone
-from typing import Any
-from pathlib import Path
+import contextlib
 import json
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from app.services.financial_calculations import (
     calculate_financial_metrics,
     calculate_npv,
-    calculate_dcf,
 )
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:
@@ -69,7 +69,7 @@ def run_scenario_calculation(
     # Try to calculate financial metrics
     revenue = merged_assumptions.get("revenue")
     if revenue is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             metrics = calculate_financial_metrics(
                 revenue=float(revenue),
                 cogs=float(merged_assumptions.get("cogs", 0)),
@@ -80,8 +80,6 @@ def run_scenario_calculation(
                 total_debt=merged_assumptions.get("total_debt"),
                 cash=float(merged_assumptions.get("cash", 0)),
             )
-        except (TypeError, ValueError):
-            pass
 
     # Try to calculate NPV if cash flows are present
     cash_flows_str = merged_assumptions.get("cash_flows")

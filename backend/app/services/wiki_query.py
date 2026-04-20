@@ -4,9 +4,8 @@ wiki_query.py — Wiki query helpers.
 Handles wiki index loading, BM25 + embedding-rerank search, answer synthesis,
 citation parsing, and answer quality evaluation.
 """
-import re
 import logging
-from typing import Optional
+import re
 
 _LOG = logging.getLogger(__name__)
 _embed_model = None
@@ -16,7 +15,7 @@ _embed_model = None
 # Index loading
 # ---------------------------------------------------------------------------
 
-def _get_wiki_index(wiki_type: str, project_id: Optional[str]) -> Optional[dict]:
+def _get_wiki_index(wiki_type: str, project_id: str | None) -> dict | None:
     """Read all wiki pages and return an in-memory index."""
     try:
         from app.services.storage import workspace_path
@@ -56,7 +55,7 @@ def _get_wiki_index(wiki_type: str, project_id: Optional[str]) -> Optional[dict]
                     "category": category,
                     "content": body,
                 })
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
 
         return {"pages": pages}
@@ -83,7 +82,7 @@ def _rerank_with_embeddings(question: str, candidates: list) -> list:
         ]
         c_embs = _embed_model.encode(texts, convert_to_tensor=True)
         scores = util.cos_sim(q_emb, c_embs)[0].tolist()
-        ranked = sorted(zip(scores, candidates), key=lambda x: -x[0])
+        ranked = sorted(zip(scores, candidates, strict=False), key=lambda x: -x[0])
         return [p for _, p in ranked[:5]]
     except ImportError:
         return candidates[:5]
@@ -105,7 +104,7 @@ def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id) -
         ]
         query_tokens = re.findall(r"\w+", question.lower())
         scores = BM25Okapi(corpus).get_scores(query_tokens)
-        ranked = sorted(zip(scores, pages), key=lambda x: -x[0])
+        ranked = sorted(zip(scores, pages, strict=False), key=lambda x: -x[0])
         candidates = [p for score, p in ranked[:20] if score > 0]
     except ImportError:
         # Fallback to keyword overlap if rank_bm25 not installed
@@ -194,7 +193,7 @@ def _extract_citations(answer: str, pages: list) -> list:
 # Answer quality evaluation
 # ---------------------------------------------------------------------------
 
-def _evaluate_answer_quality(answer: str, pages: list, question: str) -> Optional[dict]:
+def _evaluate_answer_quality(answer: str, pages: list, question: str) -> dict | None:
     """Lightweight quality check on the synthesized answer."""
     from app.services.claude import claude_generate_json, is_claude_enabled
 

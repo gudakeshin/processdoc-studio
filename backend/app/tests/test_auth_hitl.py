@@ -1,12 +1,12 @@
 import json
-import time
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app as fastapi_app
 from app.core.config import settings
+from app.main import app as fastapi_app
 from app.services.storage import workspace_path
 from app.tests.plan_helpers import confirm_plan_for_project
 

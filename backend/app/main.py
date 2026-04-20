@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from slowapi import _rate_limit_exceeded_handler
@@ -21,7 +21,11 @@ _repo_root = _backend_root.parent
 load_dotenv(_repo_root / ".env")
 load_dotenv(_backend_root / ".env", override=True)
 
+# All app-level imports MUST follow the two load_dotenv() calls above so that
+# Settings() and other modules observe the final env-var state. Suppress E402
+# for this file only (see [tool.ruff.lint.per-file-ignores] in pyproject.toml).
 from app.api.routes import router
+from app.api.wiki import router as wiki_router
 from app.core.config import log_memory_config_warnings, log_run_queue_startup_config, settings
 from app.core.deliverable import DeliverableRegistry
 from app.core.deliverable_docx import DOCXDeliverable
@@ -66,11 +70,7 @@ if settings.structured_logging_enabled:
     if root.handlers:
         for h in root.handlers:
             h.setFormatter(JsonLogFormatter())
-from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_project_role
-from app.db.models import User
-from app.db.session import get_db
 
 
 @asynccontextmanager
@@ -162,9 +162,6 @@ if settings.cors_allow_origin_regex:
 app.add_middleware(CORSMiddleware, **_cors_kw)
 
 app.include_router(router, prefix="/api")
-
-# Wiki API — has its own /api/wiki prefix baked in
-from app.api.wiki import router as wiki_router
 
 app.include_router(wiki_router)
 

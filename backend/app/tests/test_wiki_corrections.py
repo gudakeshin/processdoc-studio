@@ -10,12 +10,10 @@ Tests the correction of common wiki data quality issues:
 - Stale references
 """
 
-import pytest
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.services.wiki_corrections import DataCorrector
-
 
 # ===== Tier 2: Frontmatter Correction Tests (8 tests) =====
 
@@ -317,7 +315,7 @@ class TestDataCorrectorStaleReferences:
 
     def test_correct_stale_references_detects_stale_content(self):
         """Should detect pages with newer related ingests."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         old_date = "2020-01-01T00:00:00+00:00"
 
         page = {
@@ -339,7 +337,7 @@ class TestDataCorrectorStaleReferences:
 
     def test_correct_stale_references_ignores_unrelated_ingests(self):
         """Should not flag staleness for unrelated topics."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         old_date = "2020-01-01T00:00:00+00:00"
 
         page = {

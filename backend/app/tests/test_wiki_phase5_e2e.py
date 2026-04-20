@@ -4,7 +4,6 @@ End-to-end tests for Wiki Phase 5: Cache Layer & Query Optimization.
 Verifies cache integration with wiki operations and performance improvements.
 """
 
-import pytest
 import time
 
 
@@ -33,13 +32,13 @@ class TestCacheWithWikiOperations:
 
         # First query (cache miss)
         start = time.time()
-        result1 = query_neighbors("page_1", cache, execute_slow=True)
+        query_neighbors("page_1", cache, execute_slow=True)
         uncached_time = time.time() - start
         query_times.append(uncached_time)
 
         # Second query (cache hit)
         start = time.time()
-        result2 = query_neighbors("page_1", cache)
+        query_neighbors("page_1", cache)
         cached_time = time.time() - start
         query_times.append(cached_time)
 
@@ -83,7 +82,7 @@ class TestCacheWithWikiOperations:
 
         # Update page_1
         page_id = "page_1"
-        keys_to_invalidate = [k for k in cache.keys() if page_id in k]
+        keys_to_invalidate = [k for k in cache if page_id in k]
 
         for key in keys_to_invalidate:
             del cache[key]

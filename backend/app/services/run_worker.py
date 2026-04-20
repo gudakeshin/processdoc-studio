@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import json
-import os
+import logging
+import re
 import threading
 import time
-import re
-import hashlib
-import logging
 import traceback
 from datetime import datetime, timedelta
 from time import perf_counter
 from typing import Any
 
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.agents.coordinator import Coordinator
@@ -29,36 +29,35 @@ from app.core.narrative_feedback import (
     persist_narrative_signals,
 )
 from app.core.run_control import RunAborted
-from app.schemas.coordinator_run import CoordinatorRunInput
-from app.schemas.run_payloads import GuardrailReportDoc, QaReportDoc
 from app.core.sanitization import sanitize_memory_payload_dict
 from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEvent, RunTask, UserProjectPreference
 from app.db.session import SessionLocal
+from app.schemas.coordinator_run import CoordinatorRunInput
+from app.schemas.run_payloads import GuardrailReportDoc, QaReportDoc
 from app.services.conversation_digest import build_conversation_digest_for_run
-from app.services.observability import increment, observe_latency, record_run_trace, set_gauge
+from app.services.hooks import hook_execution_exists, record_hook_execution, run_hooks_sync, sync_disabled_hooks_from_db
 from app.services.langfuse_tracing import langfuse_event, langfuse_span
-from app.services.run_queue.runtime import RunQueueRuntime
-from app.services.storage import save_run_artifacts, workspace_path
-from app.services.visual_qa import run_visual_quality_check, save_visual_qa_report
-from app.services.visual_qa_chat import persist_visual_qa_assistant_message
-from app.services.run_todo_snapshot import emit_run_todo_snapshot, todo_set_status
-from app.services.run_tasks import sync_run_tasks_from_snapshot
-from app.services.swarm import enrich_run_todos_with_dependencies, ensure_swarm_team
-from app.services.proposal_policy import proposal_quality_policy
+from app.services.observability import increment, observe_latency, record_run_trace, set_gauge
 from app.services.permission_pipeline import evaluate_permission_pipeline
+from app.services.proposal_policy import proposal_quality_policy
 from app.services.retry_policy import (
     classify_retry_mode,
     compute_rate_limit_backoff,
+    fallback_strategy_for_output,
     heartbeat_event,
     overflow_recovery_event,
     should_apply_fallback,
-    fallback_strategy_for_output,
+    validate_retry_transition,
 )
-from app.services.hooks import run_hooks_sync
-from app.services.hooks import hook_execution_exists, record_hook_execution, sync_disabled_hooks_from_db
-from app.services.run_events import build_event_payload, canonical_event_aliases, hook_exec_id
-from app.services.retry_policy import validate_retry_transition
 from app.services.run_budget import run_llm_budget
+from app.services.run_events import build_event_payload, canonical_event_aliases, hook_exec_id
+from app.services.run_queue.runtime import RunQueueRuntime
+from app.services.run_tasks import sync_run_tasks_from_snapshot
+from app.services.run_todo_snapshot import emit_run_todo_snapshot, todo_set_status
+from app.services.storage import save_run_artifacts, workspace_path
+from app.services.swarm import enrich_run_todos_with_dependencies, ensure_swarm_team
+from app.services.visual_qa import run_visual_quality_check, save_visual_qa_report
+from app.services.visual_qa_chat import persist_visual_qa_assistant_message
 
 _queue_rt = RunQueueRuntime(settings)
 _log = logging.getLogger(__name__)
@@ -185,7 +184,7 @@ def _persist_pptx_visual_critic_signals(run_dir: Any, visual_qa_report: dict[str
                 current = {}
         current["visual_critic"] = payload
         path.write_text(json.dumps(current, indent=2), encoding="utf-8")
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort, non-fatal
         # Fail-open: render-signal persistence should never break run completion.
         pass
 
@@ -1269,10 +1268,8 @@ def _execute_run_job(
             for _rep_key, _rep_model in (("qa_report", QaReportDoc), ("guardrail_report", GuardrailReportDoc)):
                 _raw_rep = state.get(_rep_key)
                 if isinstance(_raw_rep, dict):
-                    try:
+                    with contextlib.suppress(Exception):
                         state[_rep_key] = _rep_model.model_validate(_raw_rep).model_dump()
-                    except Exception:
-                        pass
             session.refresh(run)
             if run.abort_requested:
                 append_run_event(session, run_id, "run_control_applied", {"action": "abort", "checkpoint": "after_generation"})
@@ -1591,7 +1588,7 @@ def _execute_run_job(
                                 prior_slides = json.loads(prior_path.read_text(encoding="utf-8"))
                                 if isinstance(prior_slides, list):
                                     retry_plan["prior_pptx_slides"] = prior_slides
-                            except Exception:
+                            except Exception:  # noqa: S110 — best-effort, non-fatal
                                 pass
                         failed_gate = str((guardrail_report or {}).get("failed_gate") or "").strip()
                         if failed_gate:
@@ -1602,11 +1599,9 @@ def _execute_run_job(
                                 if prior_regen
                                 else guardrail_directive
                             )
-                        if hints_injected or retry_plan.get("prior_pptx_slides"):
+                        if hints_injected or retry_plan.get("prior_pptx_slides") or failed_gate:
                             run.plan_payload = json.dumps(retry_plan)
-                        elif failed_gate:
-                            run.plan_payload = json.dumps(retry_plan)
-                    except Exception:
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
                         pass
                     append_run_event(
                         session,

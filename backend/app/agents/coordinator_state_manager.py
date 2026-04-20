@@ -1,19 +1,15 @@
 """Coordinator state machine and task board management for agentic loop."""
 
-import json
 import logging
-from dataclasses import dataclass, field, asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.state import ProcessDocState
-from app.db.models import RunTask, SwarmTeam, SwarmTeammate
 from app.db.session import SessionLocal
 from app.services.observability import increment
-from app.services.swarm import ready_task_ids as compute_ready_task_ids
 
 _LOG = logging.getLogger(__name__)
 
@@ -32,7 +28,7 @@ class ExecutionPlanSnapshot:
     rationale: str
     per_output_notes: dict[str, str] = field(default_factory=dict)
     used_llm_plan: bool = False
-    fallback_reason: Optional[str] = None
+    fallback_reason: str | None = None
     thinking_excerpt: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,18 +61,18 @@ class CoordinatorStateManager:
     project_id: str
     current_state: str = "init"
     requested_outputs: list[str] = field(default_factory=list)
-    execution_plan: Optional[ExecutionPlanSnapshot] = None
+    execution_plan: ExecutionPlanSnapshot | None = None
     task_board: dict[str, dict[str, Any]] = field(default_factory=dict)  # task_id -> {status, assigned_teammate, ...}
     task_assignments: dict[str, str] = field(default_factory=dict)  # task_id -> teammate_id
     teammate_rotation: int = 0  # For round-robin assignment
     failure_context: dict[str, Any] = field(default_factory=dict)  # {task_id, error, timestamp}
     replanning_count: int = 0
     max_replans: int = 3
-    checkpoint_timestamp: Optional[datetime] = None
+    checkpoint_timestamp: datetime | None = None
 
     # Track which tasks have been seen in this loop
     _seen_task_ids: set[str] = field(default_factory=set, init=False)
-    _db_session: Optional[Session] = field(default=None, init=False)
+    _db_session: Session | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         """Initialize database session."""
@@ -255,7 +251,7 @@ class CoordinatorStateManager:
         _LOG.info(f"Assigned task {task_id} to {teammate_id}")
         increment("coordinator_task_assigned_total")
 
-    def mark_task_done(self, task_id: str, emit_event: Optional[Callable[[str, dict[str, Any]], None]] = None) -> None:
+    def mark_task_done(self, task_id: str, emit_event: Callable[[str, dict[str, Any]], None] | None = None) -> None:
         """
         Mark a task as completed and notify of newly ready tasks.
 
@@ -297,10 +293,7 @@ class CoordinatorStateManager:
     def all_tasks_done(self) -> bool:
         """Check if all tasks are in terminal state."""
         terminal = {"completed", "skipped", "failed"}
-        for task in self.task_board.values():
-            if task["status"] not in terminal:
-                return False
-        return True
+        return all(task["status"] in terminal for task in self.task_board.values())
 
     def get_task_summary(self) -> dict[str, Any]:
         """Get summary of all tasks for SSE emission."""

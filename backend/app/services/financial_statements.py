@@ -1,12 +1,12 @@
 """Financial statement generation service (P&L, Balance Sheet, Cash Flow)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def generate_income_statement(

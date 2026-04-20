@@ -1,15 +1,16 @@
 """Test suite for model linking and cross-model references."""
 
 import pytest
+
 from app.services.model_links import (
+    ModelLinkValidator,
+    build_model_dependency_graph,
     create_model_link,
-    list_model_links,
     get_link_impact,
+    list_model_links,
     resolve_cell_reference,
     sync_linked_cells,
     validate_all_links,
-    build_model_dependency_graph,
-    ModelLinkValidator,
 )
 
 

@@ -4,16 +4,13 @@ Tests for wiki analytics, recommendations, and insights (Phase 6).
 Tests Priority 8: Analytics & Recommendation Engine
 """
 
-import pytest
-from datetime import datetime, timezone
 from app.services.wiki_analytics import (
+    KnowledgeGapDetector,
     PageAnalytics,
     RecommendationEngine,
-    KnowledgeGapDetector,
     WikiRecommender,
     get_wiki_recommender,
 )
-
 
 # ===== Page Analytics Tests (8 tests) =====
 
@@ -49,11 +46,11 @@ class TestPageAnalytics:
     def test_get_popular_pages(self):
         """Get most viewed pages."""
         analytics = PageAnalytics()
-        for i in range(5):
+        for _i in range(5):
             analytics.record_view("page_1")
-        for i in range(3):
+        for _i in range(3):
             analytics.record_view("page_2")
-        for i in range(1):
+        for _i in range(1):
             analytics.record_view("page_3")
 
         popular = analytics.get_popular_pages(limit=2)
@@ -494,7 +491,7 @@ class TestWikiAnalyticsIntegration:
         if len(related) > 2:
             p2 = next((r for r in related if r["page_id"] == "p2"), None)
             p3 = next((r for r in related if r["page_id"] == "p3"), None)
-            p4 = next((r for r in related if r["page_id"] == "p4"), None)
+            next((r for r in related if r["page_id"] == "p4"), None)
 
             if p2 and p3:
                 assert p2["relevance"] > p3["relevance"]

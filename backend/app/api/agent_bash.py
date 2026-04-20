@@ -10,12 +10,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_project_role
+from app.core.config import settings
 from app.db.models import User
 from app.db.session import get_db
 from app.services.bash_rate_limit import check_rate_limit
 from app.services.claude import is_claude_enabled
 from app.services.claude_tools import run_claude_tools_loop
-from app.core.config import settings
 
 router = APIRouter()
 

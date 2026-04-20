@@ -1,18 +1,19 @@
 """Test suite for financial data source integration."""
 
-import pytest
-import tempfile
 import json
-from pathlib import Path
+import tempfile
+
+import pytest
+
 from app.services.financial_data_connector import (
     DataSourceValidator,
-    parse_data_source,
-    create_data_source_connector,
-    sync_data_source,
-    list_data_sources,
-    get_data_lineage,
-    detect_data_drift,
     build_data_lineage_graph,
+    create_data_source_connector,
+    detect_data_drift,
+    get_data_lineage,
+    list_data_sources,
+    parse_data_source,
+    sync_data_source,
 )
 
 
@@ -151,9 +152,8 @@ class TestParseDataSource:
 
     def test_parse_unsupported_type(self):
         """Test error for unsupported file type."""
-        with tempfile.NamedTemporaryFile(suffix=".csv") as f:
-            with pytest.raises(ValueError):
-                parse_data_source(f.name, "xlsx")
+        with tempfile.NamedTemporaryFile(suffix=".csv") as f, pytest.raises(ValueError):
+            parse_data_source(f.name, "xlsx")
 
 
 class TestCreateDataSourceConnector:

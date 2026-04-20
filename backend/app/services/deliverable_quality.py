@@ -6,16 +6,18 @@ Evaluators and weights are loaded from quality contract JSON — not hardcoded h
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from app.core.config import settings
+from app.core.quality_framework import UnifiedQualityFramework
 from app.services.claude import claude_generate_json, is_claude_enabled
 from app.services.langfuse_tracing import langfuse_span
 from app.services.observability import increment
 from app.services.quality_contract_registry import contract_for_outputs
-from app.core.quality_framework import UnifiedQualityFramework
 
 
 # Phase 1 fix: PPTX completeness validation
@@ -412,7 +414,7 @@ def run_deliverable_quality_loop(
                 is_complete, issues = _validate_pptx_completeness(raw)
                 if not is_complete:
                     # Log completeness failures and fail this slide type
-                    for issue in issues:
+                    for _issue in issues:
                         increment("deliverable_quality_pptx_incomplete")
                     gated_failures[ok] = {
                         "reason": f"PPTX completeness check failed: {len(issues)} slides incomplete",
@@ -452,7 +454,7 @@ def run_deliverable_quality_loop(
             )
 
         if emit_event:
-            try:
+            with contextlib.suppress(Exception):
                 emit_event(
                     "deliverable_quality",
                     {
@@ -461,8 +463,6 @@ def run_deliverable_quality_loop(
                         "evaluations": per_output,
                     },
                 )
-            except Exception:
-                pass
 
         increment("deliverable_quality_rounds_total")
         if all_pass:

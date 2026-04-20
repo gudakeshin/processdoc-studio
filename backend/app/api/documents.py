@@ -5,7 +5,7 @@ import re
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_project_role
@@ -70,7 +70,7 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
                 timeout=timeout_sec
             )
             return text, "zip_xml"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Timeout during extraction, fallback to binary
             return content.decode("utf-8", errors="ignore"), "zip_timeout_fallback"
         except Exception:
@@ -80,6 +80,7 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
         try:
             def _extract_pdf():
                 import io
+
                 from pypdf import PdfReader
 
                 reader = PdfReader(io.BytesIO(content))
@@ -92,7 +93,7 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
                         text = page.extract_text() or ""
                         if text.strip():
                             pages.append(text)
-                    except Exception:
+                    except Exception:  # noqa: S112 — best-effort, non-fatal
                         # Skip pages that fail extraction
                         continue
                 return "\n".join(pages)
@@ -102,7 +103,7 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
                 timeout=timeout_sec
             )
             return text, "pypdf"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # PDF extraction timeout, return empty text
             return f"[PDF extraction timeout for {filename}]", "pdf_timeout_fallback"
         except Exception:
@@ -112,6 +113,7 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
         try:
             def _extract_xlsx():
                 import io
+
                 from openpyxl import load_workbook
 
                 wb = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
@@ -132,7 +134,7 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
                 timeout=timeout_sec
             )
             return text, "openpyxl"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return f"[XLSX extraction timeout for {filename}]", "xlsx_timeout_fallback"
         except Exception:
             return f"[Unable to extract XLSX for {filename}]", "xlsx_error_fallback"
@@ -160,11 +162,11 @@ async def upload_document(
     try:
         # Read file with timeout (30 sec for up to 100MB)
         content = await asyncio.wait_for(file.read(), timeout=30.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise HTTPException(
             status_code=408,
             detail="File upload timeout. File may be too large or network too slow. Try smaller file (< 50MB)."
-        )
+        ) from None
 
     safe_name = _normalize_upload_filename(file.filename)
     validate_document_upload(safe_name, content)
@@ -198,7 +200,7 @@ async def upload_document(
                 _extract_text_from_bytes(safe_name, content, timeout_sec=30),
                 timeout=35.0  # Slightly longer than internal timeout for margin
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Fall back to basic decode on timeout
             text = content.decode("utf-8", errors="ignore")
             parse_mode = "timeout_fallback"
@@ -284,7 +286,7 @@ def delete_document(
         resolved_target = target.resolve()
         resolved_source = source_dir.resolve()
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
     if resolved_source not in resolved_target.parents:
         raise HTTPException(status_code=400, detail="Invalid filename")
     if not resolved_target.exists() or not resolved_target.is_file():

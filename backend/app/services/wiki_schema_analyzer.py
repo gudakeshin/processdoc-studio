@@ -8,10 +8,10 @@ Discovers new categories, relationship types, and synthesis rules from wiki cont
 import json
 import logging
 import re
-from typing import Optional, List, Dict, Any, Set
-from datetime import datetime, timezone
-from pathlib import Path
 from collections import Counter, defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from app.services.storage import workspace_path
 
@@ -21,7 +21,7 @@ _LOG = logging.getLogger(__name__)
 class SchemaAnalyzer:
     """Analyze wiki patterns and recommend schema updates."""
 
-    def __init__(self, wiki_type: str = "leading_practice", project_id: Optional[str] = None):
+    def __init__(self, wiki_type: str = "leading_practice", project_id: str | None = None):
         """Initialize schema analyzer."""
         self.wiki_type = wiki_type
         self.project_id = project_id
@@ -35,7 +35,7 @@ class SchemaAnalyzer:
         else:
             return workspace_path(self.project_id) / "wiki"
 
-    def _load_schema(self) -> Dict[str, Any]:
+    def _load_schema(self) -> dict[str, Any]:
         """Load current schema."""
         try:
             if not self.schema_file.exists():
@@ -53,7 +53,7 @@ class SchemaAnalyzer:
             _LOG.warning(f"Error loading schema: {e}")
             return {}
 
-    def _extract_list_from_section(self, content: str, section: str) -> List[str]:
+    def _extract_list_from_section(self, content: str, section: str) -> list[str]:
         """Extract bullet list from markdown section."""
         pattern = rf"## {section}.*?(?=## |$)"
         match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
@@ -65,7 +65,7 @@ class SchemaAnalyzer:
 
         return []
 
-    def detect_emerging_categories(self) -> List[Dict[str, Any]]:
+    def detect_emerging_categories(self) -> list[dict[str, Any]]:
         """
         Detect categories used in pages that aren't formalized in schema.
 
@@ -107,7 +107,7 @@ class SchemaAnalyzer:
             _LOG.error(f"Error detecting emerging categories: {e}")
             return []
 
-    def detect_emerging_relationships(self) -> List[Dict[str, Any]]:
+    def detect_emerging_relationships(self) -> list[dict[str, Any]]:
         """
         Detect relationship patterns not yet in schema.
 
@@ -157,7 +157,7 @@ class SchemaAnalyzer:
             _LOG.error(f"Error detecting emerging relationships: {e}")
             return []
 
-    def detect_synthesis_opportunities(self) -> List[Dict[str, Any]]:
+    def detect_synthesis_opportunities(self) -> list[dict[str, Any]]:
         """
         Detect orphaned clusters that could benefit from synthesis pages.
 
@@ -206,7 +206,7 @@ class SchemaAnalyzer:
             # Check if clusters have synthesis pages
             opportunities = []
             schema = self._load_schema()
-            synthesis_triggers = schema.get("synthesis_triggers", [])
+            schema.get("synthesis_triggers", [])
 
             for cluster in clusters:
                 # Check if any page in cluster is marked as synthesis
@@ -246,7 +246,7 @@ class SchemaAnalyzer:
             _LOG.error(f"Error detecting synthesis opportunities: {e}")
             return []
 
-    def get_schema_recommendations(self) -> Dict[str, Any]:
+    def get_schema_recommendations(self) -> dict[str, Any]:
         """
         Generate comprehensive schema evolution recommendations.
 
@@ -259,7 +259,7 @@ class SchemaAnalyzer:
             }
         """
         return {
-            "analysis_date": datetime.now(timezone.utc).isoformat(),
+            "analysis_date": datetime.now(UTC).isoformat(),
             "wiki_type": self.wiki_type,
             "project_id": self.project_id,
             "emerging_categories": self.detect_emerging_categories(),
@@ -321,8 +321,8 @@ class SchemaAnalyzer:
 
 def analyze_schema(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    project_id: str | None = None,
+) -> dict[str, Any]:
     """
     Analyze wiki schema and get evolution recommendations.
 
@@ -345,8 +345,8 @@ def analyze_schema(
 
 def detect_emerging_categories(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    project_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Detect emerging page categories."""
     analyzer = SchemaAnalyzer(wiki_type, project_id)
     return analyzer.detect_emerging_categories()
@@ -354,8 +354,8 @@ def detect_emerging_categories(
 
 def detect_synthesis_opportunities(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    project_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Detect clusters that need synthesis pages."""
     analyzer = SchemaAnalyzer(wiki_type, project_id)
     return analyzer.detect_synthesis_opportunities()

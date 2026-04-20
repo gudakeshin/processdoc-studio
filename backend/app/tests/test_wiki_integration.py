@@ -4,17 +4,14 @@ Integration tests for wiki system with ProcessDoc v2 components.
 Tests connections between wiki and memory items, run events, conversations, coordinator, and LP.
 """
 
-import pytest
-from datetime import datetime, timezone
 
 from app.services.wiki_integrations import (
-    WikiMemoryIntegration,
-    WikiRunIntegration,
     WikiConversationIntegration,
     WikiCoordinatorIntegration,
     WikiLeadingPracticesIntegration,
+    WikiMemoryIntegration,
+    WikiRunIntegration,
 )
-
 
 # ===== Memory Integration Tests (6 tests) =====
 

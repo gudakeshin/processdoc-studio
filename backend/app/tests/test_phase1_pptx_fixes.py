@@ -11,19 +11,15 @@ Tests for:
 from __future__ import annotations
 
 import json
-import logging
-from unittest.mock import Mock, patch, MagicMock
-from io import StringIO
+from unittest.mock import Mock, patch
 
 import pytest
 
-from app.agents.agent_types import AgentContext
 from app.agents.subagents import run_pptx_agent
 from app.services.deliverable_quality import (
     _validate_pptx_completeness,
     run_deliverable_quality_loop,
 )
-
 
 # ============================================================================
 # TEST 1: METRICS INJECTION
@@ -194,6 +190,7 @@ def test_render_bullets_logs_truncation_warning_for_long_text() -> None:
     # Verify the storage module has text truncation validation in code
     try:
         import inspect
+
         from app.services import storage
         source = inspect.getsource(storage)
 

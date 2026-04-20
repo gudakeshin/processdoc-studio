@@ -9,7 +9,7 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from app.core.config import settings
 
@@ -28,8 +28,8 @@ class MCPServerInstance:
     request_counter: int = field(default=0)
 
     # Async stdio wrappers (populated after spawn)
-    stdin_writer: Optional[asyncio.StreamWriter] = field(default=None)
-    stdout_reader: Optional[asyncio.StreamReader] = field(default=None)
+    stdin_writer: asyncio.StreamWriter | None = field(default=None)
+    stdout_reader: asyncio.StreamReader | None = field(default=None)
 
 
 class MCPRegistry:
@@ -71,7 +71,7 @@ class MCPRegistry:
         except Exception as e:
             logger.error(f"Failed to load MCP configs: {e}")
 
-    async def start_server(self, server_id: str) -> Optional[MCPServerInstance]:
+    async def start_server(self, server_id: str) -> MCPServerInstance | None:
         """Spawn MCP server process for given server_id."""
         if server_id not in self.configs:
             logger.error(f"MCP server {server_id} not in configs")
@@ -144,7 +144,7 @@ class MCPRegistry:
                     timeout=5.0
                 )
                 logger.info(f"MCP: server {server_id} stopped gracefully")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Force kill if graceful fails
                 instance.process.kill()
                 logger.warning(f"MCP: server {server_id} force-killed after timeout")
@@ -193,7 +193,7 @@ class MCPRegistry:
 
 # ==================== Global Registry Instance ====================
 
-_mcp_registry: Optional[MCPRegistry] = None
+_mcp_registry: MCPRegistry | None = None
 
 
 def get_mcp_registry() -> MCPRegistry:

@@ -4,10 +4,8 @@ Tests for Wiki Phase 4: Incremental Indexing & Performance Optimization.
 Tests content hashing, change detection, and incremental index updates.
 """
 
-import pytest
 import hashlib
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class TestContentHashing:
@@ -62,15 +60,15 @@ class TestPageManifest:
                 "page_1": {
                     "hash": "abc123def456",
                     "title": "Page One",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
                 },
                 "page_2": {
                     "hash": "xyz789abc123",
                     "title": "Page Two",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
                 }
             },
-            "last_full_rebuild": datetime.now(timezone.utc).isoformat(),
+            "last_full_rebuild": datetime.now(UTC).isoformat(),
             "relationships_version": 2,
         }
 
@@ -283,8 +281,6 @@ class TestPerformanceMetrics:
     def test_performance_improvement_calculation(self):
         """Test performance improvement percentage calculation."""
         # Simulated: 100 pages, took 0.2s incremental vs estimated 1.0s full rebuild
-        changed_pages = 10
-        total_pages = 100
         incremental_time = 0.2  # seconds
         estimated_full_rebuild_time = 1.0  # (100/100) * 1.0
 

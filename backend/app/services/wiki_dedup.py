@@ -5,13 +5,12 @@ Detects semantically similar pages using BM25 + embedding similarity.
 Proposes merges with confidence scores and auto-merges high-confidence duplicates.
 """
 
-import json
-import logging
 import hashlib
+import logging
 import re
-from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from app.services.storage import workspace_path
 
@@ -21,7 +20,7 @@ _LOG = logging.getLogger(__name__)
 class DuplicateDetector:
     """Detect and merge duplicate wiki pages."""
 
-    def __init__(self, wiki_type: str = "leading_practice", project_id: Optional[str] = None):
+    def __init__(self, wiki_type: str = "leading_practice", project_id: str | None = None):
         """
         Initialize duplicate detector.
 
@@ -93,7 +92,7 @@ class DuplicateDetector:
 
     def _content_hash(self, text: str) -> str:
         """Get hash of content."""
-        return hashlib.md5(text.lower().encode()).hexdigest()[:8]
+        return hashlib.md5(text.lower().encode(), usedforsecurity=False).hexdigest()[:8]
 
     def _calculate_similarity(self, text1: str, text2: str) -> float:
         """
@@ -136,7 +135,7 @@ class DuplicateDetector:
 
         return intersection / union if union > 0 else 0.0
 
-    def find_duplicates(self, confidence: float = 0.85) -> List[Dict[str, Any]]:
+    def find_duplicates(self, confidence: float = 0.85) -> list[dict[str, Any]]:
         """
         Find duplicate page candidates.
 
@@ -175,7 +174,7 @@ class DuplicateDetector:
                         "content_similarity": round(content_sim, 3),
                         "title_similarity": round(title_sim, 3),
                         "combined_score": round(combined_score, 3),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                     })
 
         # Sort by combined score (highest first)
@@ -184,7 +183,7 @@ class DuplicateDetector:
         _LOG.info(f"Found {len(candidates)} duplicate candidates in {self.wiki_type} wiki")
         return candidates
 
-    def auto_merge_duplicates(self, candidates: List[Dict[str, Any]]) -> int:
+    def auto_merge_duplicates(self, candidates: list[dict[str, Any]]) -> int:
         """
         Auto-merge high-confidence duplicates.
 
@@ -229,7 +228,7 @@ title: {secondary["title"]}
 redirect_to: {primary_id}
 status: archived
 reason: merged_duplicate
-merged_date: {datetime.now(timezone.utc).isoformat()}
+merged_date: {datetime.now(UTC).isoformat()}
 ---
 
 This page has been merged into [[{primary_id}]].
@@ -248,7 +247,7 @@ This page has been merged into [[{primary_id}]].
                 else:
                     # Append to existing merged_pages
                     primary_content = primary_content.replace(
-                        f"merged_pages:",
+                        "merged_pages:",
                         f"merged_pages:\n  - {secondary_id}"
                     )
 
@@ -261,7 +260,7 @@ This page has been merged into [[{primary_id}]].
 
         return merged
 
-    def get_duplicate_report(self, candidates: List[Dict[str, Any]]) -> str:
+    def get_duplicate_report(self, candidates: list[dict[str, Any]]) -> str:
         """
         Generate a report of duplicate candidates.
 
@@ -274,7 +273,7 @@ This page has been merged into [[{primary_id}]].
         if not candidates:
             return "No duplicate candidates found."
 
-        report = f"# Duplicate Pages Report\n\n"
+        report = "# Duplicate Pages Report\n\n"
         report += f"Found {len(candidates)} potential duplicates.\n\n"
         report += "| Page 1 | Page 2 | Content Similarity | Title Similarity | Combined |\n"
         report += "|--------|--------|-------------------|------------------|----------|\n"

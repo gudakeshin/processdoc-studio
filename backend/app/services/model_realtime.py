@@ -4,18 +4,18 @@ import asyncio
 import json
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import WebSocket
 import redis
+from fastapi import WebSocket
 
 from app.core.config import settings
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _events_path(excel_dir: Path) -> Path:
@@ -33,7 +33,7 @@ def _load_last_event_id(events_path: Path) -> int:
     if counter_path.exists():
         try:
             return max(0, int(counter_path.read_text(encoding="utf-8").strip() or "0"))
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort, non-fatal
             pass
     # Fallback for existing histories without counter file.
     existing = _read_events(events_path)
@@ -59,7 +59,7 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
             continue
         try:
             payload = json.loads(line)
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
         if isinstance(payload, dict):
             rows.append(payload)
@@ -143,7 +143,7 @@ async def broadcast_model_event(project_id: str, model_id: str, event: dict[str,
         try:
             client.publish(_redis_topic(project_id, model_id), json.dumps(event))
             return
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort, non-fatal
             pass
     await _deliver_local(project_id, model_id, event)
 
@@ -184,7 +184,7 @@ def _listener_loop(project_id: str, model_id: str) -> None:
             if loop is None:
                 continue
             loop.call_soon_threadsafe(asyncio.create_task, _deliver_local(project_id, model_id, payload))
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
 
 

@@ -1,37 +1,36 @@
 """End-to-end integration tests for complete financial modeling workflows."""
 
 import pytest
-from app.services.financial_calculations import (
-    calculate_npv,
-    calculate_irr,
-    calculate_dcf,
-)
-from app.services.scenario_runner import (
-    run_scenario_calculation,
-    compare_scenarios,
-)
-from app.services.financial_statements import (
-    generate_income_statement,
-    generate_balance_sheet,
-    calculate_financial_ratios,
-)
-from app.services.variance_analysis import (
-    calculate_line_item_variances,
-    identify_variance_drivers,
-    generate_variance_report,
-)
+
 from app.services.budget_vs_actual import (
-    create_budget_setup,
-    record_actual_results,
     calculate_period_variance,
+    create_budget_setup,
     forecast_full_year,
     generate_budget_vs_actual_report,
+    record_actual_results,
+)
+from app.services.financial_calculations import (
+    calculate_irr,
+    calculate_npv,
+)
+from app.services.financial_statements import (
+    calculate_financial_ratios,
+    generate_balance_sheet,
+    generate_income_statement,
 )
 from app.services.model_links import (
+    build_model_dependency_graph,
     create_model_link,
     sync_linked_cells,
     validate_all_links,
-    build_model_dependency_graph,
+)
+from app.services.scenario_runner import (
+    run_scenario_calculation,
+)
+from app.services.variance_analysis import (
+    calculate_line_item_variances,
+    generate_variance_report,
+    identify_variance_drivers,
 )
 
 
@@ -244,14 +243,14 @@ class TestDataConnectorIntegration:
 
     def test_external_data_import_with_lineage_tracking(self):
         """Test importing external data and tracking lineage."""
-        import tempfile
         import json
+        import tempfile
 
         from app.services.financial_data_connector import (
             create_data_source_connector,
-            sync_data_source,
-            get_data_lineage,
             detect_data_drift,
+            get_data_lineage,
+            sync_data_source,
         )
 
         # Step 1: Create data source
@@ -358,10 +357,11 @@ class TestConflictResolutionIntegration:
         """Test complete conflict lifecycle."""
         import tempfile
         from pathlib import Path
+
         from app.services.conflict_resolution import (
             create_conflict,
-            resolve_conflict,
             list_conflicts,
+            resolve_conflict,
         )
 
         # Step 1: Create temp directory for conflicts
@@ -414,7 +414,7 @@ class TestEndToEndReportGeneration:
         # Create sample model data
         revenue_projections = [1000000, 1100000, 1210000, 1331000, 1464100]
 
-        income_statement = generate_income_statement(
+        generate_income_statement(
             revenue_projections=revenue_projections,
             cogs_projections=0.4,
             opex_projections=0.2,
@@ -486,7 +486,6 @@ class TestErrorHandlingAndRecovery:
     def test_recovery_from_failed_sync(self):
         """Test recovery from failed data source sync."""
         from app.services.financial_data_connector import (
-            create_data_source_connector,
             sync_data_source,
         )
 

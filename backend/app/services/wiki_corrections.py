@@ -11,11 +11,11 @@ Automatically fixes common wiki data issues:
 """
 
 import json
-import re
 import logging
-from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timezone
+import re
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,8 @@ class DataCorrector:
 
     @staticmethod
     def correct_frontmatter(
-        page_dict: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], List[str]]:
+        page_dict: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
         """
         Fix malformed frontmatter (YAML metadata as JSON).
 
@@ -67,7 +67,7 @@ class DataCorrector:
 
         # Fix missing last_updated
         if "last_updated" not in frontmatter:
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(UTC).isoformat()
             frontmatter["last_updated"] = now_iso
             corrections.append("Set last_updated to now")
 
@@ -90,9 +90,9 @@ class DataCorrector:
 
     @staticmethod
     def correct_references(
-        page_dict: Dict[str, Any],
-        wiki_index: Dict[str, Any],
-    ) -> Tuple[Dict[str, Any], List[str]]:
+        page_dict: dict[str, Any],
+        wiki_index: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
         """
         Fix broken cross-references (dangling links).
 
@@ -136,7 +136,7 @@ class DataCorrector:
         if invalid_links:
             corrections.append(
                 f"Found {len(invalid_links)} broken reference(s): "
-                f"{', '.join([l['target'] for l in invalid_links])}"
+                f"{', '.join([lnk['target'] for lnk in invalid_links])}"
             )
 
         # TODO: In Phase 2+, optionally auto-create stubs for missing pages
@@ -145,7 +145,7 @@ class DataCorrector:
         return page, corrections
 
     @staticmethod
-    def correct_formatting(page_text: str) -> Tuple[str, List[str]]:
+    def correct_formatting(page_text: str) -> tuple[str, list[str]]:
         """
         Fix inconsistent formatting.
 
@@ -184,7 +184,7 @@ class DataCorrector:
         return text, corrections
 
     @staticmethod
-    def correct_data_types(page_dict: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    def correct_data_types(page_dict: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         """
         Fix data type mismatches in frontmatter.
 
@@ -231,7 +231,7 @@ class DataCorrector:
         return page, corrections
 
     @staticmethod
-    def correct_duplication(all_pages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    def correct_duplication(all_pages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
         """
         Detect and flag duplicate content.
 
@@ -272,9 +272,9 @@ class DataCorrector:
 
     @staticmethod
     def correct_stale_references(
-        page_dict: Dict[str, Any],
-        log_entries: List[Dict[str, Any]],
-    ) -> Tuple[Dict[str, Any], List[str]]:
+        page_dict: dict[str, Any],
+        log_entries: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], list[str]]:
         """
         Detect and flag stale references (outdated information).
 
@@ -318,8 +318,8 @@ class DataCorrector:
     @staticmethod
     def correct_missing_citations(
         answer: str,
-        source_pages: List[Dict[str, Any]],
-    ) -> Tuple[str, List[str]]:
+        source_pages: list[dict[str, Any]],
+    ) -> tuple[str, list[str]]:
         """
         Add missing citations to synthesized answers.
 
@@ -358,7 +358,7 @@ class DataCorrector:
 
 # ===== Helper Functions =====
 
-def _detect_category_from_content(content: str) -> Optional[str]:
+def _detect_category_from_content(content: str) -> str | None:
     """
     Heuristically detect page category from content.
 

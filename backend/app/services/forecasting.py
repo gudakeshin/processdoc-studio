@@ -1,8 +1,7 @@
 """Time-series forecasting service (ARIMA, exponential smoothing, regression)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-import math
 
 import numpy as np
 from scipy import stats
@@ -10,7 +9,7 @@ from scipy import stats
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def calculate_linear_regression(

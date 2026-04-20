@@ -5,7 +5,6 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from app.services.storage import workspace_path
 
@@ -52,7 +51,7 @@ class TieredContextEngine:
         for p in parsed_files:
             try:
                 latest_mtime = max(latest_mtime, p.stat().st_mtime)
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
         cached = self._parsed_cache.get(cache_key)
         if cached and cached[0] == latest_mtime:
@@ -65,7 +64,7 @@ class TieredContextEngine:
                 for c in doc_chunks:
                     if isinstance(c, str) and c.strip():
                         chunks.append(c)
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
         self._parsed_cache[cache_key] = (latest_mtime, list(chunks))
         return chunks
@@ -94,7 +93,7 @@ class TieredContextEngine:
         for f in md_files:
             try:
                 latest_mtime = max(latest_mtime, f.stat().st_mtime)
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
         cached = self._wiki_cache.get(cache_key)
         if cached and cached[0] == latest_mtime:
@@ -116,10 +115,10 @@ class TieredContextEngine:
                     if age_s > stale_threshold:
                         age_h = int(age_s / 3600)
                         body = f"[STALE: {age_h}h old]\n{body}"
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
                 chunks.append(f"[Wiki: {title}]\n{body}")
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
         self._wiki_cache[cache_key] = (latest_mtime, list(chunks))
         return chunks
@@ -270,7 +269,6 @@ class TieredContextEngine:
 
         # Multi-query expansion + BM25 candidate scoring.
         queries = self._expand_queries(instruction)
-        top_k_per_query = 20
         candidates: dict[int, float] = {}
         for q in queries:
             scores = self._bm25_scores(chunks, q)

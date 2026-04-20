@@ -13,10 +13,10 @@ This is the final intelligence layer making the wiki truly autonomous.
 import json
 import logging
 import re
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone
-from pathlib import Path
 from collections import defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from app.services.storage import workspace_path
 
@@ -26,7 +26,7 @@ _LOG = logging.getLogger(__name__)
 class SynthesisEngine:
     """Generate synthesis pages and insights from wiki content."""
 
-    def __init__(self, wiki_type: str = "leading_practice", project_id: Optional[str] = None):
+    def __init__(self, wiki_type: str = "leading_practice", project_id: str | None = None):
         """Initialize synthesis engine."""
         self.wiki_type = wiki_type
         self.project_id = project_id
@@ -40,7 +40,7 @@ class SynthesisEngine:
         else:
             return workspace_path(self.project_id) / "wiki"
 
-    def _load_relationships(self) -> List[Dict[str, Any]]:
+    def _load_relationships(self) -> list[dict[str, Any]]:
         """Load relationships from storage."""
         try:
             relationships_file = self.wiki_dir / ".meta" / "relationships.json"
@@ -52,7 +52,7 @@ class SynthesisEngine:
             _LOG.warning(f"Error loading relationships: {e}")
             return []
 
-    def _get_page_content(self, page_id: str) -> Optional[str]:
+    def _get_page_content(self, page_id: str) -> str | None:
         """Get content of a wiki page."""
         try:
             page_file = self.wiki_dir / f"{page_id}.md"
@@ -68,7 +68,7 @@ class SynthesisEngine:
         match = re.search(r"^title:\s*['\"]?([^'\"\\n]+)", content, re.MULTILINE)
         return match.group(1) if match else "Untitled"
 
-    def _extract_key_concepts(self, content: str) -> List[str]:
+    def _extract_key_concepts(self, content: str) -> list[str]:
         """Extract key concepts from page content."""
         # Extract from "Key Concepts" section or headers
         concepts = []
@@ -95,7 +95,7 @@ class SynthesisEngine:
 
         return list(set(concepts))[:10]
 
-    def find_synthesis_clusters(self) -> List[Dict[str, Any]]:
+    def find_synthesis_clusters(self) -> list[dict[str, Any]]:
         """
         Find page clusters that need synthesis pages.
 
@@ -167,7 +167,7 @@ class SynthesisEngine:
             _LOG.error(f"Error finding synthesis clusters: {e}")
             return []
 
-    def detect_contradictions(self) -> List[Dict[str, Any]]:
+    def detect_contradictions(self) -> list[dict[str, Any]]:
         """
         Detect contradictory claims across pages.
 
@@ -210,7 +210,7 @@ class SynthesisEngine:
             _LOG.error(f"Error detecting contradictions: {e}")
             return []
 
-    def find_pattern_principles(self) -> List[Dict[str, Any]]:
+    def find_pattern_principles(self) -> list[dict[str, Any]]:
         """
         Discover principles from relationship patterns.
 
@@ -258,8 +258,8 @@ class SynthesisEngine:
 
     def generate_synthesis_content(
         self,
-        cluster_pages: List[str],
-        cluster_concepts: List[str],
+        cluster_pages: list[str],
+        cluster_concepts: list[str],
     ) -> str:
         """
         Generate synthesis page content for a cluster using Claude.
@@ -277,7 +277,7 @@ class SynthesisEngine:
                     page_info.append({"id": page_id, "title": title, "body": body[:600]})
 
             synthesis_title = f"Synthesis: {', '.join(cluster_concepts[:2])}"
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             linked_entities = "\n".join(f"  - {pid}" for pid in cluster_pages[:5])
 
             frontmatter = (
@@ -332,7 +332,7 @@ class SynthesisEngine:
             _LOG.error(f"Error generating synthesis content: {e}")
             return ""
 
-    def create_synthesis_pages(self, max_pages: int = 5) -> Dict[str, Any]:
+    def create_synthesis_pages(self, max_pages: int = 5) -> dict[str, Any]:
         """
         Create synthesis pages for discovered clusters.
 
@@ -390,7 +390,7 @@ class SynthesisEngine:
             _LOG.error(f"Error creating synthesis pages: {e}")
             return {"status": "error", "error": str(e)}
 
-    def get_synthesis_insights(self) -> Dict[str, Any]:
+    def get_synthesis_insights(self) -> dict[str, Any]:
         """
         Get comprehensive synthesis insights for wiki.
 
@@ -405,7 +405,7 @@ class SynthesisEngine:
         return {
             "status": "success",
             "wiki_type": self.wiki_type,
-            "analysis_date": datetime.now(timezone.utc).isoformat(),
+            "analysis_date": datetime.now(UTC).isoformat(),
             "synthesis_clusters": self.find_synthesis_clusters(),
             "contradictions": self.detect_contradictions(),
             "principles": self.find_pattern_principles(),
@@ -415,8 +415,8 @@ class SynthesisEngine:
 
 def get_synthesis_insights(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    project_id: str | None = None,
+) -> dict[str, Any]:
     """Get comprehensive synthesis insights."""
     engine = SynthesisEngine(wiki_type, project_id)
     return engine.get_synthesis_insights()
@@ -424,9 +424,9 @@ def get_synthesis_insights(
 
 def create_synthesis_pages(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     max_pages: int = 5,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create synthesis pages for discovered clusters."""
     engine = SynthesisEngine(wiki_type, project_id)
     return engine.create_synthesis_pages(max_pages)
@@ -434,8 +434,8 @@ def create_synthesis_pages(
 
 def detect_contradictions(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    project_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Detect contradictions in wiki."""
     engine = SynthesisEngine(wiki_type, project_id)
     return engine.detect_contradictions()
@@ -443,8 +443,8 @@ def detect_contradictions(
 
 def find_pattern_principles(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    project_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Discover principles from relationship patterns."""
     engine = SynthesisEngine(wiki_type, project_id)
     return engine.find_pattern_principles()

@@ -1,13 +1,12 @@
 """Tests for Excel model composition retry mechanism (Cowork Tier 1)."""
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-import time
 
 from app.services.excel_model_composer import (
     _exponential_backoff,
     compose_financial_model_with_retry,
-    MAX_RETRY_ATTEMPTS,
 )
 
 

@@ -13,8 +13,8 @@ from app.agents.subagents import (
     run_process_extraction,
     run_xlsx_agent,
 )
-from app.services.process_extraction import extract_process_model
 from app.services.drawio_builder import process_model_to_drawio_xml
+from app.services.process_extraction import extract_process_model
 
 
 def _run_agent(state: dict, output_type: str, fn) -> dict:

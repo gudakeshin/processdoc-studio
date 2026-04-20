@@ -4,7 +4,6 @@ Tests for wiki god node detection and importance ranking.
 Tests Priority 3: God Node Detection & Importance Ranking
 """
 
-import pytest
 import networkx as nx
 
 

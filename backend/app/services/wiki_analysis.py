@@ -6,10 +6,7 @@ and performance metrics. All state files use the .meta/ subdirectory.
 """
 import json
 import logging
-from typing import Optional
-from pathlib import Path
-
-from app.services.shared_utils import load_wiki_graph, get_relationship_counts
+from datetime import UTC
 
 _LOG = logging.getLogger(__name__)
 
@@ -18,7 +15,7 @@ _LOG = logging.getLogger(__name__)
 # Performance metrics
 # ---------------------------------------------------------------------------
 
-def _get_wiki_performance_metrics(wiki_type: str, project_id: Optional[str]) -> dict:
+def _get_wiki_performance_metrics(wiki_type: str, project_id: str | None) -> dict:
     """
     Get performance metrics for wiki operations.
 
@@ -85,7 +82,7 @@ def _get_wiki_performance_metrics(wiki_type: str, project_id: Optional[str]) -> 
 
 def _detect_communities(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> dict:
     """
     Detect communities (functional clusters) from wiki relationship graph using Louvain algorithm.
@@ -108,10 +105,12 @@ def _detect_communities(
         }
     """
     try:
+        import json
+
         import networkx as nx
         from networkx.algorithms import community
+
         from app.services.storage import workspace_path
-        import json
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -227,7 +226,7 @@ def _detect_communities(
 
 def _detect_god_nodes(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> dict:
     """
     Detect 'god nodes' (most-important pages) using combined centrality metrics.
@@ -257,10 +256,12 @@ def _detect_god_nodes(
         }
     """
     try:
-        import networkx as nx
-        from app.services.storage import workspace_path
         import json
         import re
+
+        import networkx as nx
+
+        from app.services.storage import workspace_path
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -319,7 +320,7 @@ def _detect_god_nodes(
         # 2. Betweenness centrality (already normalized 0-1)
         try:
             betweenness = nx.betweenness_centrality(G, weight="weight")
-        except:
+        except Exception:  # noqa: BLE001 — network algorithm can fail on degenerate graphs
             betweenness = {node: 0.0 for node in G.nodes()}
 
         # 3. Combined importance score
@@ -369,13 +370,14 @@ def _detect_god_nodes(
 
 def _save_god_nodes(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     god_nodes_data: dict,
 ) -> bool:
     """Save god nodes (important pages) to .meta/god_nodes.json."""
     try:
+        from datetime import datetime
+
         from app.services.storage import workspace_path
-        from datetime import datetime, timezone
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -391,7 +393,7 @@ def _save_god_nodes(
             "total_pages": god_nodes_data["total_pages"],
             "avg_importance": god_nodes_data["avg_importance"],
             "god_nodes": god_nodes_data["god_nodes"],
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }, indent=2))
 
         return True
@@ -404,7 +406,7 @@ def _save_god_nodes(
 # Graph loading & querying
 # ---------------------------------------------------------------------------
 
-def load_wiki_graph(wiki_type: str, project_id: Optional[str]) -> tuple:
+def load_wiki_graph(wiki_type: str, project_id: str | None) -> tuple:
     """
     Load wiki relationship graph from .meta/relationships.json.
 
@@ -427,7 +429,6 @@ def _query_graph_bfs(
     Returns list of (node, distance, path) tuples.
     """
     try:
-        import networkx as nx
 
         results = []
         visited = set()
@@ -463,7 +464,7 @@ def _query_graph_shortest_path(
     G,
     start_node: str,
     end_node: str,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Find shortest path between two nodes.
     """
@@ -516,11 +517,11 @@ def _query_graph_neighbors(
 
 def _execute_graph_query(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     query: str,
     query_type: str = "neighbors",
-    start_node: Optional[str] = None,
-    end_node: Optional[str] = None,
+    start_node: str | None = None,
+    end_node: str | None = None,
     max_distance: int = 3,
     max_results: int = 20,
 ) -> dict:
@@ -605,7 +606,7 @@ def _execute_graph_query(
         }
 
 
-def _get_god_nodes(wiki_type: str, project_id: Optional[str], limit: int = 10) -> list:
+def _get_god_nodes(wiki_type: str, project_id: str | None, limit: int = 10) -> list:
     """Get top N god nodes (most important pages)."""
     try:
         from app.services.storage import workspace_path
@@ -631,13 +632,14 @@ def _get_god_nodes(wiki_type: str, project_id: Optional[str], limit: int = 10) -
 
 def _save_communities(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     communities_data: dict,
 ) -> bool:
     """Save community assignments to .meta/communities.json."""
     try:
+        from datetime import datetime
+
         from app.services.storage import workspace_path
-        from datetime import datetime, timezone
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -653,7 +655,7 @@ def _save_communities(
             "total_communities": communities_data["total_communities"],
             "communities": communities_data["communities"],
             "page_community_map": communities_data["page_community_map"],
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }, indent=2))
 
         return True
@@ -662,7 +664,7 @@ def _save_communities(
         return False
 
 
-def _get_community_for_page(wiki_type: str, project_id: Optional[str], page_id: str) -> Optional[dict]:
+def _get_community_for_page(wiki_type: str, project_id: str | None, page_id: str) -> dict | None:
     """Get community information for a specific page."""
     try:
         from app.services.storage import workspace_path
@@ -694,7 +696,7 @@ def _get_community_for_page(wiki_type: str, project_id: Optional[str], page_id: 
         return None
 
 
-def get_relationship_counts(wiki_type: str, project_id: Optional[str]) -> dict:
+def get_relationship_counts(wiki_type: str, project_id: str | None) -> dict:
     """
     Load relationship statistics from .meta/relationships.json.
 

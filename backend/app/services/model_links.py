@@ -1,15 +1,15 @@
 """Model linking service for cross-model cell references and consolidation."""
 
-from datetime import datetime, timezone
-from typing import Any
-from pathlib import Path
 import json
 from collections import defaultdict, deque
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:
@@ -142,7 +142,7 @@ def create_model_link(
         raise ValueError(f"Creating link would create circular dependency: {target_model_id} → {source_model_id}")
 
     link = {
-        "id": f"link_{datetime.now(timezone.utc).timestamp()}",
+        "id": f"link_{datetime.now(UTC).timestamp()}",
         "source_model_id": source_model_id,
         "source_cell_ref": source_cell_ref.upper(),
         "target_model_id": target_model_id,
@@ -382,7 +382,7 @@ def validate_all_links(all_links: list[dict[str, Any]]) -> dict[str, Any]:
         link_id = link.get("id")
 
         # Check circular dependency
-        remaining_links = [l for l in all_links if l.get("id") != link_id]
+        remaining_links = [lnk for lnk in all_links if lnk.get("id") != link_id]
         if ModelLinkValidator.detect_circular_dependency(
             link.get("source_model_id"),
             link.get("target_model_id"),

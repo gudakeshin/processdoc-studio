@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-
 
 HIGH_RISK_TYPES = {"type_mismatch", "formula_changed", "structural_shift"}
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:
@@ -39,16 +38,14 @@ def audit_log_path(excel_dir: Path) -> Path:
 
 
 def classify_conflict(base: Any, local: Any, remote: Any) -> str:
-    if isinstance(local, str) and local.startswith("="):
-        if local != remote:
-            return "formula_changed"
+    if isinstance(local, str) and local.startswith("=") and local != remote:
+        return "formula_changed"
     if type(local) is not type(remote):
         return "type_mismatch"
     if base is None and remote is None and local is not None:
         return "deleted_range"
-    if isinstance(local, str) and isinstance(remote, str):
-        if (":" in local) != (":" in remote):
-            return "structural_shift"
+    if isinstance(local, str) and isinstance(remote, str) and (":" in local) != (":" in remote):
+        return "structural_shift"
     if local != remote:
         return "value_mismatch"
     return "value_mismatch"

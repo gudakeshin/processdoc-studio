@@ -4,19 +4,15 @@ wiki_lint.py — Wiki quality/health check helpers (Tier 3 QA).
 Handles broken link detection, orphan detection, missing entity detection,
 contradictions, coverage gaps, staleness, and overall wiki QA evaluation.
 """
-import re
 import json
 import logging
-from typing import Optional
-from datetime import datetime, timezone
-from pathlib import Path
+import re
+from datetime import UTC, datetime
 
 try:
     import yaml
 except ImportError:
     yaml = None
-
-from app.services.shared_utils import get_relationship_counts
 
 _LOG = logging.getLogger(__name__)
 
@@ -25,7 +21,7 @@ _LOG = logging.getLogger(__name__)
 # Individual checks
 # ---------------------------------------------------------------------------
 
-def _check_broken_links(wiki_type: str, project_id: Optional[str]) -> list:
+def _check_broken_links(wiki_type: str, project_id: str | None) -> list:
     """
     Check for broken links in wiki pages.
 
@@ -33,6 +29,7 @@ def _check_broken_links(wiki_type: str, project_id: Optional[str]) -> list:
     """
     try:
         import re
+
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
@@ -90,16 +87,16 @@ def _check_broken_links(wiki_type: str, project_id: Optional[str]) -> list:
         return []
 
 
-def _check_orphaned_pages(wiki_type: str, project_id: Optional[str]) -> list:
+def _check_orphaned_pages(wiki_type: str, project_id: str | None) -> list:
     """
     Find orphaned pages (no inbound links).
 
     Pages with zero inbound links may need to be merged or deleted.
     """
     try:
-        from app.services.storage import workspace_path
         import re
-        import json
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -144,7 +141,7 @@ def _check_orphaned_pages(wiki_type: str, project_id: Optional[str]) -> list:
         return []
 
 
-def _check_missing_entities(wiki_type: str, project_id: Optional[str]) -> list:
+def _check_missing_entities(wiki_type: str, project_id: str | None) -> list:
     """
     Find missing entities: concepts mentioned 5+ times without dedicated page.
 
@@ -152,8 +149,9 @@ def _check_missing_entities(wiki_type: str, project_id: Optional[str]) -> list:
     """
     try:
         import re
-        from app.services.storage import workspace_path
         from collections import Counter
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -204,7 +202,7 @@ def _check_missing_entities(wiki_type: str, project_id: Optional[str]) -> list:
         return []
 
 
-def get_relationship_counts(wiki_type: str, project_id: Optional[str]) -> dict:
+def get_relationship_counts(wiki_type: str, project_id: str | None) -> dict:
     """
     Load relationship statistics from relationships.json.
 
@@ -251,7 +249,7 @@ def get_relationship_counts(wiki_type: str, project_id: Optional[str]) -> dict:
 # Expanded checks (Phase 3+)
 # ---------------------------------------------------------------------------
 
-def _get_all_wiki_pages(wiki_type: str, project_id: Optional[str]) -> list:
+def _get_all_wiki_pages(wiki_type: str, project_id: str | None) -> list:
     """Get all wiki pages with full metadata."""
     try:
         from app.services.storage import workspace_path
@@ -290,7 +288,7 @@ def _get_all_wiki_pages(wiki_type: str, project_id: Optional[str]) -> list:
                             semantic_type = fm_data.get("semantic_type", "concept")
                             created_at = fm_data.get("created_at")
                             last_updated = fm_data.get("last_updated")
-                except:
+                except Exception:  # noqa: BLE001, S110 — best-effort, non-fatal
                     pass
 
             # Extract body
@@ -359,7 +357,7 @@ def _check_contradictions(pages: list) -> list:
 
         # Check for contradictions
         for subject, properties in facts.items():
-            for prop, values in properties.items():
+            for _prop, values in properties.items():
                 if len(values) > 1:
                     # Check if definitions differ significantly
                     unique_values = set(v["value"] for v in values)
@@ -424,8 +422,6 @@ def _check_coverage_gaps(pages: list) -> list:
                 })
 
             # Check for missing sections (intro, details, examples)
-            has_intro = len(content) > 0 and not content.startswith("#")
-            has_sections = len(re.findall(r"^#+\s", content, re.MULTILINE)) > 0
             has_examples = bool(re.search(r"\b(example|e\.g\.|for instance)\b", content, re.IGNORECASE))
 
             if not has_examples and word_count > 100:
@@ -451,13 +447,13 @@ def _check_staleness(pages: list) -> list:
     Pages updated >30 days ago are marked for review.
     """
     try:
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         if not pages:
             return []
 
         issues = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         staleness_threshold = now - timedelta(days=30)
 
         for page in pages:
@@ -484,7 +480,7 @@ def _check_staleness(pages: list) -> list:
                             "days_since_update": days_ago,
                             "message": f"Stale page: '{title}' last updated {days_ago} days ago (consider reviewing)",
                         })
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
 
         return issues
@@ -615,7 +611,7 @@ def _generate_lint_suggestions(issues: list, pages: list) -> list:
 # Full QA evaluation
 # ---------------------------------------------------------------------------
 
-def _evaluate_wiki_qa(wiki_type: str, project_id: Optional[str]) -> dict:
+def _evaluate_wiki_qa(wiki_type: str, project_id: str | None) -> dict:
     """
     Complete Tier 3 QA evaluation of wiki health.
 
@@ -709,7 +705,7 @@ def _evaluate_wiki_qa(wiki_type: str, project_id: Optional[str]) -> dict:
 # Enhanced temporal tracking (Phase 1)
 # ---------------------------------------------------------------------------
 
-def _check_source_freshness(wiki_type: str, project_id: Optional[str]) -> list:
+def _check_source_freshness(wiki_type: str, project_id: str | None) -> list:
     """
     Check if wiki pages are out of sync with their sources.
 
@@ -717,8 +713,8 @@ def _check_source_freshness(wiki_type: str, project_id: Optional[str]) -> list:
     Requires source tracking metadata in page frontmatter.
     """
     try:
+
         from app.services.storage import workspace_path
-        import hashlib
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -770,7 +766,7 @@ def _check_source_freshness(wiki_type: str, project_id: Optional[str]) -> list:
                     last_refreshed_dt = datetime.fromisoformat(
                         last_refreshed.replace("Z", "+00:00")
                     )
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
 
                     # If page sources track metadata, check for changes
                     source_metadata_file = wiki_dir / ".meta" / f"{page_id}_sources.json"
@@ -794,10 +790,10 @@ def _check_source_freshness(wiki_type: str, project_id: Optional[str]) -> list:
                                         "sources_count": len(sources),
                                         "message": f"Source freshness: {title} sources not checked in {days_since_check} days",
                                     })
-                        except Exception:
+                        except Exception:  # noqa: S110 — best-effort, non-fatal
                             pass
 
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
 
         return issues
@@ -807,15 +803,15 @@ def _check_source_freshness(wiki_type: str, project_id: Optional[str]) -> list:
         return []
 
 
-def _get_temporal_metrics(wiki_type: str, project_id: Optional[str]) -> dict:
+def _get_temporal_metrics(wiki_type: str, project_id: str | None) -> dict:
     """
     Calculate temporal metrics for wiki health.
 
     Returns metrics about page age, update frequency, and staleness patterns.
     """
     try:
+
         from app.services.storage import workspace_path
-        from collections import defaultdict
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -825,7 +821,7 @@ def _get_temporal_metrics(wiki_type: str, project_id: Optional[str]) -> dict:
         if not wiki_dir.exists():
             return {}
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         metrics = {
             "total_pages": 0,
             "average_age_days": 0,
@@ -859,7 +855,7 @@ def _get_temporal_metrics(wiki_type: str, project_id: Optional[str]) -> dict:
                 try:
                     last_updated_str = updated_match.group(1)
                     last_updated = datetime.fromisoformat(last_updated_str.replace("Z", "+00:00"))
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
 
             if last_updated:

@@ -1,12 +1,13 @@
 """Test suite for financial calculations (NPV, IRR, DCF, sensitivity)."""
 
 import pytest
+
 from app.services.financial_calculations import (
-    calculate_npv,
-    calculate_irr,
     calculate_dcf,
-    sensitivity_analysis,
     calculate_financial_metrics,
+    calculate_irr,
+    calculate_npv,
+    sensitivity_analysis,
 )
 
 

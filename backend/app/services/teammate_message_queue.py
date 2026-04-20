@@ -9,13 +9,13 @@ Provides message queue system for:
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 _LOG = logging.getLogger(__name__)
 
@@ -26,12 +26,12 @@ class Message:
 
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     from_teammate: str = ""
-    to_teammate: Optional[str] = None  # None = broadcast
+    to_teammate: str | None = None  # None = broadcast
     body: str = ""
     message_type: str = "message"  # message, directive, response
     created_at: float = field(default_factory=time.time)
-    expires_at: Optional[float] = None
-    correlation_id: Optional[str] = None  # For request/response patterns
+    expires_at: float | None = None
+    correlation_id: str | None = None  # For request/response patterns
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_expired(self) -> bool:
@@ -107,11 +107,11 @@ class TeammateMessageQueue:
     def send_message(
         self,
         from_teammate: str,
-        to_teammate: Optional[str],
+        to_teammate: str | None,
         body: str,
         message_type: str = "message",
-        correlation_id: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        correlation_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Message:
         """Send a message.
 
@@ -158,7 +158,7 @@ class TeammateMessageQueue:
         self,
         from_teammate: str,
         directive: str,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Message:
         """Broadcast a directive from lead to all teammates.
 
@@ -182,7 +182,7 @@ class TeammateMessageQueue:
         self,
         teammate_id: str,
         callback: Callable[[Message], None],
-        message_types: Optional[set[str]] = None,
+        message_types: set[str] | None = None,
     ) -> TeammateSubscription:
         """Subscribe teammate to messages.
 
@@ -231,7 +231,7 @@ class TeammateMessageQueue:
     def get_messages_since(
         self,
         teammate_id: str,
-        last_message_id: Optional[str] = None,
+        last_message_id: str | None = None,
         limit: int = 100,
     ) -> list[Message]:
         """Get messages for teammate since last consumed.
@@ -271,8 +271,8 @@ class TeammateMessageQueue:
         self,
         teammate_id: str,
         timeout_sec: float = 30.0,
-        message_type: Optional[str] = None,
-    ) -> Optional[Message]:
+        message_type: str | None = None,
+    ) -> Message | None:
         """Wait for next message to arrive.
 
         Blocks until message arrives or timeout.
@@ -294,9 +294,12 @@ class TeammateMessageQueue:
                 current_count = len(self.messages)
                 if current_count > last_count:
                     for msg in self.messages[last_count:]:
-                        if msg.is_for_teammate(teammate_id) and not msg.is_expired():
-                            if message_type is None or msg.message_type == message_type:
-                                return msg
+                        if (
+                            msg.is_for_teammate(teammate_id)
+                            and not msg.is_expired()
+                            and (message_type is None or msg.message_type == message_type)
+                        ):
+                            return msg
                     last_count = current_count
 
             time.sleep(0.1)  # Poll interval
@@ -360,7 +363,7 @@ class TeammateMessageQueue:
 
 
 # Global singleton instance
-_message_queue: Optional[TeammateMessageQueue] = None
+_message_queue: TeammateMessageQueue | None = None
 _queue_lock = threading.Lock()
 
 

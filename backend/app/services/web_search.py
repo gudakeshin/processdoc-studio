@@ -10,7 +10,6 @@ import httpx
 from app.core.config import settings
 from app.services.cache import cache_service
 
-
 _RATE_LOCK = threading.Lock()
 _RATE_STATE: dict[str, dict[str, Any]] = {}
 _HTTP_CLIENT = httpx.Client(timeout=15.0)

@@ -4,14 +4,14 @@ Tests for subprocess execution, process lifecycle management, and health monitor
 """
 
 import json
-import pytest
 import time
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.services.teammate_executor import (
     TeammateExecutor,
     TeammateProcess,
-    ProcessHealth,
 )
 
 
@@ -75,11 +75,10 @@ class TestTeammateProcessManagement:
             spawn_time=time.time(),
         )
 
-        with patch("os.kill") as mock_kill:
-            with patch("time.sleep"):  # Speed up test by mocking sleep
-                result = tp.terminate(timeout=1.0)
-                # Should attempt SIGTERM and/or SIGKILL
-                assert mock_kill.called
+        with patch("os.kill") as mock_kill, patch("time.sleep"):  # Speed up test by mocking sleep
+            tp.terminate(timeout=1.0)
+            # Should attempt SIGTERM and/or SIGKILL
+            assert mock_kill.called
 
 
 class TestTeammateExecutor:
@@ -117,8 +116,8 @@ class TestTeammateExecutor:
             state = json.dumps({"key": "value"})
 
             # Spawn two processes
-            tp1 = executor.spawn_teammate("teammate-1", "task1", state)
-            tp2 = executor.spawn_teammate("teammate-2", "task2", state)
+            executor.spawn_teammate("teammate-1", "task1", state)
+            executor.spawn_teammate("teammate-2", "task2", state)
 
             assert len(executor.processes) == 2
 
@@ -247,8 +246,8 @@ class TestTeammateExecutor:
             mock_popen.side_effect = [mock_proc1, mock_proc2]
 
             state = json.dumps({"key": "value"})
-            tp1 = executor.spawn_teammate("teammate-1", "task1", state)
-            tp2 = executor.spawn_teammate("teammate-2", "task2", state)
+            executor.spawn_teammate("teammate-1", "task1", state)
+            executor.spawn_teammate("teammate-2", "task2", state)
 
             assert len(executor.processes) == 2
 
@@ -337,7 +336,7 @@ class TestTeammateProcessTimeout:
         executor.processes[111] = tp
         executor.processes_by_task["task1"] = tp
 
-        with patch.object(executor, "terminate_teammate") as mock_term:
+        with patch.object(executor, "terminate_teammate"):
             # Wait for monitor thread to detect timeout
             time.sleep(1.0)
 

@@ -1,16 +1,14 @@
 """Financial calculation engine for NPV, IRR, DCF, and sensitivity analysis."""
 
+from datetime import UTC, datetime
 from typing import Any
-from datetime import datetime, timezone
-import math
 
-import numpy as np
 from scipy import optimize
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def calculate_npv(cash_flows: list[float], discount_rate: float) -> dict[str, Any]:
@@ -240,7 +238,7 @@ def sensitivity_analysis(
     try:
         base_output = calculation_func(base_case)
     except Exception as e:
-        raise ValueError(f"Failed to calculate base case: {str(e)}")
+        raise ValueError(f"Failed to calculate base case: {str(e)}") from e
 
     if not base_output or not isinstance(base_output, (int, float)):
         raise ValueError("Calculation function must return a numeric value")
@@ -270,7 +268,7 @@ def sensitivity_analysis(
 
             try:
                 output_value = calculation_func(modified_assumptions)
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
 
             variance_pct = ((test_value - base_value) / abs(base_value)) if base_value != 0 else 0
@@ -345,13 +343,11 @@ def calculate_financial_metrics(
             metrics["net_income"] = round(net_income, 2)
 
     # Balance sheet metrics
-    if total_assets is not None and total_assets > 0:
-        if net_income is not None:
-            metrics["roa_pct"] = round((net_income / total_assets) * 100, 1)
+    if total_assets is not None and total_assets > 0 and net_income is not None:
+        metrics["roa_pct"] = round((net_income / total_assets) * 100, 1)
 
-    if shareholders_equity is not None and shareholders_equity > 0:
-        if net_income is not None:
-            metrics["roe_pct"] = round((net_income / shareholders_equity) * 100, 1)
+    if shareholders_equity is not None and shareholders_equity > 0 and net_income is not None:
+        metrics["roe_pct"] = round((net_income / shareholders_equity) * 100, 1)
 
     if total_debt is not None:
         if shareholders_equity is not None and shareholders_equity > 0:

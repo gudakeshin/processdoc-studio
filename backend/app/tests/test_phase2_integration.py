@@ -4,12 +4,12 @@ Tests for subprocess-based worker execution integrated into coordinator.
 """
 
 import json
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
-import time
-from unittest.mock import Mock, patch, MagicMock
 
 from app.agents.coordinator_teammate_integration import CoordinatorTeammateIntegration
-from app.services.teammate_executor import TeammateExecutor, TeammateProcess
+from app.services.teammate_executor import TeammateExecutor
 
 
 class TestCoordinatorTeammateIntegration:

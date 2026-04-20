@@ -4,10 +4,6 @@ End-to-end tests for Wiki Phase 3: QA/Linting and Cross-Wiki Linking.
 Verifies complete workflow of wiki quality assurance and cross-wiki navigation.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-import json
-from datetime import datetime, timezone
 
 
 class TestPhase3QAIntegration:
@@ -95,10 +91,6 @@ class TestPhase3CrossWikiIntegration:
 
     def test_discover_cross_wiki_references(self):
         """Test discovering cross-wiki references during ingest."""
-        page_content = """
-        Based on [[lp://API Design Patterns]] from leading practices.
-        See [[wiki://project/proj123/API Documentation]] for implementation.
-        """
 
         discovered_refs = [
             {
@@ -178,7 +170,6 @@ class TestPhase3SearchAndDiscovery:
 
     def test_search_respects_qa_status(self):
         """Test search results are filtered by QA status."""
-        search_query = "API design"
 
         search_results = [
             {
@@ -206,11 +197,6 @@ class TestPhase3SearchAndDiscovery:
 
     def test_cross_wiki_search_suggestions(self):
         """Test search suggests related pages across wikis."""
-        primary_result = {
-            "page_id": "proj_api_doc",
-            "wiki": "project",
-            "project_id": "proj1",
-        }
 
         related_suggestions = [
             {
@@ -278,7 +264,7 @@ class TestPhase3CommunityDetection:
 
         # Verify community spans multiple wikis
         wikis_in_community = set(p["wiki"] for p in community["pages"])
-        projects_in_community = set(
+        set(
             p.get("project_id") for p in community["pages"] if p.get("project_id")
         )
 

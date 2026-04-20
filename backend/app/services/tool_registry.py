@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app.core.config import settings
 from app.services.observability import increment
@@ -74,7 +76,7 @@ def _mtime_signature(parsed_dir: Path) -> str:
         for p in parsed_dir.glob("*.json")
         if p.is_file()
     )
-    return hashlib.md5("|".join(parts).encode()).hexdigest()
+    return hashlib.md5("|".join(parts).encode(), usedforsecurity=False).hexdigest()
 
 
 def _load_chunks(parsed_dir: Path) -> tuple[list[str], list[str]]:
@@ -84,7 +86,7 @@ def _load_chunks(parsed_dir: Path) -> tuple[list[str], list[str]]:
     for item in sorted(parsed_dir.glob("*.json")):
         try:
             data = json.loads(item.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
         for chunk in (data.get("chunks", []) if isinstance(data, dict) else []):
             if isinstance(chunk, str) and chunk.strip():
@@ -142,7 +144,7 @@ def _semantic_retrieve(query: str, project_id: str, parsed_dir: Path, top_k: int
             qvec = qvec / norm
         scores = cache["matrix"].dot(qvec).tolist()
         ranked = sorted(
-            zip(scores, cache["sources"], cache["chunks"]),
+            zip(scores, cache["sources"], cache["chunks"], strict=False),
             key=lambda x: x[0],
             reverse=True,
         )
@@ -166,7 +168,7 @@ def _lexical_retrieve(query: str, parsed_dir: Path, top_k: int = 8) -> list[dict
     for item in parsed_dir.glob("*.json"):
         try:
             data = json.loads(item.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
         for chunk in (data.get("chunks", []) if isinstance(data, dict) else []):
             if not isinstance(chunk, str) or not chunk.strip():
@@ -250,20 +252,14 @@ def web_capture(*_: Any, **__: Any) -> dict[str, Any]:
     url = __.get("url") if "url" in __ else (_[0] if _ else None)
     kwargs: dict[str, Any] = {}
     if "max_chars" in __ and __["max_chars"] is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             kwargs["max_chars"] = int(__["max_chars"])
-        except (TypeError, ValueError):
-            pass
     if "max_bytes" in __ and __["max_bytes"] is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             kwargs["max_bytes"] = int(__["max_bytes"])
-        except (TypeError, ValueError):
-            pass
     if "timeout" in __ and __["timeout"] is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             kwargs["timeout"] = float(__["timeout"])
-        except (TypeError, ValueError):
-            pass
     try:
         return _web_capture_impl(url, **kwargs)
     except Exception as exc:  # final safety net; tool must never crash the loop

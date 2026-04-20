@@ -1,8 +1,7 @@
 """Visual QA → conversation persistence and helpers."""
 
-from sqlalchemy import select
-
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.db.models import ConversationMessage, User
 from app.db.session import SessionLocal

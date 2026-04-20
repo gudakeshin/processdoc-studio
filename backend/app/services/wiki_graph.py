@@ -4,15 +4,11 @@ wiki_graph.py — Wiki relationship graph helpers.
 Handles relationship extraction, cross-wiki linking, persistent graph storage,
 page manifest management, and incremental indexing.
 """
-import re
+import hashlib
 import json
 import logging
-import hashlib
-from typing import Optional
-from datetime import datetime, timezone
-from pathlib import Path
-
-from app.services.shared_utils import load_wiki_graph
+import re
+from datetime import UTC, datetime
 
 _LOG = logging.getLogger(__name__)
 
@@ -51,7 +47,6 @@ def _extract_relationships(
             "created_at": ISO timestamp
         }
     """
-    import re
     relationships = []
 
     try:
@@ -71,7 +66,7 @@ def _extract_relationships(
                     "confidence": "EXPLICIT",
                     "confidence_score": 1.0,
                     "source_location": f"L{content[:match.start()].count(chr(10)) + 1}",
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
                 })
 
         # Extract inferred links: page title mentions
@@ -96,7 +91,7 @@ def _extract_relationships(
                         "confidence": "INFERRED",
                         "confidence_score": confidence_score,
                         "source_location": f"L{content[:matches[0].start()].count(chr(10)) + 1}",
-                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
                     })
     except Exception as e:
         _LOG.warning(f"Error extracting relationships from {source_page_id}: {e}")
@@ -108,7 +103,7 @@ def _extract_cross_wiki_relationships(
     source_page_id: str,
     source_wiki_type: str,
     content: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
 ) -> list[dict]:
     """
     Extract cross-wiki relationships (LP <-> Project wiki links).
@@ -138,7 +133,6 @@ def _extract_cross_wiki_relationships(
             "created_at": ISO timestamp
         }
     """
-    import re
     cross_wiki_rels = []
 
     try:
@@ -158,7 +152,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             })
 
         # Pattern for cross-project wiki links
@@ -178,7 +172,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             })
 
     except Exception as e:
@@ -189,7 +183,7 @@ def _extract_cross_wiki_relationships(
 
 def _build_cross_wiki_relationships(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
 ) -> dict:
     """
     Build and persist cross-wiki relationships between LP and Project wikis.
@@ -257,7 +251,7 @@ def _build_cross_wiki_relationships(
             "lp_to_projects": lp_to_projects,
             "projects_to_lp": projects_to_lp,
             "total_links": len(lp_to_projects) + len(projects_to_lp),
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }, indent=2))
 
         _LOG.info(f"Built cross-wiki relationships: {len(lp_to_projects)} LP refs, {len(projects_to_lp)} Project refs")
@@ -275,7 +269,7 @@ def _build_cross_wiki_relationships(
 def _get_cross_wiki_references(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
 ) -> dict:
     """
     Get cross-wiki references for a specific page.
@@ -349,7 +343,7 @@ def _get_cross_wiki_references(
 
 def _save_persistent_graph(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> bool:
     """
     Save persistent graph.json for fast querying without re-extraction.
@@ -357,8 +351,8 @@ def _save_persistent_graph(
     Stores NetworkX adjacency format for quick loading.
     """
     try:
-        import networkx as nx
         from networkx.readwrite import json_graph
+
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
@@ -383,7 +377,7 @@ def _save_persistent_graph(
             "metadata": {
                 "node_count": G.number_of_nodes(),
                 "edge_count": G.number_of_edges(),
-                "last_updated": datetime.now(timezone.utc).isoformat(),
+                "last_updated": datetime.now(UTC).isoformat(),
             }
         }, indent=2))
 
@@ -397,7 +391,7 @@ def _save_persistent_graph(
 
 def _load_persistent_graph(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> tuple:
     """
     Load persistent graph from graph.json for fast queries.
@@ -407,6 +401,7 @@ def _load_persistent_graph(
     """
     try:
         from networkx.readwrite import json_graph
+
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
@@ -435,7 +430,7 @@ def _load_persistent_graph(
 
 def _build_and_persist_relationships(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> dict:
     """
     Build complete relationship graph from all wiki pages and persist to .meta/relationships.json.
@@ -448,9 +443,9 @@ def _build_and_persist_relationships(
         }
     """
     try:
-        from app.services.storage import workspace_path
-        from pathlib import Path
         import re
+
+        from app.services.storage import workspace_path
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -507,11 +502,16 @@ def _build_and_persist_relationships(
         relationships_file.write_text(json.dumps({
             "total": len(all_relationships),
             "relationships": all_relationships,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }, indent=2))
 
         # Detect communities from the relationship graph
-        from app.services.wiki_analysis import _detect_communities, _save_communities, _detect_god_nodes, _save_god_nodes
+        from app.services.wiki_analysis import (
+            _detect_communities,
+            _detect_god_nodes,
+            _save_communities,
+            _save_god_nodes,
+        )
         communities_data = _detect_communities(wiki_type, project_id)
         _save_communities(wiki_type, project_id, communities_data)
         _LOG.info(f"Detected {communities_data['total_communities']} communities")
@@ -555,7 +555,7 @@ def _compute_content_hash(content: str) -> str:
     return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
 
-def _load_page_manifest(wiki_type: str, project_id: Optional[str]) -> dict:
+def _load_page_manifest(wiki_type: str, project_id: str | None) -> dict:
     """
     Load manifest of page hashes for incremental updates.
 
@@ -601,7 +601,7 @@ def _load_page_manifest(wiki_type: str, project_id: Optional[str]) -> dict:
         return {"pages": {}, "last_full_rebuild": None, "relationships_version": 0}
 
 
-def _save_page_manifest(wiki_type: str, project_id: Optional[str], manifest: dict) -> bool:
+def _save_page_manifest(wiki_type: str, project_id: str | None, manifest: dict) -> bool:
     """
     Save page manifest for incremental indexing.
 
@@ -632,7 +632,7 @@ def _save_page_manifest(wiki_type: str, project_id: Optional[str], manifest: dic
         return False
 
 
-def _detect_changed_pages(wiki_type: str, project_id: Optional[str]) -> tuple:
+def _detect_changed_pages(wiki_type: str, project_id: str | None) -> tuple:
     """
     Detect which pages have changed since last update using content hashing.
 
@@ -641,8 +641,9 @@ def _detect_changed_pages(wiki_type: str, project_id: Optional[str]) -> tuple:
         where each is a dict mapping page_id to page_data
     """
     try:
-        from app.services.storage import workspace_path
         import re
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -711,7 +712,7 @@ def _detect_changed_pages(wiki_type: str, project_id: Optional[str]) -> tuple:
 
 def _build_relationships_incremental(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> dict:
     """
     Build relationships incrementally by only processing changed pages.
@@ -731,8 +732,9 @@ def _build_relationships_incremental(
         }
     """
     try:
-        from app.services.storage import workspace_path
         import time as time_module
+
+        from app.services.storage import workspace_path
 
         start_time = time_module.time()
 
@@ -789,13 +791,18 @@ def _build_relationships_incremental(
         (meta_dir / "relationships.json").write_text(json.dumps({
             "total": len(all_relationships),
             "relationships": all_relationships,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
             "incremental_update": True,
             "changed_pages_count": len(changed_pages),
         }, indent=2))
 
         # Only re-detect communities if significant changes
-        from app.services.wiki_analysis import _detect_communities, _save_communities, _detect_god_nodes, _save_god_nodes
+        from app.services.wiki_analysis import (
+            _detect_communities,
+            _detect_god_nodes,
+            _save_communities,
+            _save_god_nodes,
+        )
         if len(changed_pages) / max(len(changed_pages) + len(unchanged_pages), 1) > 0.1:
             # More than 10% changed, rebuild communities
             communities_data = _detect_communities(wiki_type, project_id)
@@ -822,13 +829,13 @@ def _build_relationships_incremental(
             manifest["pages"][page_id] = {
                 "hash": page_data["hash"],
                 "title": page_data["title"],
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             }
         # Remove deleted pages from manifest
         for page_id in deleted_pages:
             manifest["pages"].pop(page_id, None)
 
-        manifest["last_full_rebuild"] = datetime.now(timezone.utc).isoformat()
+        manifest["last_full_rebuild"] = datetime.now(UTC).isoformat()
         manifest["relationships_version"] = manifest.get("relationships_version", 0) + 1
         _save_page_manifest(wiki_type, project_id, manifest)
 
@@ -871,7 +878,7 @@ def _build_relationships_incremental(
 # Graph loading helper (used by wiki_analysis.py too)
 # ---------------------------------------------------------------------------
 
-def load_wiki_graph(wiki_type: str, project_id: Optional[str]) -> tuple:
+def load_wiki_graph(wiki_type: str, project_id: str | None) -> tuple:
     """
     Load wiki relationship graph from .meta/relationships.json.
 
@@ -879,10 +886,12 @@ def load_wiki_graph(wiki_type: str, project_id: Optional[str]) -> tuple:
         (G, page_titles): NetworkX graph and mapping of page_id to page_title
     """
     try:
-        import networkx as nx
-        from app.services.storage import workspace_path
         import json
         import re
+
+        import networkx as nx
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"

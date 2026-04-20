@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -219,7 +219,7 @@ def list_incidents(
                 if to_dt and created_at and created_at > to_dt:
                     continue
                 items.append(payload)
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
     return {"project_id": pid, "items": items}
 

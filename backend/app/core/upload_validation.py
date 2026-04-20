@@ -51,12 +51,10 @@ def validate_upload_bytes(
 def _magic_check(filename: str, content: bytes, suf: str) -> None:
     if len(content) < 8:
         return
-    if suf == ".pdf":
-        if not content.startswith(b"%PDF"):
-            raise UnsupportedMediaError("File does not look like a PDF")
-    if suf in {".xlsx", ".docx", ".pptx"}:
-        if content[:2] != b"PK":
-            raise UnsupportedMediaError(f"File does not look like a valid {suf} archive")
+    if suf == ".pdf" and not content.startswith(b"%PDF"):
+        raise UnsupportedMediaError("File does not look like a PDF")
+    if suf in {".xlsx", ".docx", ".pptx"} and content[:2] != b"PK":
+        raise UnsupportedMediaError(f"File does not look like a valid {suf} archive")
     if suf == ".png" and not content.startswith(b"\x89PNG\r\n\x1a\n"):
         raise UnsupportedMediaError("File does not look like a PNG")
     if suf in {".jpg", ".jpeg"} and not content.startswith(b"\xff\xd8\xff"):

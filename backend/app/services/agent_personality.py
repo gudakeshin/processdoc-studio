@@ -7,7 +7,6 @@ Provides personality-infused message generation across the system with:
 - Visual flair with emoji
 """
 
-from typing import Dict, List, Optional
 
 
 class AgentPersonality:
@@ -121,9 +120,9 @@ class AgentPersonality:
 
 def format_plan_with_personality(
     plan_summary: str,
-    outputs: List[str],
-    custom_outputs: Optional[List[str]] = None,
-    rationale: Optional[str] = None,
+    outputs: list[str],
+    custom_outputs: list[str] | None = None,
+    rationale: str | None = None,
 ) -> str:
     """Format a plan with Jimmy's personality.
 
@@ -196,8 +195,8 @@ def format_question_with_personality(question: str, context_hint: str = "") -> s
 
 
 def format_remediation_with_personality(
-    issues: List[str],
-    action_items: List[str],
+    issues: list[str],
+    action_items: list[str],
 ) -> str:
     """Format QA remediation feedback with collaborative personality.
 
@@ -243,7 +242,7 @@ def format_insight_with_personality(
     return AgentPersonality.get_insight(insight_type, insight_text)
 
 
-def format_success_message(message: str, details: Optional[str] = None) -> str:
+def format_success_message(message: str, details: str | None = None) -> str:
     """Format a success message with celebration.
 
     Args:

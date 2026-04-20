@@ -9,11 +9,10 @@ Implements:
 5. User behavior analytics
 """
 
-import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timezone, timedelta
-from collections import defaultdict, Counter
+from collections import defaultdict
+from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,7 @@ class PageAnalytics:
         self.view_history = defaultdict(list)  # page_id -> [timestamp, ...]
         self.user_pages = defaultdict(set)  # user_id -> set of viewed pages
 
-    def record_view(self, page_id: str, user_id: Optional[str] = None) -> None:
+    def record_view(self, page_id: str, user_id: str | None = None) -> None:
         """
         Record a page view.
 
@@ -37,7 +36,7 @@ class PageAnalytics:
             user_id: Optional user ID for behavior tracking
         """
         self.views[page_id] += 1
-        self.view_history[page_id].append(datetime.now(timezone.utc).isoformat())
+        self.view_history[page_id].append(datetime.now(UTC).isoformat())
 
         if user_id:
             self.user_pages[user_id].add(page_id)
@@ -55,7 +54,7 @@ class PageAnalytics:
         self.searches[query] += 1
         logger.debug(f"Search recorded: {query} ({result_count} results)")
 
-    def get_popular_pages(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_popular_pages(self, limit: int = 10) -> list[dict[str, Any]]:
         """
         Get most viewed pages.
 
@@ -75,7 +74,7 @@ class PageAnalytics:
             for page_id, count in sorted_pages[:limit]
         ]
 
-    def get_trending_searches(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_trending_searches(self, limit: int = 10) -> list[dict[str, Any]]:
         """
         Get trending search queries.
 
@@ -95,7 +94,7 @@ class PageAnalytics:
             for query, count in sorted_searches[:limit]
         ]
 
-    def get_page_stats(self, page_id: str) -> Dict[str, Any]:
+    def get_page_stats(self, page_id: str) -> dict[str, Any]:
         """
         Get analytics for a specific page.
 
@@ -116,11 +115,11 @@ class PageAnalytics:
             "history_length": len(self.view_history[page_id]),
         }
 
-    def get_user_pages(self, user_id: str) -> List[str]:
+    def get_user_pages(self, user_id: str) -> list[str]:
         """Get pages viewed by a user."""
         return list(self.user_pages[user_id])
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get analytics summary."""
         return {
             "total_views": sum(self.views.values()),
@@ -139,7 +138,7 @@ class RecommendationEngine:
         self.relationship_graph = {}  # page_id -> [related_pages]
         self.user_history = defaultdict(list)  # user_id -> [page_ids]
 
-    def build_graph(self, relationships: List[Dict[str, Any]]) -> None:
+    def build_graph(self, relationships: list[dict[str, Any]]) -> None:
         """
         Build recommendation graph from relationships.
 
@@ -168,7 +167,7 @@ class RecommendationEngine:
         page_id: str,
         depth: int = 1,
         limit: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get pages related to given page.
 
@@ -214,9 +213,9 @@ class RecommendationEngine:
     def get_user_recommendations(
         self,
         user_id: str,
-        user_pages: List[str],
+        user_pages: list[str],
         limit: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get personalized recommendations based on user viewing history.
 
@@ -257,7 +256,7 @@ class RecommendationEngine:
             for page_id, score in sorted_recs[:limit]
         ]
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get recommendation engine statistics."""
         total_edges = sum(len(pages) for pages in self.relationship_graph.values()) // 2
         return {
@@ -279,7 +278,7 @@ class KnowledgeGapDetector:
         self.pages = {}  # page_id -> {title, content, tags}
         self.mentions = defaultdict(int)  # concept -> mention_count
 
-    def index_pages(self, pages: List[Dict[str, Any]]) -> None:
+    def index_pages(self, pages: list[dict[str, Any]]) -> None:
         """
         Index pages for gap detection.
 
@@ -297,14 +296,13 @@ class KnowledgeGapDetector:
             }
 
             # Extract capitalized phrases as concepts
-            import re
             words = page.get("content", "").split()
             for i in range(len(words) - 1):
                 if (words[i][0].isupper() and words[i+1][0].isupper()):
                     concept = f"{words[i]} {words[i+1]}"
                     self.mentions[concept] += 1
 
-    def detect_missing_pages(self, min_mentions: int = 3) -> List[Dict[str, Any]]:
+    def detect_missing_pages(self, min_mentions: int = 3) -> list[dict[str, Any]]:
         """
         Detect frequently mentioned concepts without dedicated pages.
 
@@ -328,7 +326,7 @@ class KnowledgeGapDetector:
         # Sort by mention count
         return sorted(missing, key=lambda x: x["mentions"], reverse=True)
 
-    def detect_orphaned_concepts(self) -> List[Dict[str, Any]]:
+    def detect_orphaned_concepts(self) -> list[dict[str, Any]]:
         """
         Detect important concepts that are isolated or poorly connected.
 
@@ -338,7 +336,7 @@ class KnowledgeGapDetector:
         # Placeholder for more sophisticated analysis
         return []
 
-    def get_coverage_report(self) -> Dict[str, Any]:
+    def get_coverage_report(self) -> dict[str, Any]:
         """
         Get wiki coverage report.
 
@@ -375,7 +373,7 @@ class WikiRecommender:
         self.engine = RecommendationEngine()
         self.gap_detector = KnowledgeGapDetector()
 
-    def update_from_wiki(self, pages: List[Dict[str, Any]], relationships: List[Dict[str, Any]]) -> None:
+    def update_from_wiki(self, pages: list[dict[str, Any]], relationships: list[dict[str, Any]]) -> None:
         """
         Update recommender with current wiki state.
 
@@ -389,9 +387,9 @@ class WikiRecommender:
     def get_recommendations(
         self,
         page_id: str,
-        user_id: Optional[str] = None,
-        user_pages: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        user_id: str | None = None,
+        user_pages: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Get all recommendation types for a page.
 
@@ -420,7 +418,7 @@ class WikiRecommender:
             "trending_pages": trending,
         }
 
-    def get_insights(self) -> Dict[str, Any]:
+    def get_insights(self) -> dict[str, Any]:
         """Get wiki insights and analytics."""
         return {
             "analytics": self.analytics.stats(),

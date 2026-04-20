@@ -13,9 +13,9 @@ Corrections include:
 
 from __future__ import annotations
 
+import logging
 import math
 import re
-import logging
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ class DataCorrector:
                             val = float(numeric_str)
                             corrections.append(f"'{key}': extracted numeric {val} from string")
                         except ValueError:
-                            raise ValueError(f"No valid numeric value in '{val}'")
+                            raise ValueError(f"No valid numeric value in '{val}'") from None
                     else:
                         raise ValueError(f"No numeric value found in '{val}'")
 
@@ -80,7 +80,7 @@ class DataCorrector:
                 else:
                     corrected[key] = val
 
-            except (ValueError, TypeError) as e:
+            except (ValueError, TypeError):
                 # Conversion failed; use default if available
                 if key in DataCorrector.ASSUMPTION_DEFAULTS:
                     default = DataCorrector.ASSUMPTION_DEFAULTS[key]

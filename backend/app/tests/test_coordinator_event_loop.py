@@ -1,9 +1,9 @@
 """Integration tests for Coordinator event-driven loop (Phase 0)."""
 
-import json
-import pytest
-from unittest.mock import Mock, patch, MagicMock
 from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.agents.coordinator import Coordinator
 from app.agents.coordinator_state_manager import CoordinatorStateManager
@@ -100,7 +100,7 @@ class TestCoordinatorEventLoop:
         assert "finalize" in sm.task_board
 
         # Check initial status
-        for task_id, task in sm.task_board.items():
+        for _task_id, task in sm.task_board.items():
             assert task["status"] == "queued"
 
     def test_ready_task_computation(self, coordinator, mock_state, events_emitted):
@@ -265,7 +265,7 @@ class TestCoordinatorEventLoop:
         assert not sm.all_tasks_done()
 
         # Mark all tasks done
-        for task_id in sm.task_board.keys():
+        for task_id in sm.task_board:
             sm.mark_task_done(task_id)
 
         # Now all should be done
@@ -305,7 +305,7 @@ class TestCoordinatorEventLoop:
                             sm,
                             emit_event=emit_fn,
                         )
-                    except Exception as e:
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
                         # Expected - we're mocking heavily
                         # Just verify the method was called
                         pass

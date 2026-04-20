@@ -3,14 +3,13 @@ wiki_ingest.py — Wiki ingestion helpers.
 
 Handles source parsing, page creation/update, index regeneration, and log appending.
 """
-import re
-import time as _time
 import json
 import logging
-import hashlib
-from typing import Any, Optional
-from datetime import datetime, timezone
+import re
+import time as _time
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 _LOG = logging.getLogger(__name__)
 _schema_cache: dict = {}
@@ -65,7 +64,7 @@ def _save_raw_source(wiki_dir: Any, slug: str, content: bytes, ext: str = ".html
 # Source parsing
 # ---------------------------------------------------------------------------
 
-def _parse_source(source_type: str, source_data: dict, project_id: Optional[str] = None) -> Optional[dict]:
+def _parse_source(source_type: str, source_data: dict, project_id: str | None = None) -> dict | None:
     """Parse source and extract key information."""
     try:
         # Handle double-wrapped source_data (frontend sends {source_data: {...}})
@@ -100,7 +99,7 @@ def _parse_source(source_type: str, source_data: dict, project_id: Optional[str]
                         _wiki_dir = _wp(project_id) / "wiki"
                         _raw_slug = re.sub(r"[^a-z0-9_]", "", url.lower().replace("/", "_").replace(".", "_"))[:60]
                         _save_raw_source(_wiki_dir, _raw_slug, body if isinstance(body, bytes) else body.encode())
-                    except Exception:
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
                         pass
 
                 # Parse HTML content
@@ -190,8 +189,9 @@ def _parse_source(source_type: str, source_data: dict, project_id: Optional[str]
 
             _LOG.info(f"[INGEST] Processing document: filename={filename}, project_id={project_id}")
 
-            from app.services.storage import workspace_path
             import hashlib
+
+            from app.services.storage import workspace_path
 
             source_file = workspace_path(project_id) / "source_docs" / filename
 
@@ -324,7 +324,9 @@ def _extract_text_from_file(filename: str, content: bytes) -> str:
         # PPTX files
         if lower.endswith(".pptx"):
             try:
-                import io, zipfile, re as _re
+                import io
+                import re as _re
+                import zipfile
 
                 from app.core.config import settings
                 from app.core.office.zip_safety import UnsafeZipError, validate_zip_for_read
@@ -358,6 +360,7 @@ def _extract_text_from_file(filename: str, content: bytes) -> str:
         if lower.endswith(".xls"):
             try:
                 import io
+
                 from openpyxl import load_workbook
                 wb = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
                 text_parts = []
@@ -456,9 +459,7 @@ def _infer_semantic_type(source_type: str, title: str, content: str) -> str:
         return "concept"
 
     # Default based on source type
-    if source_type == "document":
-        return "resource"
-    elif source_type == "reference":
+    if source_type == "document" or source_type == "reference":
         return "resource"
     elif source_type == "conversation":
         return "concept"
@@ -477,21 +478,14 @@ def _infer_category_from_semantic_type(semantic_type: str) -> str:
     - reference: For resource semantic types
     """
     semantic_type = (semantic_type or "").lower()
-
-    # Map semantic types to source categories
-    if semantic_type == "topic":
-        return "artifact"  # Topics are extracted knowledge artifacts
-    elif semantic_type == "concept":
-        return "artifact"  # Concepts are knowledge artifacts
-    elif semantic_type == "process":
-        return "artifact"  # Processes are documented artifacts
-    elif semantic_type == "project":
-        return "artifact"  # Projects are active artifacts
-    elif semantic_type == "resource":
-        return "reference"  # Resources are external references
-
-    # Fallback
-    return "artifact"
+    _SEMANTIC_TO_CATEGORY = {
+        "topic": "artifact",
+        "concept": "artifact",
+        "process": "artifact",
+        "project": "artifact",
+        "resource": "reference",
+    }
+    return _SEMANTIC_TO_CATEGORY.get(semantic_type, "artifact")
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +633,7 @@ def _weave_backlinks(wiki_dir: Any, new_page_ids: list, new_page_titles: dict) -
                 if changed:
                     md_file.write_text(text, encoding="utf-8")
                     woven += 1
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
     except Exception as e:
         _LOG.warning(f"Backlink weaving failed: {e}")
@@ -670,10 +664,10 @@ def _compound_update_entity_page(
         existing_body = fm_match.group(2).strip() if fm_match else existing_text.strip()
 
         # Update last_updated timestamp in frontmatter
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         frontmatter = re.sub(r'last_updated:\s*"[^"]*"', f'last_updated: "{now}"', frontmatter)
         if "last_updated" not in frontmatter and frontmatter:
-            frontmatter = frontmatter.rstrip("---\n") + f'\nlast_updated: "{now}"\n---\n'
+            frontmatter = frontmatter.removesuffix("---\n") + f'\nlast_updated: "{now}"\n---\n'
 
         try:
             from app.services.claude import claude_generate, is_claude_enabled
@@ -728,15 +722,15 @@ def _is_duplicate_entity(name: str, existing_titles: list, threshold: float = 0.
 # Page creation/update
 # ---------------------------------------------------------------------------
 
-def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str]) -> dict:
+def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) -> dict:
     """Create/update wiki pages using LLM to synthesize content and extract entities."""
     try:
         if not extracted or not extracted.get("content"):
             _LOG.error(f"[INGEST] _update_wiki_pages received empty extracted content. extracted={extracted}")
             return {"created": 0, "updated": 0, "page_ids": [], "corrections": []}
 
-        from app.services.storage import workspace_path
         from app.services.claude import claude_generate_json, is_claude_enabled
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -809,7 +803,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str
             except Exception as llm_err:
                 _LOG.warning(f"LLM synthesis failed, falling back to excerpt: {llm_err}")
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         created = 0
         updated = 0
         page_ids = []
@@ -928,7 +922,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str
 # Anomaly detection (Karpathy Second Brain approach)
 # ---------------------------------------------------------------------------
 
-def _detect_anomalous_pages(wiki_type: str, project_id: Optional[str], recently_created_ids: list) -> list:
+def _detect_anomalous_pages(wiki_type: str, project_id: str | None, recently_created_ids: list) -> list:
     """
     Detect anomalous pages using graph structure analysis (Karpathy Second Brain approach).
 
@@ -1035,7 +1029,7 @@ def _detect_anomalous_pages(wiki_type: str, project_id: Optional[str], recently_
 # Index regeneration
 # ---------------------------------------------------------------------------
 
-def _update_wiki_index(wiki_type: str, project_id: Optional[str]) -> dict:
+def _update_wiki_index(wiki_type: str, project_id: str | None) -> dict:
     """
     Regenerate wiki index as a two-tier hierarchical catalog.
 
@@ -1089,11 +1083,11 @@ def _update_wiki_index(wiki_type: str, project_id: Optional[str]) -> dict:
                 entry = {"id": md_file.stem, "title": title, "summary": summary}
                 by_category.setdefault(category, []).append(entry)
                 by_semantic.setdefault(semantic_type, []).append(entry)
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
 
         total = sum(len(v) for v in by_category.values())
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
 
         lines = [
             "# Wiki Index",
@@ -1155,12 +1149,12 @@ def _update_wiki_index(wiki_type: str, project_id: Optional[str]) -> dict:
 
 def _append_wiki_log(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     operation: str,
-    source_name: Optional[str] = None,
-    pages_touched: Optional[list] = None,
-    corrections_made: Optional[list] = None,
-    qa_results: Optional[str] = None,
+    source_name: str | None = None,
+    pages_touched: list | None = None,
+    corrections_made: list | None = None,
+    qa_results: str | None = None,
 ) -> str:
     """Append operation to wiki log."""
     try:
@@ -1175,7 +1169,7 @@ def _append_wiki_log(
         log_file = wiki_dir / "log.md"
 
         # Karpathy-compatible format: ## [date] operation | title
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
         heading = f"## [{date_str}] {operation}"
         if source_name:
             heading += f" | {source_name}"
@@ -1190,8 +1184,8 @@ def _append_wiki_log(
         else:
             log_file.write_text("# Wiki Log\n" + entry)
 
-        log_entry_id = f"log_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+        log_entry_id = f"log_{int(datetime.now(UTC).timestamp() * 1000)}"
         return log_entry_id
     except Exception as e:
         _LOG.error(f"Error appending to wiki log: {e}")
-        return f"log_{int(datetime.now(timezone.utc).timestamp())}"
+        return f"log_{int(datetime.now(UTC).timestamp())}"

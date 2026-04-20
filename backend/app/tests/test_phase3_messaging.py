@@ -3,15 +3,15 @@
 Tests for teammate message queue, peer communication, and lead directives.
 """
 
-import pytest
-import time
 import threading
+import time
 from unittest.mock import Mock
 
+import pytest
+
 from app.services.teammate_message_queue import (
-    TeammateMessageQueue,
     Message,
-    TeammateSubscription,
+    TeammateMessageQueue,
     get_message_queue,
 )
 
@@ -157,9 +157,9 @@ class TestTeammateMessageQueue:
         queue = TeammateMessageQueue()
 
         # Send multiple messages
-        msg1 = queue.send_message("t1", "t2", "Hello 1")
-        msg2 = queue.send_message("t1", "t2", "Hello 2")
-        msg3 = queue.send_message("t1", "t2", "Hello 3")
+        queue.send_message("t1", "t2", "Hello 1")
+        queue.send_message("t1", "t2", "Hello 2")
+        queue.send_message("t1", "t2", "Hello 3")
 
         messages = queue.get_messages_since("t2")
 

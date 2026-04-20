@@ -9,13 +9,11 @@ Handles:
 
 from __future__ import annotations
 
-import json
 import logging
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 _LOG = logging.getLogger(__name__)
 
@@ -48,7 +46,7 @@ class MergeResult:
     success: bool
     message: str
     conflicts: list[MergeConflict] = field(default_factory=list)
-    merge_commit_sha: Optional[str] = None
+    merge_commit_sha: str | None = None
     files_changed: int = 0
     insertions: int = 0
     deletions: int = 0
@@ -109,7 +107,7 @@ class GitMergeService:
                 raise RuntimeError(f"Git command failed: {result.stderr}")
             return result.returncode, result.stdout, result.stderr
         except subprocess.TimeoutExpired:
-            raise RuntimeError("Git command timed out")
+            raise RuntimeError("Git command timed out") from None
 
     def create_worktree(self, worktree_name: str, base_branch: str = "main") -> Path:
         """Create a new git worktree.

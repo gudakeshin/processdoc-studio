@@ -1,7 +1,5 @@
 """Tests for Excel QA integration service (Cowork Tier 3)."""
 
-import pytest
-from unittest.mock import patch, MagicMock
 
 from app.services.excel_qa_integration import ExcelQAEvaluator
 

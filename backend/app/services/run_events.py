@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import time
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.core.config import settings

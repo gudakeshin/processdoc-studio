@@ -1,13 +1,14 @@
 """Test suite for variance analysis."""
 
 import pytest
+
 from app.services.variance_analysis import (
-    calculate_simple_variance,
-    calculate_line_item_variances,
     analyze_price_volume_mix,
     analyze_trend_variance,
-    identify_variance_drivers,
+    calculate_line_item_variances,
+    calculate_simple_variance,
     generate_variance_report,
+    identify_variance_drivers,
 )
 
 

@@ -8,14 +8,14 @@ Implements:
 4. Cache invalidation on wiki updates
 """
 
+import hashlib
 import json
 import logging
-import hashlib
 import time
-from functools import wraps
 from collections import OrderedDict
-from typing import Any, Dict, Optional, List, Callable
-from datetime import datetime, timezone
+from collections.abc import Callable
+from functools import wraps
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class LRUCache:
         self.cache = OrderedDict()
         self.timestamps = {}
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         """Get item from cache (moves to end - most recently used)."""
         if key not in self.cache:
             return None
@@ -74,7 +74,7 @@ class LRUCache:
             self.cache[key] = value
             self.timestamps[key] = time.time()
 
-    def invalidate(self, pattern: Optional[str] = None) -> int:
+    def invalidate(self, pattern: str | None = None) -> int:
         """
         Invalidate cache entries.
 
@@ -90,13 +90,13 @@ class LRUCache:
             self.timestamps.clear()
             return count
 
-        keys_to_delete = [k for k in self.cache.keys() if pattern in k]
+        keys_to_delete = [k for k in self.cache if pattern in k]
         for key in keys_to_delete:
             del self.cache[key]
             del self.timestamps[key]
         return len(keys_to_delete)
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get cache statistics."""
         return {
             "size": len(self.cache),
@@ -141,7 +141,7 @@ class FullTextSearchIndex:
                 self.index[word] = set()
             self.index[word].add(page_id)
 
-    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """
         Search for pages matching query.
 
@@ -198,7 +198,7 @@ class FullTextSearchIndex:
                         del self.index[word]
             del self.page_texts[page_id]
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get index statistics."""
         return {
             "indexed_pages": len(self.page_texts),
@@ -206,7 +206,7 @@ class FullTextSearchIndex:
         }
 
     @staticmethod
-    def _tokenize(text: str) -> List[str]:
+    def _tokenize(text: str) -> list[str]:
         """Tokenize text into words."""
         return [
             word for word in text.lower().split()
@@ -238,9 +238,9 @@ class WikiQueryCache:
             default=str,
             sort_keys=True
         )
-        return hashlib.md5(param_str.encode()).hexdigest()
+        return hashlib.md5(param_str.encode(), usedforsecurity=False).hexdigest()
 
-    def get_cached_query(self, key: str) -> Optional[Any]:
+    def get_cached_query(self, key: str) -> Any | None:
         """Get cached query result."""
         result = self.query_cache.get(key)
         if result:
@@ -253,7 +253,7 @@ class WikiQueryCache:
         """Cache query result."""
         self.query_cache.put(key, result)
 
-    def invalidate_for_changes(self, changed_pages: List[str]) -> int:
+    def invalidate_for_changes(self, changed_pages: list[str]) -> int:
         """
         Invalidate cache for changed pages.
 
@@ -280,7 +280,7 @@ class WikiQueryCache:
         self.search_index = FullTextSearchIndex()
         logger.info("All caches cleared")
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
         hit_rate = (
             self.stats["hits"] / (self.stats["hits"] + self.stats["misses"])

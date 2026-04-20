@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,7 +21,7 @@ def _get_env_files() -> list[str]:
 
     # Log the paths we're using for debugging
     import sys
-    print(f"[CONFIG] Using .env files:", file=sys.stderr)
+    print("[CONFIG] Using .env files:", file=sys.stderr)
     for ef in env_files:
         exists = Path(ef).exists()
         print(f"[CONFIG]   {ef} (exists={exists})", file=sys.stderr)
@@ -134,7 +134,7 @@ class Settings(BaseSettings):
         "bash,sh,ls,cat,echo,pwd,head,tail,wc,grep,find,git,python,python3,pytest,node,npm"
     )
     bash_forbid_operators: bool = True
-    bash_audit_log: Optional[str] = None
+    bash_audit_log: str | None = None
     bash_docker_enabled: bool = False
     bash_docker_image: str = "alpine:3.20"
     # Host path to seccomp JSON profile; empty disables --security-opt seccomp=...
@@ -145,7 +145,7 @@ class Settings(BaseSettings):
     text_editor_tool_model: str = ""
     text_editor_max_characters: int = 12000
     text_editor_backup_enabled: bool = True
-    text_editor_audit_log: Optional[str] = None
+    text_editor_audit_log: str | None = None
     text_editor_allowed_extensions: str = (
         ".py,.md,.txt,.json,.yaml,.yml,.toml,.ini,.cfg,.csv,.ts,.tsx,.js,.jsx,.html,.css,.sql,.xml,.env,.sh"
     )
@@ -315,7 +315,7 @@ class Settings(BaseSettings):
 
     @field_validator("bash_audit_log", "text_editor_audit_log", mode="before")
     @classmethod
-    def _empty_audit_log_none(cls, v: Any) -> Optional[str]:
+    def _empty_audit_log_none(cls, v: Any) -> str | None:
         if v is None:
             return None
         if isinstance(v, str) and not v.strip():

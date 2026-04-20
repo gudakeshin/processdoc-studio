@@ -11,11 +11,10 @@ Performs comprehensive health checks on wiki content:
 - Staleness check (outdated pages)
 """
 
-import json
-import re
 import logging
-from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timezone, timedelta
+import re
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +24,11 @@ class WikiQAEvaluator:
 
     @staticmethod
     def evaluate_wiki_health(
-        pages: List[Dict[str, Any]],
-        wiki_index: Dict[str, Any],
-        log_entries: List[Dict[str, Any]],
+        pages: list[dict[str, Any]],
+        wiki_index: dict[str, Any],
+        log_entries: list[dict[str, Any]],
         days_threshold: int = 30,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Perform comprehensive wiki health check.
 
@@ -84,7 +83,7 @@ class WikiQAEvaluator:
         return result
 
     @staticmethod
-    def _check_contradictions(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _check_contradictions(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Detect contradictory claims across pages.
 
@@ -132,7 +131,7 @@ class WikiQAEvaluator:
         return issues
 
     @staticmethod
-    def _check_orphans(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _check_orphans(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Detect orphaned pages (no inbound links).
 
@@ -168,9 +167,9 @@ class WikiQAEvaluator:
 
     @staticmethod
     def _check_missing_references(
-        pages: List[Dict[str, Any]],
-        wiki_index: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        pages: list[dict[str, Any]],
+        wiki_index: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         """
         Detect missing pages for frequently mentioned concepts.
 
@@ -191,7 +190,7 @@ class WikiQAEvaluator:
         # Count concept mentions across all pages
         concept_mentions = {}
         for page in pages:
-            content = page.get("content", "").lower()
+            page.get("content", "").lower()
             # Simple approach: extract capitalized terms (likely concepts)
             # This is a heuristic and would be more sophisticated in production
             concepts = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', page.get("content", ""))
@@ -214,9 +213,9 @@ class WikiQAEvaluator:
 
     @staticmethod
     def _check_broken_links(
-        pages: List[Dict[str, Any]],
-        wiki_index: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
+        pages: list[dict[str, Any]],
+        wiki_index: dict[str, Any],
+    ) -> list[dict[str, Any]]:
         """
         Detect broken cross-references.
 
@@ -251,7 +250,7 @@ class WikiQAEvaluator:
         return issues
 
     @staticmethod
-    def _check_coverage_gaps(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _check_coverage_gaps(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Detect under-explored topics.
 
@@ -292,9 +291,9 @@ class WikiQAEvaluator:
 
     @staticmethod
     def _check_divergence(
-        project_pages: List[Dict[str, Any]],
-        lp_pages: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        project_pages: list[dict[str, Any]],
+        lp_pages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Detect divergence between project wiki and LP wiki.
 
@@ -331,10 +330,10 @@ class WikiQAEvaluator:
 
     @staticmethod
     def _check_staleness(
-        pages: List[Dict[str, Any]],
-        log_entries: List[Dict[str, Any]],
+        pages: list[dict[str, Any]],
+        log_entries: list[dict[str, Any]],
         days_threshold: int = 30,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Detect stale pages that haven't been updated despite newer relevant ingests.
 
@@ -346,7 +345,7 @@ class WikiQAEvaluator:
         if not pages:
             return issues
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         threshold_date = now - timedelta(days=days_threshold)
 
         for page in pages:
@@ -358,7 +357,7 @@ class WikiQAEvaluator:
                 updated_at = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
                 # Make naive datetimes aware for comparison
                 if updated_at.tzinfo is None:
-                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                    updated_at = updated_at.replace(tzinfo=UTC)
             except (ValueError, AttributeError):
                 continue
 
@@ -377,7 +376,7 @@ class WikiQAEvaluator:
                         log_ts = datetime.fromisoformat(log_ts_str.replace("Z", "+00:00"))
                         # Make naive datetimes aware for comparison
                         if log_ts.tzinfo is None:
-                            log_ts = log_ts.replace(tzinfo=timezone.utc)
+                            log_ts = log_ts.replace(tzinfo=UTC)
                     except (ValueError, AttributeError):
                         continue
 
@@ -402,9 +401,9 @@ class WikiQAEvaluator:
 
     @staticmethod
     def _generate_suggestions(
-        issues: List[Dict[str, Any]],
-        pages: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        issues: list[dict[str, Any]],
+        pages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """
         Generate actionable suggestions from detected issues.
 

@@ -1,7 +1,5 @@
 """Tests for Excel data auto-correction service (Cowork Tier 2)."""
 
-import math
-import pytest
 
 from app.services.excel_corrections import DataCorrector
 

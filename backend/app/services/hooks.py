@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from datetime import datetime
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Literal
+from datetime import datetime
+from typing import Any, Literal
+
 from sqlalchemy import select
+
 from app.db.models import HookControl, HookExecution
 from app.services.observability import increment
 
@@ -133,7 +136,7 @@ async def run_hooks(
                     payload=payload if isinstance(payload, dict) else None,
                 )
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             increment("hook_timeout_total")
             if reg.advisory:
                 results.append(HookResult(hook_name=hook_name, outcome="WARN", message="hook_timeout"))

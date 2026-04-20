@@ -11,10 +11,10 @@ Implements typed relationships (Phase 2) following Karpathy's Second Brain:
 import json
 import logging
 import re
-from typing import Optional, List, Dict, Any, Set, Tuple
-from datetime import datetime, timezone
-from pathlib import Path
 from collections import defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from app.services.storage import workspace_path
 
@@ -101,7 +101,7 @@ class RelationshipClassifier:
             ],
         }
 
-    def classify(self, source_page: str, target_page: str, context: str) -> Tuple[str, float]:
+    def classify(self, source_page: str, target_page: str, context: str) -> tuple[str, float]:
         """
         Classify relationship type based on context.
 
@@ -129,7 +129,7 @@ class RelationshipClassifier:
         # Find best match
         best_type = max(scores, key=scores.get)
         max_score = scores[best_type]
-        total_keywords = sum(len(k) for k in self.keywords.values())
+        sum(len(k) for k in self.keywords.values())
 
         # Normalize confidence (0.5-1.0)
         confidence = 0.5 + (min(max_score, 3.0) / 3.0) * 0.5
@@ -140,14 +140,14 @@ class RelationshipClassifier:
 class RelationshipGraph:
     """Manage typed relationships and transitive inference."""
 
-    def __init__(self, wiki_type: str = "leading_practice", project_id: Optional[str] = None):
+    def __init__(self, wiki_type: str = "leading_practice", project_id: str | None = None):
         """Initialize relationship graph."""
         self.wiki_type = wiki_type
         self.project_id = project_id
         self.wiki_dir = self._get_wiki_dir()
         self.classifier = RelationshipClassifier()
-        self.relationships: List[Dict[str, Any]] = []
-        self.reverse_index: Dict[str, List[str]] = defaultdict(list)
+        self.relationships: list[dict[str, Any]] = []
+        self.reverse_index: dict[str, list[str]] = defaultdict(list)
         self._load_relationships()
 
     def _get_wiki_dir(self) -> Path:
@@ -220,7 +220,7 @@ class RelationshipGraph:
             _LOG.error(f"Error classifying relationships: {e}")
             return 0
 
-    def get_transitive_relationships(self, page_id: str, max_depth: int = 2) -> Set[str]:
+    def get_transitive_relationships(self, page_id: str, max_depth: int = 2) -> set[str]:
         """
         Get all pages transitively related to a page.
 
@@ -266,7 +266,7 @@ class RelationshipGraph:
 
         return related
 
-    def _compute_transitive_type(self, incoming: Optional[str], outgoing: str) -> str:
+    def _compute_transitive_type(self, incoming: str | None, outgoing: str) -> str:
         """
         Compute transitive relationship type.
 
@@ -290,7 +290,7 @@ class RelationshipGraph:
         # Default to related_to
         return "related_to"
 
-    def validate_relationships(self) -> List[Dict[str, Any]]:
+    def validate_relationships(self) -> list[dict[str, Any]]:
         """
         Validate relationships for conflicts and inconsistencies.
 
@@ -307,7 +307,7 @@ class RelationshipGraph:
                     target = rel.get("target_id", "")
 
                     # Find if target also contradicts source (should be OK)
-                    contradicts_back = any(
+                    any(
                         r.get("source_id") == target and r.get("target_id") == source
                         and r.get("relation_type") == "contradicts"
                         for r in self.relationships
@@ -333,7 +333,7 @@ class RelationshipGraph:
                                     "type": "hierarchical_cycle",
                                     "severity": "high",
                                     "cycle": f"{source} -> {target} -> ... -> {source}",
-                                    "message": f"Circular parent_of relationship detected",
+                                    "message": "Circular parent_of relationship detected",
                                 })
                             elif next_target not in visited:
                                 visited.add(next_target)
@@ -358,7 +358,7 @@ class RelationshipGraph:
                     "total": len(self.relationships),
                     "relationships": self.relationships,
                     "relationship_types": list(RELATIONSHIP_TYPES.keys()),
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": datetime.now(UTC).isoformat(),
                 }, indent=2),
                 encoding="utf-8"
             )
@@ -368,7 +368,7 @@ class RelationshipGraph:
         except Exception as e:
             _LOG.error(f"Error persisting relationships: {e}")
 
-    def get_relationship_stats(self) -> Dict[str, Any]:
+    def get_relationship_stats(self) -> dict[str, Any]:
         """Get statistics about relationships."""
         type_counts = defaultdict(int)
         for rel in self.relationships:
@@ -388,8 +388,8 @@ class RelationshipGraph:
 
 def classify_all_relationships(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    project_id: str | None = None,
+) -> dict[str, Any]:
     """
     Auto-classify all relationships in a wiki.
 
@@ -414,9 +414,9 @@ def classify_all_relationships(
 def get_transitive_related_pages(
     page_id: str,
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     max_depth: int = 2,
-) -> List[str]:
+) -> list[str]:
     """Get transitively related pages for a given page."""
     graph = RelationshipGraph(wiki_type, project_id)
     related = graph.get_transitive_relationships(page_id, max_depth)
@@ -425,8 +425,8 @@ def get_transitive_related_pages(
 
 def validate_relationships(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    project_id: str | None = None,
+) -> dict[str, Any]:
     """Validate relationships in a wiki."""
     graph = RelationshipGraph(wiki_type, project_id)
     issues = graph.validate_relationships()

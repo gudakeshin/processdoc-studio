@@ -1,11 +1,12 @@
 """Test suite for financial statement generation."""
 
 import pytest
+
 from app.services.financial_statements import (
-    generate_income_statement,
+    calculate_financial_ratios,
     generate_balance_sheet,
     generate_cash_flow_statement,
-    calculate_financial_ratios,
+    generate_income_statement,
 )
 
 

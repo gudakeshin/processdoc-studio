@@ -5,9 +5,9 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+import redis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
-import redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -184,7 +184,7 @@ def _listener_loop(project_id: str, run_id: str) -> None:
             if loop is None:
                 continue
             loop.call_soon_threadsafe(asyncio.create_task, _apply_remote_update(project_id, run_id, payload))
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
 
 
@@ -432,7 +432,7 @@ async def drawio_ws(websocket: WebSocket, project_id: str, run_id: str) -> None:
                             doc_state,
                             {"type": "lock_update", "locked_by": None, "revision": doc_state.revision},
                         )
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort, non-fatal
             # Best-effort cleanup.
             pass
         db.close()

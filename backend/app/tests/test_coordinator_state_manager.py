@@ -1,13 +1,11 @@
 """Unit tests for CoordinatorStateManager."""
 
-import json
 import pytest
-from datetime import datetime
 
 from app.agents.coordinator_state_manager import (
+    CoordinatorStateError,
     CoordinatorStateManager,
     ExecutionPlanSnapshot,
-    CoordinatorStateError,
 )
 
 
@@ -154,7 +152,7 @@ class TestCoordinatorStateManager:
         state_manager.initialize_task_board(["docx"], [])
 
         # Mark all tasks as done
-        for task_id in state_manager.task_board.keys():
+        for task_id in state_manager.task_board:
             state_manager.mark_task_done(task_id)
 
         assert state_manager.all_tasks_done()

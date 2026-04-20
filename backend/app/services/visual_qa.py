@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -111,20 +112,18 @@ def _extract_pptx_metadata(path: Path) -> dict[str, Any]:
             texts: list[str] = []
             covered = 0.0
             for shape in slide.shapes:
-                try:
+                with contextlib.suppress(Exception):
                     covered += shape.width.inches * shape.height.inches
-                except Exception:
-                    pass
                 try:
                     rgb = shape.fill.fore_color.rgb
                     fills.append(str(rgb).upper())
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
                 try:
-                    txt = str(getattr(shape, "text") or "").strip()
+                    txt = str(shape.text or "").strip()
                     if txt:
                         texts.append(txt[:120])
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
             unique_fills = list(set(fills))
             slides_meta.append({

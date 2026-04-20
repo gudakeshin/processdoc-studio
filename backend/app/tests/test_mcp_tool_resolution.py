@@ -1,8 +1,10 @@
 """Unit tests for MCP tool resolution in tool_registry."""
 
-import pytest
 from unittest.mock import MagicMock, patch
-from app.services.tool_registry import resolve_tool_call, _try_mcp_tool_call
+
+import pytest
+
+from app.services.tool_registry import _try_mcp_tool_call, resolve_tool_call
 
 
 class TestMCPToolResolution:
@@ -137,7 +139,7 @@ class TestMCPToolResolution:
             mock_registry.__contains__ = lambda self, k: k == "test_tool"
             mock_registry.__getitem__ = lambda self, k: mock_handler
 
-            result = resolve_tool_call(
+            resolve_tool_call(
                 "test_tool",
                 {"input_arg": "value"},
                 {
@@ -162,7 +164,7 @@ class TestMCPToolResolution:
             mock_registry.__contains__ = lambda self, k: k == "test_tool"
             mock_registry.__getitem__ = lambda self, k: mock_handler
 
-            result = resolve_tool_call(
+            resolve_tool_call(
                 "test_tool",
                 {"project_id": "input-proj"},  # Input has different value
                 {"project_id": "context-proj"},  # Context has value

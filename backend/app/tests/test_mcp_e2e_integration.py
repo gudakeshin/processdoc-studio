@@ -2,14 +2,13 @@
 
 import asyncio
 import json
-import pytest
-import subprocess
-import tempfile
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-from app.services.tool_registry import resolve_tool_call
-from app.services.mcp.registry import MCPRegistry, MCPServerInstance, get_mcp_registry
+
+import pytest
+
 from app.services.mcp.bridge import call_mcp_tool
+from app.services.mcp.registry import MCPRegistry, MCPServerInstance
+from app.services.tool_registry import resolve_tool_call
 
 
 class TestMCPEndToEndIntegration:

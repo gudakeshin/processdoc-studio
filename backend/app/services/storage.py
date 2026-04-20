@@ -1,10 +1,9 @@
 import json
-import uuid
 import re
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from collections import defaultdict
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -37,7 +36,7 @@ def create_run(project_id: str, output_types: list[str]) -> dict:
         "project_id": project_id,
         "status": "plan_ready",
         "output_types": output_types,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
     }
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest
@@ -91,7 +90,7 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
     for output_type in requested_set:
         try:
             deliverable = DeliverableRegistry.get(output_type)
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
         deliverable.render(payload, run_dir, branding=payload.get("branding"))
 

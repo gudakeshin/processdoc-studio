@@ -9,11 +9,12 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from app.core.state import ProcessDocState
-from app.services.teammate_executor import TeammateExecutor, TeammateProcess
 from app.services.observability import increment
+from app.services.teammate_executor import TeammateExecutor, TeammateProcess
 
 _LOG = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class CoordinatorTeammateIntegration:
     def __init__(
         self,
         executor: TeammateExecutor,
-        emit_event: Optional[Callable[[str, dict[str, Any]], None]] = None,
+        emit_event: Callable[[str, dict[str, Any]], None] | None = None,
     ):
         """Initialize integration.
 
@@ -40,9 +41,9 @@ class CoordinatorTeammateIntegration:
         self,
         output_type: str,
         state: ProcessDocState,
-        task_id: Optional[str] = None,
+        task_id: str | None = None,
         max_retries: int = 1,
-    ) -> tuple[dict[str, Any], Optional[str]]:
+    ) -> tuple[dict[str, Any], str | None]:
         """Execute worker via subprocess for given output type.
 
         Args:
@@ -156,7 +157,7 @@ class CoordinatorTeammateIntegration:
         """Get all currently running tasks."""
         return dict(self.running_tasks)
 
-    def get_task_status(self, task_id: str) -> Optional[dict[str, Any]]:
+    def get_task_status(self, task_id: str) -> dict[str, Any] | None:
         """Get status of a specific task.
 
         Returns:

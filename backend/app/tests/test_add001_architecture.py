@@ -7,11 +7,11 @@ from app.services.permission_pipeline import evaluate_permission_pipeline
 from app.services.retry_policy import (
     classify_retry_mode,
     compute_rate_limit_backoff,
-    should_apply_fallback,
     fallback_strategy_for_output,
+    should_apply_fallback,
     validate_retry_transition,
 )
-from app.services.run_events import build_event_payload, lifecycle_event, hook_exec_id
+from app.services.run_events import build_event_payload, hook_exec_id, lifecycle_event
 
 
 def test_permission_pipeline_denies_without_approval() -> None:

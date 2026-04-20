@@ -7,8 +7,8 @@ Provides REST API for wiki operations with automatic retry, auto-correction, and
 import json
 import logging
 import re
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -18,24 +18,22 @@ from app.core.auth import get_current_user, require_project_role
 from app.core.config import settings
 from app.db.models import User
 from app.db.session import get_db
-from app.services.wiki_operations import (
-    wiki_ingest_with_retry,
-    wiki_query_with_retry,
-    wiki_lint_with_retry,
-    _build_cross_wiki_relationships,
-    _get_cross_wiki_references,
-    _get_wiki_performance_metrics,
-    _detect_changed_pages,
-)
-from app.services.wiki_cache import get_wiki_cache
 from app.services.wiki_analytics import get_wiki_recommender
-from app.services.wiki_corrections import DataCorrector
-from app.services.wiki_qa import WikiQAEvaluator
+from app.services.wiki_cache import get_wiki_cache
 from app.services.wiki_integrations import (
-    WikiRunIntegration,
     WikiConversationIntegration,
     WikiCoordinatorIntegration,
     WikiLeadingPracticesIntegration,
+    WikiRunIntegration,
+)
+from app.services.wiki_operations import (
+    _build_cross_wiki_relationships,
+    _detect_changed_pages,
+    _get_cross_wiki_references,
+    _get_wiki_performance_metrics,
+    wiki_ingest_with_retry,
+    wiki_lint_with_retry,
+    wiki_query_with_retry,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,7 +53,7 @@ def _wiki_lp_admin_emails() -> frozenset[str]:
 
 def _wiki_require_access(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     user: User,
     db: Session,
     *,
@@ -106,12 +104,12 @@ router = APIRouter(prefix="/api/wiki", tags=["wiki"])
 async def ingest_source(
     wiki_type: str,
     source_type: str,
-    source_data: Dict[str, Any],
-    project_id: Optional[str] = None,
+    source_data: dict[str, Any],
+    project_id: str | None = None,
     max_retries: int = 3,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Ingest a source into the wiki with automatic retry and auto-correction.
 
@@ -166,17 +164,17 @@ async def ingest_source(
 
     except Exception as e:
         logger.error(f"Ingest failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/{wiki_type}/ingest/from-memory")
 async def ingest_memory_item(
     wiki_type: str,
-    memory_item: Dict[str, Any],
-    project_id: Optional[str] = None,
+    memory_item: dict[str, Any],
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Ingest a memory item into wiki.
 
@@ -194,7 +192,7 @@ async def ingest_memory_item(
 
     raw = dict(memory_item or {})
     if raw.get("memory_id") is not None and raw.get("id") is None:
-        meta: Dict[str, Any] = {}
+        meta: dict[str, Any] = {}
         if raw.get("title"):
             meta["title"] = raw.get("title")
         raw = {
@@ -269,19 +267,19 @@ async def ingest_memory_item(
 
     except Exception as e:
         logger.error(f"Memory ingest failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/{wiki_type}/ingest/from-run")
 async def ingest_run_artifacts(
     wiki_type: str,
     run_id: str,
-    run_summary: Dict[str, Any],
-    artifacts: List[Dict[str, Any]],
+    run_summary: dict[str, Any],
+    artifacts: list[dict[str, Any]],
     project_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Ingest run artifacts and learnings into wiki.
 
@@ -315,18 +313,18 @@ async def ingest_run_artifacts(
 
     except Exception as e:
         logger.error(f"Run ingest failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/{wiki_type}/ingest/from-conversation")
 async def ingest_conversation(
     wiki_type: str,
     conversation_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     project_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Ingest conversation digest into wiki.
 
@@ -359,16 +357,16 @@ async def ingest_conversation(
 
     except Exception as e:
         logger.error(f"Conversation ingest failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/{wiki_type}/sync-documents")
 async def sync_project_documents_to_wiki(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Ingest every file from the project workspace ``source_docs`` folder into the project wiki."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     if wiki_type != "project" or not project_id:
@@ -388,7 +386,7 @@ async def sync_project_documents_to_wiki(
 
     ingested = 0
     skipped = 0
-    errors: List[Dict[str, str]] = []
+    errors: list[dict[str, str]] = []
     for path in sorted(source_dir.iterdir()):
         if not path.is_file() or path.name.startswith("."):
             continue
@@ -413,10 +411,10 @@ async def sync_project_documents_to_wiki(
 async def list_wiki_pages_for_run(
     wiki_type: str,
     run_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """List wiki pages linked to a run (via frontmatter ``source_run_id``)."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type != "project" or not project_id:
@@ -427,7 +425,7 @@ async def list_wiki_pages_for_run(
     from app.services.storage import workspace_path
 
     wiki_dir = workspace_path(project_id) / "wiki"
-    artifacts: List[Dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
     if not wiki_dir.exists():
         return {"status": "success", "artifacts": []}
 
@@ -436,7 +434,7 @@ async def list_wiki_pages_for_run(
             continue
         try:
             content = md_file.read_text(encoding="utf-8")
-            fm: Dict[str, str] = {}
+            fm: dict[str, str] = {}
             m = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
             if m:
                 for line in m.group(1).split("\n"):
@@ -465,10 +463,10 @@ async def list_wiki_pages_for_run(
 async def list_wiki_pages_for_memory(
     wiki_type: str,
     memory_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """List wiki pages created from a given memory item id."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if wiki_type != "project" or not project_id:
@@ -479,7 +477,7 @@ async def list_wiki_pages_for_memory(
     from app.services.storage import workspace_path
 
     wiki_dir = workspace_path(project_id) / "wiki"
-    pages: List[Dict[str, Any]] = []
+    pages: list[dict[str, Any]] = []
     if not wiki_dir.exists():
         return {"status": "success", "pages": []}
 
@@ -488,7 +486,7 @@ async def list_wiki_pages_for_memory(
             continue
         try:
             content = md_file.read_text(encoding="utf-8")
-            fm: Dict[str, str] = {}
+            fm: dict[str, str] = {}
             m = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
             if m:
                 for line in m.group(1).split("\n"):
@@ -518,12 +516,12 @@ async def list_wiki_pages_for_memory(
 async def query_wiki(
     wiki_type: str,
     question: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     include_qa: bool = False,
     max_retries: int = 3,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Query the wiki to answer a question.
 
@@ -570,17 +568,17 @@ async def query_wiki(
 
     except Exception as e:
         logger.error(f"Query failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/context")
 async def get_wiki_context(
     wiki_type: str,
     question: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get wiki context for coordinator run planning.
 
@@ -610,7 +608,7 @@ async def get_wiki_context(
 
     except Exception as e:
         logger.error(f"Context query failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Lint/Health Check Operations =====
@@ -618,12 +616,12 @@ async def get_wiki_context(
 @router.post("/{wiki_type}/lint")
 async def lint_wiki(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     max_retries: int = 3,
     auto_fix: bool = False,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run health check on wiki.
 
@@ -669,7 +667,7 @@ async def lint_wiki(
 
     except Exception as e:
         logger.error(f"Lint failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Browse Operations =====
@@ -677,14 +675,14 @@ async def lint_wiki(
 @router.get("/{wiki_type}/pages")
 async def list_pages(
     wiki_type: str,
-    project_id: Optional[str] = None,
-    category: Optional[str] = None,
+    project_id: str | None = None,
+    category: str | None = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     sort_by: str = "updated_at",
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     List wiki pages with filtering and pagination.
 
@@ -710,9 +708,9 @@ async def list_pages(
     """
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
-        from app.services.storage import workspace_path
-        from pathlib import Path
         import re
+
+        from app.services.storage import workspace_path
         from app.services.wiki_operations import _get_relationship_counts
 
         # Determine wiki directory
@@ -835,17 +833,17 @@ async def list_pages(
         raise
     except Exception as e:
         logger.error(f"List pages failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/pages/{page_id}/preview")
 async def get_page_preview(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Return a short summary of a wiki page for hover previews."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if not _PAGE_STEM_RE.match(page_id):
@@ -895,7 +893,7 @@ async def get_page_preview(
     pages_linking = int(rc.get("inbound", 0) or 0)
     outbound_links_count = int(rc.get("outbound", 0) or 0)
     updated_ts = page_path.stat().st_mtime
-    updated_at = datetime.fromtimestamp(updated_ts, tz=timezone.utc).isoformat()
+    updated_at = datetime.fromtimestamp(updated_ts, tz=UTC).isoformat()
 
     return {
         "status": "success",
@@ -916,11 +914,11 @@ async def get_page_preview(
 async def get_related_wiki_pages(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     max_depth: int = Query(2, ge=1, le=5),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Transitively related pages (typed relationship graph)."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if not _PAGE_STEM_RE.match(page_id):
@@ -930,7 +928,7 @@ async def get_related_wiki_pages(
 
     related_ids = get_transitive_related_pages(page_id, wiki_type, project_id, max_depth=max_depth)
     graph = RelationshipGraph(wiki_type, project_id)
-    related_pages: List[Dict[str, Any]] = []
+    related_pages: list[dict[str, Any]] = []
     for tid in related_ids:
         if tid == page_id:
             continue
@@ -954,10 +952,10 @@ async def get_related_wiki_pages(
 async def get_page(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get a specific wiki page.
 
@@ -985,7 +983,7 @@ async def get_page(
     if not _PAGE_STEM_RE.match(page_id):
         raise HTTPException(status_code=400, detail="Invalid page_id")
     try:
-        from datetime import datetime, timezone as _tz
+        from datetime import datetime
 
         from app.services.storage import workspace_path
         from app.services.wiki_operations import _get_community_for_page
@@ -998,12 +996,12 @@ async def get_page(
         try:
             md_file.resolve().relative_to(wiki_dir.resolve())
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid page_id")
+            raise HTTPException(status_code=400, detail="Invalid page_id") from None
         if not md_file.exists():
             raise HTTPException(status_code=404, detail="Page not found")
 
         content = md_file.read_text(encoding="utf-8")
-        frontmatter: Dict[str, Any] = {}
+        frontmatter: dict[str, Any] = {}
         body = content
         fm_match = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
         if fm_match:
@@ -1018,11 +1016,11 @@ async def get_page(
         confidence = frontmatter.get("confidence") or "medium"
 
         stat = md_file.stat()
-        updated_at = datetime.fromtimestamp(stat.st_mtime, tz=_tz.utc).isoformat()
-        created_at = datetime.fromtimestamp(stat.st_ctime, tz=_tz.utc).isoformat()
+        updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+        created_at = datetime.fromtimestamp(stat.st_ctime, tz=UTC).isoformat()
 
         # Resolve same-wiki inbound / outbound links from relationships.json.
-        title_by_id: Dict[str, str] = {}
+        title_by_id: dict[str, str] = {}
         for md in wiki_dir.glob("*.md"):
             if md.name in ("index.md", "log.md"):
                 continue
@@ -1034,8 +1032,8 @@ async def get_page(
                 logger.debug("title read failed for %s: %s", md.name, exc)
                 title_by_id[md.stem] = md.stem
 
-        inbound: List[Dict[str, str]] = []
-        outbound: List[Dict[str, str]] = []
+        inbound: list[dict[str, str]] = []
+        outbound: list[dict[str, str]] = []
         rels_file = wiki_dir / "relationships.json"
         if rels_file.exists():
             try:
@@ -1077,20 +1075,20 @@ async def get_page(
         raise
     except Exception as e:
         logger.exception("Get page failed for %s/%s", wiki_type, page_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/search")
 async def search_pages(
     wiki_type: str,
     q: str,
-    project_id: Optional[str] = None,
-    category: Optional[str] = None,
-    confidence: Optional[str] = None,
+    project_id: str | None = None,
+    category: str | None = None,
+    confidence: str | None = None,
     limit: int = Query(20, ge=1, le=100),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Full-text search wiki pages.
 
@@ -1119,7 +1117,7 @@ async def search_pages(
     if not query_text:
         raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
     try:
-        from datetime import datetime, timezone as _tz
+        from datetime import datetime
 
         from app.services.storage import workspace_path
 
@@ -1128,9 +1126,9 @@ async def search_pages(
         else:
             wiki_dir = workspace_path(project_id) / "wiki"  # type: ignore[arg-type]
 
-        results: List[Dict[str, Any]] = []
-        cat_facets: Dict[str, int] = {}
-        conf_facets: Dict[str, int] = {}
+        results: list[dict[str, Any]] = []
+        cat_facets: dict[str, int] = {}
+        conf_facets: dict[str, int] = {}
 
         if wiki_dir.exists():
             q_lower = query_text.lower()
@@ -1143,7 +1141,7 @@ async def search_pages(
                     logger.debug("search: read failed for %s: %s", md_file.name, exc)
                     continue
 
-                frontmatter: Dict[str, str] = {}
+                frontmatter: dict[str, str] = {}
                 body = content
                 fm_match = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
                 if fm_match:
@@ -1181,7 +1179,7 @@ async def search_pages(
                     snippet = body.strip()[:200]
 
                 stat = md_file.stat()
-                updated_at = datetime.fromtimestamp(stat.st_mtime, tz=_tz.utc).isoformat()
+                updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
 
                 results.append({
                     "id": md_file.stem,
@@ -1210,7 +1208,7 @@ async def search_pages(
         raise
     except Exception as e:
         logger.exception("Wiki search failed for q=%r", query_text)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Promote Operations =====
@@ -1223,7 +1221,7 @@ async def promote_to_lp(
     reason: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Propose a project page as a leading practice.
 
@@ -1268,7 +1266,7 @@ async def promote_to_lp(
 
     except Exception as e:
         logger.error(f"Promote failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Relationship Operations =====
@@ -1276,10 +1274,10 @@ async def promote_to_lp(
 @router.get("/{wiki_type}/relationships/validate")
 async def validate_wiki_relationships_route(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Validate relationship graph and return statistics plus issues."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     from app.services.wiki_relationships import validate_relationships
@@ -1290,10 +1288,10 @@ async def validate_wiki_relationships_route(
 @router.post("/{wiki_type}/relationships/classify")
 async def classify_wiki_relationships_route(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Auto-classify untyped relationships."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     from app.services.wiki_relationships import classify_all_relationships
@@ -1305,11 +1303,11 @@ async def classify_wiki_relationships_route(
 async def get_page_relationships(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
-    relationship_type: Optional[str] = None,
+    project_id: str | None = None,
+    relationship_type: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get relationships for a specific page.
 
@@ -1331,8 +1329,9 @@ async def get_page_relationships(
     """
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
-        from app.services.storage import workspace_path
         import json
+
+        from app.services.storage import workspace_path
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -1382,7 +1381,7 @@ async def get_page_relationships(
         raise
     except Exception as e:
         logger.error(f"Get relationships failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Community Operations =====
@@ -1390,10 +1389,10 @@ async def get_page_relationships(
 @router.get("/{wiki_type}/communities")
 async def get_communities(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get all wiki communities (functional clusters).
 
@@ -1419,8 +1418,9 @@ async def get_communities(
     """
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
-        from app.services.storage import workspace_path
         import json
+
+        from app.services.storage import workspace_path
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -1452,17 +1452,17 @@ async def get_communities(
         raise
     except Exception as e:
         logger.error(f"Get communities failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/communities/{community_id}")
 async def get_community_details(
     wiki_type: str,
     community_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get details for a specific community.
 
@@ -1484,9 +1484,10 @@ async def get_community_details(
     """
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
-        from app.services.storage import workspace_path
         import json
         import re
+
+        from app.services.storage import workspace_path
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -1534,7 +1535,7 @@ async def get_community_details(
         raise
     except Exception as e:
         logger.error(f"Get community details failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== God Node Operations =====
@@ -1542,11 +1543,11 @@ async def get_community_details(
 @router.get("/{wiki_type}/god-nodes")
 async def get_god_nodes(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     limit: int = Query(10, ge=1, le=100),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get the most important pages (god nodes) in the wiki.
 
@@ -1584,8 +1585,9 @@ async def get_god_nodes(
         god_nodes = _get_god_nodes(wiki_type, project_id, limit=limit)
 
         # Get overall stats
-        from app.services.storage import workspace_path
         import json
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -1614,7 +1616,7 @@ async def get_god_nodes(
         raise
     except Exception as e:
         logger.error(f"Get god nodes failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Graph Query Operations =====
@@ -1624,14 +1626,14 @@ async def query_wiki_graph(
     wiki_type: str,
     q: str,
     query_type: str = Query("neighbors", pattern="^(neighbors|bfs|shortest_path|related)$"),
-    start_node: Optional[str] = None,
-    end_node: Optional[str] = None,
+    start_node: str | None = None,
+    end_node: str | None = None,
     max_distance: int = Query(3, ge=1, le=5),
     max_results: int = Query(20, ge=1, le=100),
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Query the wiki knowledge graph using relationship traversal.
 
@@ -1696,16 +1698,16 @@ async def query_wiki_graph(
         raise
     except Exception as e:
         logger.error(f"Graph query failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/graph/stats")
 async def get_graph_stats(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get statistics about the wiki knowledge graph.
 
@@ -1723,8 +1725,9 @@ async def get_graph_stats(
     """
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
-        from app.services.wiki_operations import _load_persistent_graph
         import networkx as nx
+
+        from app.services.wiki_operations import _load_persistent_graph
 
         G, page_titles, metadata = _load_persistent_graph(wiki_type, project_id)
 
@@ -1759,7 +1762,7 @@ async def get_graph_stats(
         raise
     except Exception as e:
         logger.error(f"Get graph stats failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Dashboard Operations =====
@@ -1767,10 +1770,10 @@ async def get_graph_stats(
 @router.get("/{wiki_type}/stats")
 async def get_wiki_stats(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get wiki statistics and health summary.
 
@@ -1797,10 +1800,11 @@ async def get_wiki_stats(
     """
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     try:
-        from app.services.storage import workspace_path
-        from datetime import datetime, timedelta, timezone
-        import re
         import json
+        import re
+        from datetime import datetime, timedelta
+
+        from app.services.storage import workspace_path
         from app.services.wiki_operations import _get_relationship_counts
 
         # Determine wiki directory
@@ -1820,7 +1824,7 @@ async def get_wiki_stats(
 
         # Read wiki pages
         if wiki_dir.exists():
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             week_ago = now - timedelta(days=7)
 
             for md_file in wiki_dir.glob("*.md"):
@@ -1830,7 +1834,7 @@ async def get_wiki_stats(
 
                 try:
                     content = md_file.read_text(encoding="utf-8")
-                    mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=timezone.utc)
+                    mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=UTC)
 
                     # Parse frontmatter
                     category = "artifact"
@@ -1869,7 +1873,7 @@ async def get_wiki_stats(
         rel_counts = _get_relationship_counts(wiki_type, project_id)
         total_relationships = 0
         pages_with_links = 0
-        for page_id, counts in rel_counts.items():
+        for _page_id, counts in rel_counts.items():
             total_relationships += counts.get("outbound", 0)
             if counts.get("inbound", 0) > 0 or counts.get("outbound", 0) > 0:
                 pages_with_links += 1
@@ -1932,7 +1936,7 @@ async def get_wiki_stats(
         raise
     except Exception as e:
         logger.error(f"Stats query failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Cross-Wiki Navigation =====
@@ -1940,10 +1944,10 @@ async def get_wiki_stats(
 @router.post("/{wiki_type}/cross-wiki/build")
 async def build_cross_wiki_index(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Build cross-wiki relationship index (LP <-> Project).
 
@@ -1979,17 +1983,17 @@ async def build_cross_wiki_index(
 
     except Exception as e:
         logger.error(f"Cross-wiki index build failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/cross-wiki/references/{page_id}")
 async def get_cross_wiki_references(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get cross-wiki references for a page.
 
@@ -2028,7 +2032,7 @@ async def get_cross_wiki_references(
 
     except Exception as e:
         logger.error(f"Cross-wiki reference lookup failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Performance Monitoring (Phase 4) =====
@@ -2036,10 +2040,10 @@ async def get_cross_wiki_references(
 @router.get("/{wiki_type}/performance/metrics")
 async def get_wiki_performance(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get wiki performance metrics for monitoring.
 
@@ -2075,16 +2079,16 @@ async def get_wiki_performance(
 
     except Exception as e:
         logger.error(f"Performance metrics query failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/performance/changes")
 async def detect_wiki_changes(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Detect changed pages since last index update.
 
@@ -2124,13 +2128,13 @@ async def detect_wiki_changes(
 
     except Exception as e:
         logger.error(f"Change detection failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Cache Management (Phase 5) =====
 
 @router.get("/cache/stats")
-async def get_cache_statistics(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Dict[str, Any]:
+async def get_cache_statistics(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     """
     Get wiki query cache statistics.
 
@@ -2162,15 +2166,15 @@ async def get_cache_statistics(user: User = Depends(get_current_user), db: Sessi
 
     except Exception as e:
         logger.error(f"Cache stats query failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/cache/invalidate")
 async def invalidate_cache(
-    pattern: Optional[str] = None,
+    pattern: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Invalidate cache entries.
 
@@ -2204,16 +2208,16 @@ async def invalidate_cache(
 
     except Exception as e:
         logger.error(f"Cache invalidation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/cache/warmup")
 async def warmup_cache(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Pre-warm cache with hot data (god nodes, communities, etc).
 
@@ -2238,7 +2242,7 @@ async def warmup_cache(
     try:
         # In practice, this would load god nodes and communities
         # For now, it's a placeholder that demonstrates the pattern
-        cache = get_wiki_cache()
+        get_wiki_cache()
 
         return {
             "status": "success",
@@ -2248,18 +2252,18 @@ async def warmup_cache(
 
     except Exception as e:
         logger.error(f"Cache warmup failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/cache/search")
 async def search_wiki(
     wiki_type: str,
     query: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     limit: int = Query(10, ge=1, le=100),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Search wiki using cached full-text index.
 
@@ -2299,7 +2303,7 @@ async def search_wiki(
 
     except Exception as e:
         logger.error(f"Wiki search failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Analytics & Recommendations (Phase 6) =====
@@ -2308,11 +2312,11 @@ async def search_wiki(
 async def record_page_view(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
-    user_id: Optional[str] = None,
+    project_id: str | None = None,
+    user_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Record a page view for analytics.
 
@@ -2343,12 +2347,12 @@ async def record_page_view(
         return {
             "status": "success",
             "page_id": page_id,
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "recorded_at": datetime.now(UTC).isoformat(),
         }
 
     except Exception as e:
         logger.error(f"Record view failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/{wiki_type}/analytics/search")
@@ -2356,10 +2360,10 @@ async def record_search(
     wiki_type: str,
     query: str,
     result_count: int = 0,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Record a search query for analytics.
 
@@ -2390,22 +2394,22 @@ async def record_search(
         return {
             "status": "success",
             "query": query,
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "recorded_at": datetime.now(UTC).isoformat(),
         }
 
     except Exception as e:
         logger.error(f"Record search failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/analytics/popular-pages")
 async def get_popular_pages(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     limit: int = Query(10, ge=1, le=100),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get most viewed pages (trending).
 
@@ -2443,17 +2447,17 @@ async def get_popular_pages(
 
     except Exception as e:
         logger.error(f"Get popular pages failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/analytics/trending-searches")
 async def get_trending_searches(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     limit: int = Query(10, ge=1, le=100),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get trending search queries.
 
@@ -2491,19 +2495,19 @@ async def get_trending_searches(
 
     except Exception as e:
         logger.error(f"Get trending searches failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/recommendations/{page_id}")
 async def get_page_recommendations(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
-    user_id: Optional[str] = None,
+    project_id: str | None = None,
+    user_id: str | None = None,
     limit: int = Query(5, ge=1, le=20),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get recommendations for a specific page.
 
@@ -2570,18 +2574,18 @@ async def get_page_recommendations(
 
     except Exception as e:
         logger.error(f"Get recommendations failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/{wiki_type}/analytics/update")
 async def update_analytics_from_wiki(
     wiki_type: str,
-    pages: List[Dict[str, Any]],
-    relationships: List[Dict[str, Any]],
-    project_id: Optional[str] = None,
+    pages: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Update recommender with current wiki state.
 
@@ -2614,21 +2618,21 @@ async def update_analytics_from_wiki(
             "status": "success",
             "pages_indexed": len(pages),
             "relationships_loaded": len(relationships),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
 
     except Exception as e:
         logger.error(f"Update analytics failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{wiki_type}/insights")
 async def get_wiki_insights(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get comprehensive wiki insights and analytics.
 
@@ -2678,7 +2682,7 @@ async def get_wiki_insights(
 
     except Exception as e:
         logger.error(f"Get insights failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ===== Schema, synthesis & refresh =====
@@ -2686,10 +2690,10 @@ async def get_wiki_insights(
 @router.get("/{wiki_type}/schema/analyze")
 async def analyze_wiki_schema(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Analyze wiki content against schema conventions and suggest evolution."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     from app.services.wiki_schema_analyzer import analyze_schema
@@ -2700,7 +2704,7 @@ async def analyze_wiki_schema(
 @router.get("/{wiki_type}/schema", response_class=PlainTextResponse)
 async def get_wiki_schema_markdown(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PlainTextResponse:
@@ -2726,11 +2730,11 @@ async def get_wiki_schema_markdown(
 @router.put("/{wiki_type}/schema")
 async def put_wiki_schema_markdown(
     wiki_type: str,
-    payload: Dict[str, Any],
-    project_id: Optional[str] = None,
+    payload: dict[str, Any],
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Replace ``WIKI_SCHEMA.md`` (conventions for ingest/query)."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     content = payload.get("content")
@@ -2756,10 +2760,10 @@ async def put_wiki_schema_markdown(
 @router.get("/{wiki_type}/synthesis/insights")
 async def get_wiki_synthesis_insights(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     from app.services.wiki_synthesis import get_synthesis_insights
 
@@ -2772,11 +2776,11 @@ async def get_wiki_synthesis_insights(
 @router.post("/{wiki_type}/synthesis/create")
 async def create_wiki_synthesis_pages(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     max_pages: int = Query(5, ge=1, le=50),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
     from app.services.wiki_synthesis import create_synthesis_pages
 
@@ -2789,11 +2793,11 @@ async def create_wiki_synthesis_pages(
 @router.get("/{wiki_type}/refresh/schedule")
 async def get_wiki_refresh_schedule(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     batch_size: int = Query(10, ge=1, le=500),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     from app.services.wiki_refresh import get_refresh_schedule
 
@@ -2803,10 +2807,10 @@ async def get_wiki_refresh_schedule(
 @router.post("/{wiki_type}/sources/check-freshness")
 async def post_wiki_check_source_freshness(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     from app.services.wiki_refresh import check_wiki_source_freshness
 
@@ -2819,7 +2823,7 @@ async def post_wiki_check_source_freshness(
 # ===== Health Check =====
 
 @router.get("/health")
-async def health_check(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Dict[str, Any]:
+async def health_check(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "ok",

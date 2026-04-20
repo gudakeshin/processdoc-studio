@@ -1,16 +1,19 @@
-import asyncio
 import json
 import logging
 import re
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
+
+if TYPE_CHECKING:
+    from app.agents.coordinator_state_manager import CoordinatorStateManager
 
 from app.agents.agent_types import AgentOutput, build_agent_context, merge_agent_output
 from app.agents.coordinator_teammate_integration import CoordinatorTeammateIntegration
@@ -18,7 +21,6 @@ from app.agents.prompt_hygiene import UNTRUSTED_JSON_USER_NOTE, wrap_untrusted
 from app.agents.subagents import (
     run_docx_agent,
     run_drawio_agent,
-    run_narrative_agent,
     run_pdf_agent,
     run_pptx_agent,
     run_process_extraction,
@@ -377,7 +379,7 @@ class Coordinator:
         use_subprocess = bool(getattr(settings, "coordinator_use_subprocess_workers", False))
         if use_subprocess:
             self.executor = TeammateExecutor(max_processes=8)
-            self.teammate_integration: Optional[CoordinatorTeammateIntegration] = None
+            self.teammate_integration: CoordinatorTeammateIntegration | None = None
         else:
             self.executor = None
             self.teammate_integration = None
@@ -645,7 +647,7 @@ class Coordinator:
             for output_type in wanted:
                 try:
                     by_output[output_type] = DeliverableRegistry.get(output_type).get_metadata()
-                except Exception:
+                except Exception:  # noqa: S112 — best-effort, non-fatal
                     continue
             state["deliverable_metadata_by_output_type"] = by_output
 
@@ -1009,9 +1011,9 @@ class Coordinator:
         self,
         task_id: str,
         state: ProcessDocState,
-        output_type: Optional[str] = None,
+        output_type: str | None = None,
         max_retries: int = 1,
-    ) -> tuple[dict[str, Any], Optional[str]]:
+    ) -> tuple[dict[str, Any], str | None]:
         """
         Execute a single task and return (output_patch, error_message).
 
@@ -1437,7 +1439,7 @@ class Coordinator:
                                     clean = [str(x).strip() for x in lines if str(x).strip()]
                                     if clean:
                                         profile_payload.setdefault("user_preference_lines", clean)
-                        except Exception:
+                        except Exception:  # noqa: S110 — best-effort, non-fatal
                             pass
             finally:
                 session.close()
@@ -1679,7 +1681,6 @@ class Coordinator:
         from app.agents.coordinator_state_manager import (
             CoordinatorStateError,
             CoordinatorStateManager,
-            ExecutionPlanSnapshot,
         )
 
         with _coordinator_abort_scope(abort_check):
@@ -1689,7 +1690,7 @@ class Coordinator:
 
             run_id = str(state.get("run_id") or "")
             project_id = state.get("project_id")
-            wanted = state.get("requested_outputs") or []
+            state.get("requested_outputs") or []
 
             # Initialize state manager
             sm = CoordinatorStateManager(
@@ -1961,7 +1962,7 @@ class Coordinator:
                                         clean = [str(x).strip() for x in lines if str(x).strip()]
                                         if clean:
                                             profile_payload.setdefault("user_preference_lines", clean)
-                            except Exception:
+                            except Exception:  # noqa: S110 — best-effort, non-fatal
                                 pass
                 finally:
                     session.close()
@@ -2323,7 +2324,7 @@ class Coordinator:
                 if self.teammate_integration:
                     # Subprocess-based execution
                     _LOG.info(f"Using subprocess workers for {len(worker_jobs)} output types")
-                    for k, w in worker_jobs:
+                    for k, _w in worker_jobs:
                         _coordinator_poll_abort()
                         patch, err = self.teammate_integration.execute_worker_subprocess(
                             output_type=k,

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
-from openpyxl.formatting.rule import ColorScaleRule, CellIsRule
 from openpyxl.styles import (
     Alignment,
     Border,
@@ -106,10 +106,8 @@ def _add_chart(ws: Any, chart_def: dict[str, Any], anchor: str) -> None:
     chart.add_data(data, titles_from_data=titles_from_data)
 
     cats = Reference(ws, min_col=cats_col, min_row=min_row + (1 if titles_from_data else 0), max_row=max_row)
-    try:
+    with contextlib.suppress(Exception):
         chart.set_categories(cats)
-    except Exception:
-        pass
 
     chart.height = float(chart_def.get("height") or 10)
     chart.width = float(chart_def.get("width") or 18)
@@ -176,10 +174,8 @@ def apply_cells_to_workbook(
 
             named_style = str(cell_data.get("named_style") or "").strip()
             if named_style:
-                try:
+                with contextlib.suppress(Exception):
                     cell.style = named_style
-                except Exception:
-                    pass
 
             if "formula" in cell_data:
                 cell.value = f"={cell_data['formula']}"
@@ -329,7 +325,7 @@ class XLSXDeliverable(IDeliverable):
                 payload.get("presentation_title") or pm.get("process_name") or "ProcessDoc Output"
             )[:255]
             props.company = str(getattr(branding, "company_name", None) or "")[:255]
-            props.modified = datetime.now(timezone.utc)
+            props.modified = datetime.now(UTC)
         except Exception as exc:
             logger.debug("Workbook properties skipped: %s", exc)
 

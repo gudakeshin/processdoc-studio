@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from app.services.skill_document import (
     load_builtin_skills_from_markdown,

@@ -1,16 +1,15 @@
 """Unit tests for MCP protocol module."""
 
 import json
-import pytest
+
 from app.services.mcp.protocol import (
     JSONRPCRequest,
     JSONRPCResponse,
-    parse_json_rpc_request,
-    parse_json_rpc_response,
-    parse_json_rpc_line,
+    format_json_rpc_error,
     format_json_rpc_request,
     format_json_rpc_response,
-    format_json_rpc_error,
+    parse_json_rpc_request,
+    parse_json_rpc_response,
 )
 
 

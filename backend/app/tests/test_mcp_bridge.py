@@ -1,9 +1,10 @@
 """Unit tests for MCP bridge module."""
 
-import asyncio
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+
 from app.services.mcp.bridge import call_mcp_tool, try_mcp_tool_call
 from app.services.mcp.registry import MCPRegistry, MCPServerInstance
 
@@ -108,7 +109,7 @@ class TestMCPBridge:
         with patch("app.services.mcp.bridge.get_mcp_registry") as mock_get_reg:
             with patch("asyncio.wait_for") as mock_wait_for:
                 mock_get_reg.return_value = mock_registry
-                mock_wait_for.side_effect = asyncio.TimeoutError()
+                mock_wait_for.side_effect = TimeoutError()
 
                 result = await call_mcp_tool(
                     "test-server",

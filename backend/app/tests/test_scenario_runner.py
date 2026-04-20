@@ -1,18 +1,19 @@
 """Test suite for scenario analysis engine."""
 
-import pytest
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from app.services.scenario_runner import (
-    run_scenario_calculation,
     compare_scenarios,
-    save_scenario_results,
-    load_scenario_results,
-    load_all_scenario_results,
-    refresh_all_scenario_results,
     get_scenario_rankings,
+    load_all_scenario_results,
+    load_scenario_results,
+    refresh_all_scenario_results,
+    run_scenario_calculation,
+    save_scenario_results,
 )
 
 

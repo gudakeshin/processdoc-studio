@@ -15,9 +15,7 @@ from app.db.models import Conversation, ConversationMessage, Project
 
 def should_persist_visual_qa_chat(report: dict[str, Any]) -> bool:
     """Always mirror Visual QA into the instruction thread so the user can read it and reply."""
-    if not isinstance(report, dict) or not report:
-        return False
-    return True
+    return not (not isinstance(report, dict) or not report)
 
 
 def build_visual_qa_chat_message_body(report: dict[str, Any], *, run_id: str) -> str:

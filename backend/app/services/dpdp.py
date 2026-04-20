@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
 from app.services.storage import workspace_path
-
 
 # India DPDP Act 2023 - pragmatic PII regex approximations (phase 1).
 # This is intentionally conservative and does not attempt full NER accuracy yet.
@@ -132,7 +131,7 @@ def build_breach_notification_report(
     Email delivery is stubbed in this phase; we persist the schedule for a later worker.
     """
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     email_due_at = now + timedelta(hours=1)
     clock_end_at = now + timedelta(hours=72)
 
@@ -191,7 +190,7 @@ def process_due_breach_notifications(project_id: str | None = None) -> dict[str,
     roots = [workspace_path(project_id)] if project_id else [p for p in Path(workspace_path("__dummy__")).parent.glob("*") if p.is_dir()]
     sent = 0
     failed = 0
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for root in roots:
         breaches_dir = root / "dpdp" / "breaches"
         if not breaches_dir.exists():
@@ -199,7 +198,7 @@ def process_due_breach_notifications(project_id: str | None = None) -> dict[str,
         for p in breaches_dir.glob("breach_notification_*.json"):
             try:
                 payload = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
             if not isinstance(payload, dict):
                 continue
@@ -265,7 +264,7 @@ def update_breach_incident_state(
         payload = json.loads(incident_path.read_text(encoding="utf-8"))
     except Exception:
         return None
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     payload["state"] = state
     payload["updated_at"] = now
     if resolution_notes is not None:

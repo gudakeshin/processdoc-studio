@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import shutil
@@ -6,37 +7,37 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import redis
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.api.formats import _load_output_types
 from app.core.auth import get_current_user, get_current_user_sse, require_project_role
 from app.core.config import settings
 from app.db.models import Conversation, ConversationMessage, MemoryEvent, Run, RunEvent, RunTask, ScheduledTaskRun, User
 from app.db.session import SessionLocal, get_db
-from app.api.formats import _load_output_types
+from app.schemas.common import RunSummary
 from app.services.claude import claude_generate_json, is_claude_enabled
-from app.services.storage import workspace_path
+from app.services.hooks import disable_hook, list_registered_hooks, sync_disabled_hooks_from_db, upsert_hook_control
+from app.services.observability import increment
+from app.services.permission_pipeline import evaluate_permission_pipeline
+from app.services.run_events import lifecycle_event
+from app.services.run_tasks import serialize_run_task
 from app.services.run_worker import (
     admission_status,
-    append_run_event,
     append_memory_event,
+    append_run_event,
     enqueue_run_execution,
     list_dead_letter_items,
     maybe_start_run_execution,
     replay_dead_letter_item,
     reset_dead_letter_attempts,
 )
-from app.services.run_events import lifecycle_event
-from app.services.run_tasks import serialize_run_task
+from app.services.storage import workspace_path
 from app.services.swarm import persist_instruction_broadcast_swarm_event_payload
-from app.services.permission_pipeline import evaluate_permission_pipeline
-from app.services.hooks import disable_hook, list_registered_hooks, sync_disabled_hooks_from_db, upsert_hook_control
-from app.services.observability import increment
-import redis
-from app.schemas.common import RunSummary
 
 router = APIRouter()
 _log = logging.getLogger(__name__)
@@ -77,7 +78,7 @@ def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str,
         _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort, non-fatal
         pass
 
 
@@ -105,7 +106,7 @@ def _debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> N
         }
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort, non-fatal
         pass
 
 
@@ -183,7 +184,7 @@ def _build_plan_payload(
         for parsed_file in parsed_dir.glob("*.json"):
             try:
                 parsed_payload = json.loads(parsed_file.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
             chunks = parsed_payload.get("chunks")
             if isinstance(chunks, list):
@@ -286,7 +287,7 @@ def _load_confirmed_plan(
     for row in rows:
         try:
             metadata = json.loads(row.metadata_json or "{}")
-        except Exception:
+        except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
         if not isinstance(metadata, dict) or not metadata.get("plan_confirmed"):
             continue
@@ -524,13 +525,16 @@ def _recommend_output_types(
         _catalog_ids = {str(item.get("output_type_id")) for item in catalog}
         allowed_explicit = [t for t in explicit_formats_requested if t in _catalog_ids]
         if allowed_explicit:
-            fast_prefs: dict[str, str] = {}
-            for _t in allowed_explicit:
-                if _t == "pptx":        fast_prefs["pptx"] = "pptx"
-                elif _t == "docx":      fast_prefs["docx"] = "docx"
-                elif _t == "xlsx":      fast_prefs["xlsx"] = "xlsx"
-                elif _t == "process_map": fast_prefs["process_map"] = "drawio_xml"
-                elif _t == "pdf":       fast_prefs["pdf"] = "pdf"
+            _FAST_PREF_REPR = {
+                "pptx": "pptx",
+                "docx": "docx",
+                "xlsx": "xlsx",
+                "process_map": "drawio_xml",
+                "pdf": "pdf",
+            }
+            fast_prefs: dict[str, str] = {
+                t: _FAST_PREF_REPR[t] for t in allowed_explicit if t in _FAST_PREF_REPR
+            }
             return allowed_explicit, [], fast_prefs, "Explicit format constraint detected.", None
 
     deliverable_constraints_text = (
@@ -579,9 +583,12 @@ def _recommend_output_types(
     # Only auto-include process maps for explicit map intent.
     lowered_instruction = (instruction or "").lower()
     explicit_process_map_signals = ("process map", "swimlane", "flowchart", "draw.io", "drawio", "bpmn")
-    if any(sig in lowered_instruction for sig in explicit_process_map_signals):
-        if "process_map" in allowed and "process_map" not in chosen:
-            chosen.append("process_map")
+    if (
+        any(sig in lowered_instruction for sig in explicit_process_map_signals)
+        and "process_map" in allowed
+        and "process_map" not in chosen
+    ):
+        chosen.append("process_map")
 
     # Post-process with deliverable constraints when we clearly detected intent keywords.
     if desired_types:
@@ -1235,10 +1242,8 @@ def stream_run(
                 time.sleep(sleep_sec)
         finally:
             if pubsub is not None:
-                try:
+                with contextlib.suppress(Exception):
                     pubsub.close()
-                except Exception:
-                    pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

@@ -7,16 +7,11 @@ the legacy `layout` field.
 """
 from __future__ import annotations
 
-import io
 from typing import Any
 
-import pytest
 from pptx import Presentation
-from pptx.dml.color import RGBColor
-from pptx.util import Inches
 
 from app.services.storage import save_run_artifacts
-
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -46,7 +41,7 @@ def _fill_colors(slide: Any) -> set[str]:
         try:
             rgb = shape.fill.fore_color.rgb
             colors.add(str(rgb).upper())
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort, non-fatal
             pass
     return colors
 

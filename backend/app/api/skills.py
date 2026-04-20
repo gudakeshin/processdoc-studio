@@ -1,3 +1,4 @@
+import contextlib
 import json
 from pathlib import Path
 from typing import Any
@@ -222,10 +223,8 @@ def delete_skill(
     for p in sorted(base_dir.rglob("*"), reverse=True):
         if p.is_dir():
             p.rmdir()
-    try:
+    with contextlib.suppress(Exception):
         base_dir.rmdir()
-    except Exception:
-        pass
 
     return {"project_id": pid, "skill_id": sid, "status": "deleted"}
 

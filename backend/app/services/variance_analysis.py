@@ -1,13 +1,13 @@
 """Variance analysis service for budget vs actual analysis and drill-down."""
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class VarianceSeverity(Enum):
@@ -235,7 +235,7 @@ def analyze_trend_variance(
     variances = []
     variance_amounts = []
 
-    for actual, budget in zip(actual_periods, budget_periods):
+    for actual, budget in zip(actual_periods, budget_periods, strict=False):
         v = calculate_simple_variance(actual, budget)
         variances.append(v)
         variance_amounts.append(v["variance_pct"])

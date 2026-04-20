@@ -16,7 +16,10 @@ def init_otel_if_enabled() -> None:
     try:
         from opentelemetry import trace  # type: ignore[import-not-found]
         from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-not-found]
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter  # type: ignore[import-not-found]
+        from opentelemetry.sdk.trace.export import (  # type: ignore[import-not-found]
+            BatchSpanProcessor,
+            ConsoleSpanExporter,
+        )
     except ImportError:
         _log.warning("otel_sdk_enabled but opentelemetry-sdk is not installed; skipping OTel init")
         return

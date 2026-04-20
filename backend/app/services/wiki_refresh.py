@@ -5,13 +5,12 @@ Tracks source freshness and automatically refreshes wiki pages when sources chan
 Implements smart scheduling and handles incremental updates with change detection.
 """
 
+import hashlib
 import json
 import logging
-import hashlib
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from collections import defaultdict
+from typing import Any
 
 from app.services.storage import workspace_path
 
@@ -21,7 +20,7 @@ _LOG = logging.getLogger(__name__)
 class SourceTracker:
     """Track and manage source freshness."""
 
-    def __init__(self, wiki_type: str = "leading_practice", project_id: Optional[str] = None):
+    def __init__(self, wiki_type: str = "leading_practice", project_id: str | None = None):
         """Initialize source tracker."""
         self.wiki_type = wiki_type
         self.project_id = project_id
@@ -41,7 +40,7 @@ class SourceTracker:
         meta_dir = self.wiki_dir / ".meta"
         return meta_dir / "sources_metadata.json"
 
-    def _load_sources_metadata(self) -> Dict[str, Any]:
+    def _load_sources_metadata(self) -> dict[str, Any]:
         """Load sources metadata."""
         try:
             if self.sources_file.exists():
@@ -87,7 +86,7 @@ class SourceTracker:
                 self.sources_metadata["sources"][page_id]["sources"].append({
                     "url": source_url,
                     "type": source_type,
-                    "added_at": datetime.now(timezone.utc).isoformat(),
+                    "added_at": datetime.now(UTC).isoformat(),
                     "last_checked": None,
                     "hash": None,
                     "status": "pending",
@@ -100,7 +99,7 @@ class SourceTracker:
             _LOG.error(f"Error registering source: {e}")
             return False
 
-    def check_source_freshness(self, page_id: str) -> Dict[str, Any]:
+    def check_source_freshness(self, page_id: str) -> dict[str, Any]:
         """
         Check if page sources have changed.
 
@@ -149,7 +148,7 @@ class SourceTracker:
                         })
                     else:
                         source["hash"] = current_hash
-                        source["last_checked"] = datetime.now(timezone.utc).isoformat()
+                        source["last_checked"] = datetime.now(UTC).isoformat()
 
                 except Exception as e:
                     _LOG.warning(f"Error checking source {source_url}: {e}")
@@ -213,13 +212,13 @@ class SourceTracker:
                 # For memory, run, etc., use the URL as-is
                 content = source_url
 
-            return hashlib.md5(content.encode()).hexdigest()[:16]
+            return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()[:16]
 
         except Exception as e:
             _LOG.warning(f"Error getting source hash: {e}")
             return "error"
 
-    def get_pages_needing_refresh(self, days_old: int = 14) -> List[str]:
+    def get_pages_needing_refresh(self, days_old: int = 14) -> list[str]:
         """
         Get pages whose sources haven't been checked recently.
 
@@ -230,7 +229,7 @@ class SourceTracker:
             List of page IDs
         """
         try:
-            threshold = datetime.now(timezone.utc) - timedelta(days=days_old)
+            threshold = datetime.now(UTC) - timedelta(days=days_old)
             pages_to_refresh = []
 
             for page_id, page_data in self.sources_metadata.get("sources", {}).items():
@@ -244,7 +243,7 @@ class SourceTracker:
                         checked_date = datetime.fromisoformat(last_checked)
                         if checked_date < threshold:
                             pages_to_refresh.append(page_id)
-                    except Exception:
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
                         pass
 
             return pages_to_refresh
@@ -253,7 +252,7 @@ class SourceTracker:
             _LOG.error(f"Error getting pages needing refresh: {e}")
             return []
 
-    def get_refresh_priority(self) -> List[Dict[str, Any]]:
+    def get_refresh_priority(self) -> list[dict[str, Any]]:
         """
         Get prioritized list of pages for refresh.
 
@@ -289,7 +288,7 @@ class SourceTracker:
                 # Older syncs get higher priority
                 if last_synced:
                     try:
-                        days_since_sync = (datetime.now(timezone.utc) - datetime.fromisoformat(last_synced)).days
+                        days_since_sync = (datetime.now(UTC) - datetime.fromisoformat(last_synced)).days
                         priority += days_since_sync
                     except Exception:
                         priority += 30
@@ -315,7 +314,7 @@ class SourceTracker:
     def _persist(self) -> None:
         """Save sources metadata."""
         try:
-            self.sources_metadata["last_checked"] = datetime.now(timezone.utc).isoformat()
+            self.sources_metadata["last_checked"] = datetime.now(UTC).isoformat()
 
             meta_dir = self.wiki_dir / ".meta"
             meta_dir.mkdir(exist_ok=True)
@@ -331,7 +330,7 @@ class SourceTracker:
 class RefreshScheduler:
     """Schedule and manage wiki page refreshes."""
 
-    def __init__(self, wiki_type: str = "leading_practice", project_id: Optional[str] = None):
+    def __init__(self, wiki_type: str = "leading_practice", project_id: str | None = None):
         """Initialize refresh scheduler."""
         self.wiki_type = wiki_type
         self.project_id = project_id
@@ -345,7 +344,7 @@ class RefreshScheduler:
         else:
             return workspace_path(self.project_id) / "wiki"
 
-    def get_refresh_schedule(self, batch_size: int = 10) -> Dict[str, Any]:
+    def get_refresh_schedule(self, batch_size: int = 10) -> dict[str, Any]:
         """
         Get scheduled refreshes for the next period.
 
@@ -373,7 +372,7 @@ class RefreshScheduler:
                 "total_pages_to_refresh": len(priority_list),
                 "next_batch": next_batch,
                 "priority_scores": priority_scores,
-                "schedule_date": datetime.now(timezone.utc).isoformat(),
+                "schedule_date": datetime.now(UTC).isoformat(),
             }
 
         except Exception as e:
@@ -385,7 +384,7 @@ class RefreshScheduler:
         try:
             if page_id in self.tracker.sources_metadata["sources"]:
                 self.tracker.sources_metadata["sources"][page_id]["last_synced"] = \
-                    datetime.now(timezone.utc).isoformat()
+                    datetime.now(UTC).isoformat()
                 self.tracker._persist()
                 return True
             return False
@@ -396,8 +395,8 @@ class RefreshScheduler:
 
 def check_wiki_source_freshness(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    project_id: str | None = None,
+) -> dict[str, Any]:
     """
     Check freshness of all sources in a wiki.
 
@@ -432,9 +431,9 @@ def check_wiki_source_freshness(
 
 def get_refresh_schedule(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     batch_size: int = 10,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Get refresh schedule for a wiki."""
     scheduler = RefreshScheduler(wiki_type, project_id)
     return scheduler.get_refresh_schedule(batch_size)

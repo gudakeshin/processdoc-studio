@@ -1,40 +1,38 @@
 """Comprehensive tests for the Excel Financial Model Composer."""
 
 import io
-import pytest
+
 from openpyxl import Workbook, load_workbook
 
 from app.services.excel_model_composer import (
-    _cell,
-    _col_letter,
-    _safe_div,
-    _compose_assumptions_sheet,
-    _compose_income_statement,
-    _compose_balance_sheet,
-    _compose_cash_flow,
-    _compose_ratios,
-    _compose_valuation,
-    _compose_dashboard,
-    _compose_scenarios,
-    _compose_forecast,
-    _compose_budget_vs_actual,
-    compose_financial_model,
-    SH_ASSUMPTIONS,
-    SH_INCOME,
-    SH_BALANCE,
-    SH_CASHFLOW,
-    SH_RATIOS,
-    SH_VALUATION,
-    SH_SCENARIOS,
-    SH_FORECAST,
-    SH_BUDGET,
-    SH_DASHBOARD,
     BLUE_INPUT,
-    GREEN_LINK,
-    YELLOW_BG,
-    HEADER_BG,
     FMT_CURRENCY,
     FMT_PERCENT,
+    HEADER_BG,
+    SH_ASSUMPTIONS,
+    SH_BALANCE,
+    SH_BUDGET,
+    SH_CASHFLOW,
+    SH_DASHBOARD,
+    SH_FORECAST,
+    SH_INCOME,
+    SH_RATIOS,
+    SH_SCENARIOS,
+    SH_VALUATION,
+    YELLOW_BG,
+    _cell,
+    _col_letter,
+    _compose_assumptions_sheet,
+    _compose_balance_sheet,
+    _compose_budget_vs_actual,
+    _compose_cash_flow,
+    _compose_forecast,
+    _compose_income_statement,
+    _compose_ratios,
+    _compose_scenarios,
+    _compose_valuation,
+    _safe_div,
+    compose_financial_model,
 )
 
 # ---------------------------------------------------------------------------
@@ -306,7 +304,7 @@ class TestRatiosSheet:
         cells = _compose_ratios(is_row_map, bs_row_map, 5)
 
         data_cells = [c for c in cells if c["col"] >= 2
-                      and not c.get("fill_color") == HEADER_BG
+                      and c.get("fill_color") != HEADER_BG
                       and c.get("formula") is not None]
         non_formula_data = [c for c in cells if c["col"] >= 2
                             and c.get("value") is not None

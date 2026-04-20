@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Any
-
-import json
 
 from app.core.config import settings
 from app.services.cache import cache_service
@@ -67,7 +66,7 @@ class LeadingPracticeLibraryService:
                         continue
                     try:
                         text = p.read_text(encoding="utf-8", errors="ignore").strip()
-                    except Exception:
+                    except Exception:  # noqa: S112 — best-effort, non-fatal
                         continue
                     if not text:
                         continue

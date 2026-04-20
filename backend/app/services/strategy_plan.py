@@ -163,7 +163,7 @@ def format_strategy_dossier_markdown(d: dict[str, Any]) -> str:
         lines.append("**Each approach has merit:**")
         lines.append("")
 
-    for i, o in enumerate(options, 1):
+    for _i, o in enumerate(options, 1):
         if not isinstance(o, dict):
             continue
         emoji = AgentPersonality.PROGRESS_MARKERS.get("phase_start", "→")

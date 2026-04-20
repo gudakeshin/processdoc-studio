@@ -14,13 +14,13 @@ that continuously refines and evolves the wiki without user intervention.
 
 import json
 import logging
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+from app.services import wiki_lint
 from app.services.storage import workspace_path
-from app.services.wiki_operations import exponential_backoff, classify_error, NonTransientError
-from app.services import wiki_lint, wiki_graph, wiki_analytics
+from app.services.wiki_operations import NonTransientError
 
 _LOG = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ _LOG = logging.getLogger(__name__)
 class WikiMaintenanceManager:
     """Autonomous wiki maintenance orchestrator."""
 
-    def __init__(self, wiki_type: str = "leading_practice", project_id: Optional[str] = None):
+    def __init__(self, wiki_type: str = "leading_practice", project_id: str | None = None):
         """
         Initialize maintenance manager.
 
@@ -53,7 +53,7 @@ class WikiMaintenanceManager:
         """Get the maintenance log file path."""
         return self.wiki_dir / "maintenance.log"
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self) -> dict[str, Any]:
         """Load maintenance configuration from schema."""
         schema_path = self.wiki_dir / "SCHEMA.md"
         if not schema_path.exists():
@@ -78,7 +78,7 @@ class WikiMaintenanceManager:
 
         return self._default_config()
 
-    def _default_config(self) -> Dict[str, Any]:
+    def _default_config(self) -> dict[str, Any]:
         """Default maintenance configuration."""
         return {
             "auto_fix_confidence": 0.85,
@@ -88,11 +88,11 @@ class WikiMaintenanceManager:
             "max_maintenance_pages": 50,  # Limit batch size
         }
 
-    def _log_maintenance(self, action: str, details: Dict[str, Any]) -> None:
+    def _log_maintenance(self, action: str, details: dict[str, Any]) -> None:
         """Log maintenance action."""
         try:
             log_entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "action": action,
                 "details": details,
             }
@@ -115,7 +115,7 @@ class WikiMaintenanceManager:
         except Exception as e:
             _LOG.error(f"Error logging maintenance: {e}")
 
-    def run_maintenance(self, auto_fix: bool = True) -> Dict[str, Any]:
+    def run_maintenance(self, auto_fix: bool = True) -> dict[str, Any]:
         """
         Run full maintenance cycle.
 
@@ -128,7 +128,7 @@ class WikiMaintenanceManager:
         _LOG.info(f"Starting maintenance for {self.wiki_type} wiki")
 
         results = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "wiki_type": self.wiki_type,
             "project_id": self.project_id,
             "checks": {},
@@ -164,7 +164,7 @@ class WikiMaintenanceManager:
         self._log_maintenance("full_maintenance", results)
         return results
 
-    def _fix_orphaned_pages(self, auto_fix: bool = True) -> Dict[str, Any]:
+    def _fix_orphaned_pages(self, auto_fix: bool = True) -> dict[str, Any]:
         """Detect and fix orphaned pages."""
         try:
             issues = wiki_lint._check_orphaned_pages(self.wiki_type, self.project_id)
@@ -187,7 +187,7 @@ class WikiMaintenanceManager:
             _LOG.error(f"Error fixing orphaned pages: {e}")
             return {"error": str(e), "status": "failed"}
 
-    def _auto_fix_orphans(self, orphans: List[Dict[str, Any]]) -> int:
+    def _auto_fix_orphans(self, orphans: list[dict[str, Any]]) -> int:
         """
         Auto-fix orphaned pages by deleting or merging.
 
@@ -219,7 +219,7 @@ class WikiMaintenanceManager:
 
         return fixed
 
-    def _fix_broken_links(self, auto_fix: bool = True) -> Dict[str, Any]:
+    def _fix_broken_links(self, auto_fix: bool = True) -> dict[str, Any]:
         """Detect and fix broken links."""
         try:
             issues = wiki_lint._check_broken_links(self.wiki_type, self.project_id)
@@ -242,7 +242,7 @@ class WikiMaintenanceManager:
             _LOG.error(f"Error fixing broken links: {e}")
             return {"error": str(e), "status": "failed"}
 
-    def _auto_fix_broken_links(self, broken: List[Dict[str, Any]]) -> int:
+    def _auto_fix_broken_links(self, broken: list[dict[str, Any]]) -> int:
         """
         Auto-fix broken links by removing or correcting.
 
@@ -268,7 +268,7 @@ class WikiMaintenanceManager:
 
         return fixed
 
-    def _handle_duplicates(self, auto_fix: bool = True) -> Dict[str, Any]:
+    def _handle_duplicates(self, auto_fix: bool = True) -> dict[str, Any]:
         """Detect and handle duplicate pages."""
         try:
             from app.services.wiki_dedup import DuplicateDetector
@@ -295,11 +295,11 @@ class WikiMaintenanceManager:
             _LOG.error(f"Error handling duplicates: {e}")
             return {"error": str(e), "status": "failed"}
 
-    def _detect_stale_pages(self, auto_fix: bool = True) -> Dict[str, Any]:
+    def _detect_stale_pages(self, auto_fix: bool = True) -> dict[str, Any]:
         """Detect pages that haven't been updated in a while."""
         try:
             stale_pages = []
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             stale_threshold = now - timedelta(days=self.config["stale_days"])
 
             for md_file in self.wiki_dir.glob("*.md"):
@@ -328,7 +328,7 @@ class WikiMaintenanceManager:
                                 })
                         except ValueError:
                             pass
-                except Exception:
+                except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
 
             return {
@@ -340,7 +340,7 @@ class WikiMaintenanceManager:
             _LOG.error(f"Error detecting stale pages: {e}")
             return {"error": str(e), "status": "failed"}
 
-    def _generate_synthesis_pages(self, auto_fix: bool = True) -> Dict[str, Any]:
+    def _generate_synthesis_pages(self, auto_fix: bool = True) -> dict[str, Any]:
         """Generate synthesis pages for identified gaps."""
         try:
             # TODO: Implement once Phase 5 (synthesis engine) is done
@@ -354,7 +354,7 @@ class WikiMaintenanceManager:
             _LOG.error(f"Error generating synthesis pages: {e}")
             return {"error": str(e), "status": "failed"}
 
-    def get_maintenance_status(self) -> Dict[str, Any]:
+    def get_maintenance_status(self) -> dict[str, Any]:
         """Get recent maintenance status."""
         try:
             if not self.maintenance_log.exists():
@@ -378,9 +378,9 @@ class WikiMaintenanceManager:
 # Convenience functions for API integration
 def run_wiki_maintenance(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     auto_fix: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run wiki maintenance.
 
@@ -398,8 +398,8 @@ def run_wiki_maintenance(
 
 def get_maintenance_status(
     wiki_type: str = "leading_practice",
-    project_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    project_id: str | None = None,
+) -> dict[str, Any]:
     """Get maintenance status for a wiki."""
     manager = WikiMaintenanceManager(wiki_type, project_id)
     return manager.get_maintenance_status()

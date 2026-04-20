@@ -4,7 +4,6 @@ Tests for wiki graph query engine and traversal operations.
 Tests Priority 4: Graph Query Engine & Persistent Graph
 """
 
-import pytest
 import networkx as nx
 
 
@@ -92,8 +91,8 @@ class TestGraphTraversal:
 
         # Try to find path from 1 to 4
         try:
-            path = nx.shortest_path(G, 1, 4)
-            assert False, "Should raise NetworkXNoPath"
+            nx.shortest_path(G, 1, 4)
+            raise AssertionError("Should raise NetworkXNoPath")
         except nx.NetworkXNoPath:
             pass  # Expected
 
@@ -156,8 +155,9 @@ class TestGraphSerialization:
 
     def test_graph_to_json(self):
         """Test converting NetworkX graph to JSON."""
-        from networkx.readwrite import json_graph
         import json
+
+        from networkx.readwrite import json_graph
 
         G = nx.Graph()
         G.add_edges_from([(1, 2, {"weight": 0.8}), (2, 3)])

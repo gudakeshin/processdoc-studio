@@ -7,8 +7,8 @@ Enables automatic knowledge capture and bidirectional learning across the platfo
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +18,10 @@ class WikiMemoryIntegration:
 
     @staticmethod
     def ingest_memory_item_to_wiki(
-        memory_item: Dict[str, Any],
+        memory_item: dict[str, Any],
         wiki_type: str = "project",
-        project_id: Optional[str] = None,
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        project_id: str | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """
         Convert a MemoryItem to a wiki page and add to wiki.
 
@@ -65,7 +65,7 @@ class WikiMemoryIntegration:
                     "category": category,
                     "source_count": 1,
                     "confidence": metadata.get("confidence", "medium"),
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": datetime.now(UTC).isoformat(),
                     "source_memory_id": item_id,
                     "memory_type": item_type,
                 }),
@@ -80,9 +80,9 @@ class WikiMemoryIntegration:
 
     @staticmethod
     def sync_memory_item_updates_to_wiki(
-        memory_item: Dict[str, Any],
-        wiki_page: Dict[str, Any],
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        memory_item: dict[str, Any],
+        wiki_page: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """
         Update wiki page when memory item changes.
 
@@ -100,7 +100,7 @@ class WikiMemoryIntegration:
 
             # Update frontmatter with new timestamp
             frontmatter = json.loads(wiki_page.get("frontmatter", "{}"))
-            frontmatter["last_updated"] = datetime.now(timezone.utc).isoformat()
+            frontmatter["last_updated"] = datetime.now(UTC).isoformat()
             wiki_page["frontmatter"] = json.dumps(frontmatter)
 
             logger.info(f"Updated wiki page from memory item {memory_item.get('id')}")
@@ -117,10 +117,10 @@ class WikiRunIntegration:
     @staticmethod
     def ingest_run_artifact_to_wiki(
         run_id: str,
-        run_summary: Dict[str, Any],
-        artifacts: List[Dict[str, Any]],
+        run_summary: dict[str, Any],
+        artifacts: list[dict[str, Any]],
         project_id: str,
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """
         Ingest run artifacts and learnings into project wiki.
 
@@ -135,7 +135,6 @@ class WikiRunIntegration:
         """
         try:
             pages_created = []
-            errors = []
 
             # 1. Create overview page for run
             overview_page = {
@@ -163,7 +162,7 @@ class WikiRunIntegration:
                     "category": "artifact",
                     "source_count": len(artifacts) + 1,
                     "confidence": "high",
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": datetime.now(UTC).isoformat(),
                     "source_run_id": run_id,
                 }),
             }
@@ -182,7 +181,7 @@ class WikiRunIntegration:
                         "category": "concept",
                         "source_count": 1,
                         "confidence": "medium",
-                        "last_updated": datetime.now(timezone.utc).isoformat(),
+                        "last_updated": datetime.now(UTC).isoformat(),
                         "source_run_id": run_id,
                     }),
                 }
@@ -199,7 +198,7 @@ class WikiRunIntegration:
                     "category": "artifact",
                     "source_count": len(artifacts),
                     "confidence": "high",
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": datetime.now(UTC).isoformat(),
                 }),
             }
             pages_created.append(artifact_page)
@@ -219,7 +218,7 @@ class WikiRunIntegration:
             return None, str(e)
 
     @staticmethod
-    def extract_run_learnings(run_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def extract_run_learnings(run_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Extract learnings and insights from run event log.
 
@@ -251,9 +250,9 @@ class WikiConversationIntegration:
     @staticmethod
     def digest_conversation_to_wiki(
         conversation_id: str,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         project_id: str,
-    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """
         Create a wiki page from conversation digest.
 
@@ -299,7 +298,7 @@ Participants: {len(set(m.get('user_id') for m in messages))}
                     "category": "synthesis",
                     "source_count": len(messages),
                     "confidence": "medium",
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": datetime.now(UTC).isoformat(),
                     "conversation_id": conversation_id,
                     "message_count": len(messages),
                 }),
@@ -320,8 +319,8 @@ class WikiCoordinatorIntegration:
     def query_wiki_for_context(
         question: str,
         wiki_type: str = "project",
-        project_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         """
         Query wiki to get context for coordinator planning.
 
@@ -353,9 +352,9 @@ class WikiCoordinatorIntegration:
 
     @staticmethod
     def apply_learnings_to_run_plan(
-        plan: Dict[str, Any],
-        wiki_learnings: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        plan: dict[str, Any],
+        wiki_learnings: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         """
         Enhance run plan with learnings from wiki.
 
@@ -372,7 +371,7 @@ class WikiCoordinatorIntegration:
             plan["learning_count"] = len(wiki_learnings)
 
             # If learnings suggest avoiding certain approaches, flag them
-            cautions = [l for l in wiki_learnings if "avoid" in l.get("title", "").lower()]
+            cautions = [lrn for lrn in wiki_learnings if "avoid" in lrn.get("title", "").lower()]
             if cautions:
                 plan["cautions"] = cautions
 
@@ -390,8 +389,8 @@ class WikiLeadingPracticesIntegration:
     @staticmethod
     def get_leading_practices_from_wiki(
         topic: str,
-        category: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        category: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Retrieve leading practices from LP wiki for a topic.
 
@@ -421,9 +420,9 @@ class WikiLeadingPracticesIntegration:
 
     @staticmethod
     def propose_learning_to_lp_wiki(
-        project_wiki_page: Dict[str, Any],
+        project_wiki_page: dict[str, Any],
         project_id: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """
         Propose a project learning as a new leading practice.
 
@@ -442,7 +441,7 @@ class WikiLeadingPracticesIntegration:
                 "source_page_title": project_wiki_page.get("title"),
                 "content": project_wiki_page.get("content"),
                 "status": "pending_review",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
 
             logger.info(f"Proposed learning from {project_id} for LP wiki review")
@@ -455,7 +454,7 @@ class WikiLeadingPracticesIntegration:
 
 # ===== Helper Functions =====
 
-def _generate_artifact_catalog(run_id: str, artifacts: List[Dict[str, Any]]) -> str:
+def _generate_artifact_catalog(run_id: str, artifacts: list[dict[str, Any]]) -> str:
     """Generate markdown catalog of run artifacts."""
     if not artifacts:
         return "No artifacts produced."
@@ -472,19 +471,19 @@ def _generate_artifact_catalog(run_id: str, artifacts: List[Dict[str, Any]]) -> 
     return catalog
 
 
-def _summarize_conversation(messages: List[Dict[str, Any]]) -> str:
+def _summarize_conversation(messages: list[dict[str, Any]]) -> str:
     """Generate summary of conversation."""
     if not messages:
         return "No messages."
 
     # Simple approach: extract key topics from first and last messages
-    first_topic = messages[0].get("content", "")[:100] if messages else ""
-    last_msg = messages[-1].get("content", "")[:100] if messages else ""
+    messages[0].get("content", "")[:100] if messages else ""
+    messages[-1].get("content", "")[:100] if messages else ""
 
     return f"Conversation with {len(messages)} messages covering discussion topics."
 
 
-def _extract_decisions_from_conversation(messages: List[Dict[str, Any]]) -> List[str]:
+def _extract_decisions_from_conversation(messages: list[dict[str, Any]]) -> list[str]:
     """Extract decisions from conversation."""
     decisions = []
 
@@ -496,7 +495,7 @@ def _extract_decisions_from_conversation(messages: List[Dict[str, Any]]) -> List
     return decisions[:5]  # Top 5 decisions
 
 
-def _extract_questions_from_conversation(messages: List[Dict[str, Any]]) -> List[str]:
+def _extract_questions_from_conversation(messages: list[dict[str, Any]]) -> list[str]:
     """Extract questions from conversation."""
     questions = []
 
@@ -508,7 +507,7 @@ def _extract_questions_from_conversation(messages: List[Dict[str, Any]]) -> List
     return questions[:5]  # Top 5 questions
 
 
-def format_list(items: List[str]) -> str:
+def format_list(items: list[str]) -> str:
     """Format list of items as markdown bullet list."""
     if not items:
         return "None"

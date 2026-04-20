@@ -5,20 +5,15 @@ Tests the exponential backoff formula, retry behavior, transient vs non-transien
 error classification, and end-to-end retry scenarios.
 """
 
-import pytest
-import time
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 
 from app.services.wiki_operations import (
-    exponential_backoff,
     classify_error,
+    exponential_backoff,
     wiki_ingest_with_retry,
-    wiki_query_with_retry,
     wiki_lint_with_retry,
-    TransientError,
-    NonTransientError,
+    wiki_query_with_retry,
 )
-
 
 # ===== Tier 1: Exponential Backoff Tests (5 tests) =====
 

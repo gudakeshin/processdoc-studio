@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 from fastapi import APIRouter, WebSocket
 from jose import JWTError, jwt
 from sqlalchemy import select
@@ -52,15 +54,13 @@ async def model_ws(websocket: WebSocket, pid: str, mid: str) -> None:
             # Keepalive/read loop. Clients may send ping messages.
             _ = await websocket.receive_text()
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             await websocket.close()
-        except Exception:
-            pass
     finally:
         try:
             channel = await ensure_channel(pid, mid)
             channel.clients.discard(websocket)
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort, non-fatal
             pass
         db.close()
 

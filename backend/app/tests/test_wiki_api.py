@@ -4,8 +4,6 @@ Tests for wiki API endpoints.
 Tests ingest, query, lint, browse, and promote operations.
 """
 
-import pytest
-from fastapi.testclient import TestClient
 
 
 # Note: These tests would be integrated with the main FastAPI app
@@ -16,12 +14,6 @@ class TestWikiIngestAPI:
 
     def test_ingest_url_source(self):
         """Should ingest URL source into wiki."""
-        request_data = {
-            "wiki_type": "project",
-            "source_type": "url",
-            "source_data": {"url": "https://example.com/article"},
-            "project_id": "proj_1",
-        }
 
         # Expected response structure
         expected_keys = {"status", "pages_created", "pages_updated", "corrections_made"}
@@ -154,11 +146,6 @@ class TestWikiQueryAPI:
 
     def test_query_wiki_basic(self):
         """Should query wiki for answer."""
-        request_data = {
-            "wiki_type": "project",
-            "question": "What are the key financial drivers?",
-            "project_id": "proj_1",
-        }
 
         expected_keys = {"status", "answer", "citations", "source_pages"}
         assert expected_keys is not None
@@ -200,11 +187,6 @@ class TestWikiContextAPI:
 
     def test_get_context_for_planning(self):
         """Should get wiki context for run planning."""
-        request_data = {
-            "wiki_type": "project",
-            "question": "What did we learn from financial modeling?",
-            "project_id": "proj_1",
-        }
 
         expected_keys = {"question", "relevant_pages", "learnings", "recommendations"}
         assert expected_keys is not None
@@ -215,10 +197,6 @@ class TestWikiLintAPI:
 
     def test_lint_wiki_basic(self):
         """Should run health check on wiki."""
-        request_data = {
-            "wiki_type": "project",
-            "project_id": "proj_1",
-        }
 
         expected_keys = {"status", "issues", "suggestions", "severity", "issues_count"}
         assert expected_keys is not None
@@ -257,12 +235,6 @@ class TestWikiBrowseAPI:
 
     def test_list_pages_basic(self):
         """Should list wiki pages."""
-        params = {
-            "wiki_type": "project",
-            "project_id": "proj_1",
-            "limit": 50,
-            "offset": 0,
-        }
 
         expected_keys = {"status", "pages", "pagination"}
         assert expected_keys is not None
@@ -305,11 +277,6 @@ class TestWikiGetPageAPI:
 
     def test_get_page_basic(self):
         """Should get single wiki page."""
-        params = {
-            "wiki_type": "project",
-            "page_id": "page_1",
-            "project_id": "proj_1",
-        }
 
         expected_keys = {"status", "page"}
         assert expected_keys is not None
@@ -331,12 +298,6 @@ class TestWikiSearchAPI:
 
     def test_search_basic(self):
         """Should search wiki pages."""
-        params = {
-            "wiki_type": "project",
-            "q": "financial modeling",
-            "project_id": "proj_1",
-            "limit": 20,
-        }
 
         expected_keys = {"status", "results", "query", "count", "facets"}
         assert expected_keys is not None
@@ -369,12 +330,6 @@ class TestWikiPromoteAPI:
 
     def test_promote_page_to_lp(self):
         """Should promote project page to LP wiki."""
-        request_data = {
-            "wiki_type": "project",
-            "page_id": "page_1",
-            "project_id": "proj_1",
-            "reason": "This practice should be shared across projects",
-        }
 
         expected_keys = {"status", "proposal_id", "lp_status"}
         assert expected_keys is not None
@@ -408,10 +363,6 @@ class TestWikiStatsAPI:
 
     def test_get_wiki_stats(self):
         """Should get wiki statistics."""
-        params = {
-            "wiki_type": "project",
-            "project_id": "proj_1",
-        }
 
         expected_keys = {
             "status",

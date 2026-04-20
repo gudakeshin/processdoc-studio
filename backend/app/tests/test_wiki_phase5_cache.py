@@ -4,7 +4,6 @@ Tests for Wiki Phase 5: Cache Layer & Query Optimization.
 Tests LRU cache, full-text search indexing, and cache invalidation.
 """
 
-import pytest
 import time
 from collections import OrderedDict
 
@@ -242,7 +241,7 @@ class TestCacheInvalidation:
         }
 
         # Invalidate all page_1 entries
-        keys_to_delete = [k for k in cache.keys() if "page_1" in k]
+        keys_to_delete = [k for k in cache if "page_1" in k]
         for key in keys_to_delete:
             del cache[key]
 
@@ -272,7 +271,7 @@ class TestCacheInvalidation:
 
         # Invalidate only neighbors queries
         pattern = "neighbors"
-        keys_to_delete = [k for k in cache.keys() if pattern in k]
+        keys_to_delete = [k for k in cache if pattern in k]
         for key in keys_to_delete:
             del cache[key]
 
@@ -410,7 +409,7 @@ class TestCachePerformance:
         # Cached call
         cache = {"key": result1}
         start = time.time()
-        result2 = cache.get("key")
+        cache.get("key")
         cached_time = time.time() - start
 
         # Cached should be much faster

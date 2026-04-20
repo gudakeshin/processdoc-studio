@@ -4,12 +4,8 @@ Tests for wiki relationship extraction and graph building.
 Tests Priority 1: Relationship Extraction & Graph Building
 """
 
-import pytest
-from datetime import datetime, timezone
 from app.services.wiki_operations import (
     _extract_relationships,
-    _build_and_persist_relationships,
-    _get_relationship_counts,
 )
 
 

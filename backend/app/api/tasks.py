@@ -95,7 +95,7 @@ def create_task(
         try:
             run_at_dt = datetime.fromisoformat(body.run_at.replace("Z", "+00:00")).replace(tzinfo=None)
         except Exception:
-            raise HTTPException(status_code=400, detail="Invalid run_at ISO timestamp")
+            raise HTTPException(status_code=400, detail="Invalid run_at ISO timestamp") from None
     task = ScheduledTask(
         id=f"task_{uuid.uuid4().hex[:10]}",
         project_id=body.project_id,

@@ -6,7 +6,7 @@ import pytest
 
 from app.services import web_capture as web_capture_module
 from app.services.http_fetch import SafeFetchError
-from app.services.tool_registry import TOOL_REGISTRY, _TOOL_METADATA
+from app.services.tool_registry import _TOOL_METADATA, TOOL_REGISTRY
 
 
 def test_web_capture_tool_registered_with_schema() -> None:

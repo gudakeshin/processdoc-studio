@@ -4,14 +4,14 @@ import pytest
 
 from app.services.agent_personality import (
     AgentPersonality,
-    format_plan_with_personality,
     add_milestone_celebration,
+    format_insight_with_personality,
+    format_phase_transition,
+    format_plan_with_personality,
     format_question_with_personality,
     format_remediation_with_personality,
-    format_insight_with_personality,
     format_success_message,
     inject_personality_markers,
-    format_phase_transition,
 )
 
 

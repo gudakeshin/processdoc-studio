@@ -4,11 +4,8 @@ Tests for cross-wiki linking between Leading Practice and Project wikis.
 Tests Priority 7: Bidirectional LP ↔ Project Linking
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class TestCrossWikiLinkPatterns:
@@ -86,7 +83,7 @@ class TestCrossWikiRelationshipExtraction:
             "relation_type": "cross_wiki_reference",
             "confidence": "EXPLICIT",
             "confidence_score": 1.0,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
 
         # Verify structure
@@ -107,7 +104,7 @@ class TestCrossWikiRelationshipExtraction:
             "relation_type": "cross_wiki_reference",
             "confidence": "EXPLICIT",
             "confidence_score": 1.0,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
 
         assert rel["source_wiki"] == "project"

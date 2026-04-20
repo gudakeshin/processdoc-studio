@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import shutil
+import subprocess
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-import logging
-import subprocess
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -303,11 +305,7 @@ def format_swarm_mailbox_for_teammate(*, run_id: str, teammate_id: str, limit: i
     visible: list[SwarmMessage] = []
     for m in rows:
         to = (m.to_teammate or "").strip()
-        if not to:
-            visible.append(m)
-        elif to == tm:
-            visible.append(m)
-        elif (m.from_teammate or "").strip() == tm and to:
+        if not to or to == tm or (m.from_teammate or "").strip() == tm and to:
             visible.append(m)
     visible = list(reversed(visible[-limit:]))
     if not visible:
@@ -373,10 +371,11 @@ def _maybe_create_git_worktrees(
         wd.parent.mkdir(parents=True, exist_ok=True)
         safe_tm = "".join(c for c in m.teammate_id if c.isalnum() or c in "-_")[:48]
         branch = f"pd-swarm-{safe_run}-{safe_tm}"[:60]
+        git_bin = shutil.which("git") or "git"
         try:
             proc = subprocess.run(
                 [
-                    "git",
+                    git_bin,
                     "-C",
                     str(proj_root),
                     "worktree",
@@ -551,10 +550,9 @@ def promote_teammate_artifacts(
             continue
         if not src.is_file():
             continue
-        if dst.exists():
-            if dst.read_bytes() != src.read_bytes():
-                conflicts.append(rel)
-                continue
+        if dst.exists() and dst.read_bytes() != src.read_bytes():
+            conflicts.append(rel)
+            continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(src.read_bytes())
         promoted.append(rel)

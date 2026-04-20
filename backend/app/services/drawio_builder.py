@@ -18,7 +18,7 @@ def process_model_to_drawio_xml(model: ProcessModel) -> str:
     decisions = model.get("decisions") or []
     roles = [str(r).strip() for r in (model.get("roles") or []) if str(r).strip()]
     if not roles:
-        roles = list(dict.fromkeys((str(s.get("role") or "General").strip() for s in steps if isinstance(s, dict))))
+        roles = list(dict.fromkeys(str(s.get("role") or "General").strip() for s in steps if isinstance(s, dict)))
     if not roles:
         roles = ["General"]
 
@@ -106,7 +106,7 @@ def process_model_to_drawio_xml(model: ProcessModel) -> str:
 
         # Decision nodes and branch edges.
         for idx, decision in enumerate(decisions[:8]):
-            did = str(decision.get("id") or f"d{idx+1}")
+            str(decision.get("id") or f"d{idx+1}")
             cond = (decision.get("condition") or "Decision").strip()[:180]
             true_path = [str(x) for x in (decision.get("true_path") or []) if str(x).strip()]
             false_path = [str(x) for x in (decision.get("false_path") or []) if str(x).strip()]

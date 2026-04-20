@@ -8,9 +8,8 @@ to keep API calls within token budget constraints.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
-from app.core.config import settings
 from app.services.observability import increment
 
 logger = logging.getLogger(__name__)

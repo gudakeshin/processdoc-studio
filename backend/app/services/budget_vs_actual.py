@@ -1,14 +1,12 @@
 """Budget vs actual tracking and variance analysis for ongoing periods."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from collections import defaultdict
-import json
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def create_budget_setup(
@@ -30,7 +28,7 @@ def create_budget_setup(
         Budget setup object
     """
     budget_setup = {
-        "id": f"budget_{datetime.now(timezone.utc).timestamp()}",
+        "id": f"budget_{datetime.now(UTC).timestamp()}",
         "model_id": model_id,
         "fiscal_year": fiscal_year,
         "periods": periods,
@@ -83,7 +81,7 @@ def record_actual_results(
         total_ytd_actual += actual_amount
 
     recording = {
-        "id": f"actual_{datetime.now(timezone.utc).timestamp()}",
+        "id": f"actual_{datetime.now(UTC).timestamp()}",
         "budget_id": budget_setup["id"],
         "period": period,
         "recorded_at": _now_iso(),
@@ -217,7 +215,7 @@ def calculate_ytd_variance(
         ytd_totals["actual"] += ytd_actual
         ytd_totals["variance"] += variance
 
-    ytd_totals["periods_recorded"] = len([p for p in actual_by_period.keys() if p <= through_period])
+    ytd_totals["periods_recorded"] = len([p for p in actual_by_period if p <= through_period])
 
     ytd_pct_variance = (ytd_totals["variance"] / abs(ytd_totals["budget"]) * 100) if ytd_totals["budget"] != 0 else 0
 

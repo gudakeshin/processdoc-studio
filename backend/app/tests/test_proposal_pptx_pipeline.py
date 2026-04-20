@@ -11,14 +11,14 @@ Tests the 6-stage flow:
 """
 
 import json
-import pytest
-from unittest.mock import patch, MagicMock, call
-from typing import Any
+from unittest.mock import MagicMock, patch
 
-from app.agents.coordinator import Coordinator
+import pytest
+
 from app.agents.agent_types import AgentContext, AgentOutput
-from app.services.proposal_policy import derive_proposal_skill_targets
+from app.agents.coordinator import Coordinator
 from app.core.state import ProcessDocState
+from app.services.proposal_policy import derive_proposal_skill_targets
 
 
 class TestProposalPptxPipeline:
@@ -387,7 +387,6 @@ class TestProposalPptxPipeline:
         6. QA loop (validation passes)
         """
         from app.agents.subagents import run_pptx_agent
-        from app.agents.coordinator import Coordinator
 
         # Stage 1: Detect proposal intent
         print("Stage 1: Proposal skill detection...")
@@ -478,7 +477,7 @@ class TestProposalPptxPipeline:
 
                     # Verify Claude was called
                     assert mock_claude.called
-                    print(f"  ✓ Claude called for slide generation")
+                    print("  ✓ Claude called for slide generation")
 
             # Verify output
             assert isinstance(output, AgentOutput)
@@ -527,7 +526,7 @@ class TestProposalPptxPipeline:
             if slide.get("slide_type") == "stat_cards":
                 assert slide.get("stat_cards"), "stat_cards cannot be empty"
                 assert len(slide["stat_cards"]) >= 3
-        print(f"  ✓ PPTX completeness validated (no empty stat_cards)")
+        print("  ✓ PPTX completeness validated (no empty stat_cards)")
 
         print("\n✅ Full proposal-to-PPT pipeline test PASSED")
         return {
@@ -580,7 +579,7 @@ class TestProposalPptxPipeline:
 
             # Verify output generated
             assert "pptx_slides" in output.updates
-            print(f"✅ Event tracking test passed")
+            print("✅ Event tracking test passed")
 
 
 class TestImprovements:
@@ -680,7 +679,6 @@ class TestImprovements:
 
     def test_remediation_prepended_not_appended(self):
         """Remediation text is prepended so it's never truncated by 12K cap."""
-        from app.agents.coordinator import Coordinator
 
         coordinator = Coordinator()
         state = {
@@ -713,7 +711,6 @@ class TestImprovements:
 
     def test_qa_remediation_injects_pptx_repair_mode(self):
         """Contract QA failures wire into PPTX repair mode (prior_pptx_slides + visual_feedback)."""
-        from app.agents.coordinator import Coordinator
 
         coordinator = Coordinator()
         prior_slides = [

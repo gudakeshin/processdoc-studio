@@ -1,6 +1,6 @@
-import uuid
 import json
 import shutil
+import uuid
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.api.formats import _load_output_types
+from app.api.runs import _recommend_output_types
 from app.core.auth import get_current_user, require_project_role
 from app.core.config import settings
 from app.db.models import (
@@ -28,12 +30,10 @@ from app.db.models import (
     UserProjectPreference,
 )
 from app.db.session import get_db
-from app.services.storage import ensure_workspace, workspace_path
-from app.services.proposal_policy import derive_proposal_skill_targets, generate_deck_outline_preview
-from app.api.formats import _load_output_types
-from app.api.runs import _recommend_output_types
-from app.services.run_worker import append_run_event
 from app.schemas.common import ProjectSummary
+from app.services.proposal_policy import derive_proposal_skill_targets, generate_deck_outline_preview
+from app.services.run_worker import append_run_event
+from app.services.storage import ensure_workspace, workspace_path
 
 router = APIRouter()
 
@@ -131,13 +131,15 @@ def _is_vague_instruction(content: str) -> bool:
 
     # Check if it's a capability question without specific request
     for question in capability_questions:
-        if lowered.startswith(question) and len(lowered) < 50:
-            # Make sure it's not followed by specific request details
-            if not any(
+        if (
+            lowered.startswith(question)
+            and len(lowered) < 50
+            and not any(
                 keyword in lowered
                 for keyword in ["proposal", "create", "generate", "build", "make", "send", "give me", "need", "want"]
-            ):
-                return True
+            )
+        ):
+            return True
 
     return False
 
@@ -234,11 +236,7 @@ def _is_commit_intent(content: str) -> bool:
         "please make", "please generate", "can you create", "can you build",
         "can you make", "can you generate",
     ]
-    for starter in strong_request_starters:
-        if lowered.startswith(starter) and has_deliverable_noun:
-            return True
-
-    return False
+    return any(lowered.startswith(starter) and has_deliverable_noun for starter in strong_request_starters)
 
 
 def _is_acknowledgment(content: str) -> bool:
@@ -318,10 +316,10 @@ Respond naturally as a colleague. Do NOT generate a plan or say "Plan Ready"."""
         ).strip()
     except Exception:
         response_text = (
-            f"Great topic! Let me think about this with you. "
-            f"Can you tell me a bit more about the context? "
-            f"Who's the audience, and what's the main goal? "
-            f"That'll help me suggest the right approach. 🎯"
+            "Great topic! Let me think about this with you. "
+            "Can you tell me a bit more about the context? "
+            "Who's the audience, and what's the main goal? "
+            "That'll help me suggest the right approach. 🎯"
         )
 
     msg = ConversationMessage(
@@ -585,7 +583,7 @@ def _find_prior_plan_instruction(db: Session, project_id: str, exclude_conv_id: 
                 instruction = str(meta.get("instruction") or "").strip()
                 if instruction:
                     return instruction
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort, non-fatal
         pass
     return None
 
@@ -773,8 +771,8 @@ Provide a direct, contextual response to their question based on what was just d
     except Exception:
         # Fallback response
         response_text = (
-            f"Great question! Based on what we just discussed, let me help you tackle "
-            f"the key issues. Which area would you like to address first?"
+            "Great question! Based on what we just discussed, let me help you tackle "
+            "the key issues. Which area would you like to address first?"
         )
 
     msg = ConversationMessage(
@@ -834,9 +832,9 @@ Examples of great tone:
     except Exception:
         # Fallback if LLM unavailable
         response_text = (
-            f"That's a creative request! 😄 We don't support that just yet, but we'd love to hear your feedback. "
-            f"For now, I specialize in creating proposals, financial models, process documentation, and reports. "
-            f"What can I help you build today?"
+            "That's a creative request! 😄 We don't support that just yet, but we'd love to hear your feedback. "
+            "For now, I specialize in creating proposals, financial models, process documentation, and reports. "
+            "What can I help you build today?"
         )
 
     msg = ConversationMessage(
@@ -860,9 +858,8 @@ Examples of great tone:
 
 def _persist_clarification_message(db: Session, conv: Conversation, user_message: str) -> dict:
     """Return a friendly clarification request without generating a plan."""
-    from app.services.agent_personality import AgentPersonality
 
-    clarification_content = f"""Hey! 👋 Looks like you're just getting warmed up.
+    clarification_content = """Hey! 👋 Looks like you're just getting warmed up.
 
 I'm ready to dive into whatever you're working on. Just give me some context — for example:
 
@@ -1145,7 +1142,7 @@ def _serialize_messages(db: Session, conversation_id: str) -> list[dict]:
 def _ensure_workspace_safe(project_id: str) -> None:
     try:
         ensure_workspace(project_id)
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort, non-fatal
         # Workspace creation is retried by downstream endpoints that require it.
         pass
 
@@ -1238,7 +1235,7 @@ def get_project_settings(
             data = json.loads(settings_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return {"project_id": pid, **data}
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort, non-fatal
             pass
     return {"project_id": pid, "qa_threshold": 0.8, "max_qa_loops": 2, "hard_gate_enabled": True}
 
@@ -1265,7 +1262,7 @@ def update_project_settings(
             parsed = json.loads(settings_path.read_text(encoding="utf-8"))
             if isinstance(parsed, dict):
                 current.update(parsed)
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort, non-fatal
             pass
     if body.qa_threshold is not None:
         current["qa_threshold"] = max(0.0, min(1.0, float(body.qa_threshold)))
@@ -1782,7 +1779,7 @@ def create_scheduled_task(
         try:
             run_at_dt = datetime.fromisoformat(body.run_at.replace("Z", "+00:00")).replace(tzinfo=None)
         except Exception:
-            raise HTTPException(status_code=400, detail="Invalid run_at ISO timestamp")
+            raise HTTPException(status_code=400, detail="Invalid run_at ISO timestamp") from None
     task = ScheduledTask(
         id=f"task_{uuid.uuid4().hex[:10]}",
         project_id=pid,

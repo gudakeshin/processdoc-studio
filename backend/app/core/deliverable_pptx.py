@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from pptx import Presentation
+from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
-from pptx.chart.data import CategoryChartData
 
 from app.core.deliverable import DeliverableMetadata, IDeliverable
 from app.services.deliverable_quality import _validate_pptx_completeness
@@ -299,7 +300,7 @@ class PPTXDeliverable(IDeliverable):
             cp.keywords = keywords[:255]
             cp.last_modified_by = "ProcessDoc Studio"
             if getattr(cp, "created", None) is None:
-                cp.created = datetime.now(timezone.utc)
+                cp.created = datetime.now(UTC)
         except Exception as exc:
             logger.debug("Core properties skipped: %s", exc)
 
@@ -331,7 +332,7 @@ class PPTXDeliverable(IDeliverable):
             found = el.xpath(".//p:cNvPr")
             if found:
                 found[0].set("descr", str(descr)[:500])
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort, non-fatal
             pass
 
     def _render_content_pending(self, slide: Any, item: dict[str, Any], page_num: int, total: int, reason: str) -> None:
@@ -673,7 +674,7 @@ class PPTXDeliverable(IDeliverable):
                     try:
                         cell.fill.solid()
                         cell.fill.fore_color.rgb = self._rgb("light_green")
-                    except Exception:
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
                         pass
 
             for row_idx, row in enumerate(rows[:12]):
@@ -751,16 +752,14 @@ class PPTXDeliverable(IDeliverable):
             if y_title:
                 chart.value_axis.has_title = True
                 chart.value_axis.axis_title.text_frame.text = y_title[:80]
-            try:
+            with contextlib.suppress(Exception):
                 chart.value_axis.has_major_gridlines = True
-            except Exception:
-                pass
 
             try:
                 for ser in chart.series:
                     ser.format.line.fill.solid()
                     ser.format.line.fill.fore_color.rgb = self._rgb("green")
-            except Exception:
+            except Exception:  # noqa: S110 — best-effort, non-fatal
                 pass
 
             self._set_shape_alt(graphic_frame, ctitle)

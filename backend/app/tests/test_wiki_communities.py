@@ -4,9 +4,7 @@ Tests for wiki community detection and graph clustering.
 Tests Priority 2: Community Detection & Auto-Organization
 """
 
-import pytest
 import networkx as nx
-from datetime import datetime, timezone
 
 
 class TestCommunityDetection:

@@ -14,7 +14,6 @@ import sys
 import traceback
 from typing import Any, NoReturn
 
-from app.agents.types import ProcessDocState
 from app.claude_tools import run_subagent_tool_loop
 from app.services.observability import increment
 

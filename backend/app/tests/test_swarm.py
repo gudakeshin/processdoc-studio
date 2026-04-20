@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 from app.core.config import settings
 from app.db.session import SessionLocal, init_db

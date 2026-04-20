@@ -1,12 +1,12 @@
 """Test suite for time-series forecasting."""
 
 import pytest
-import numpy as np
+
 from app.services.forecasting import (
-    calculate_linear_regression,
-    calculate_exponential_smoothing,
-    calculate_moving_average,
     calculate_arima_simple,
+    calculate_exponential_smoothing,
+    calculate_linear_regression,
+    calculate_moving_average,
     compare_forecast_methods,
     forecast_with_confidence,
 )
@@ -300,7 +300,7 @@ class TestIntegration:
         arima = calculate_arima_simple(historical_data, forecast_periods=3)
 
         # Compare methods
-        comparison = compare_forecast_methods(historical_data, forecast_periods=3)
+        compare_forecast_methods(historical_data, forecast_periods=3)
 
         # Ensemble with confidence
         ensemble = forecast_with_confidence(historical_data, forecast_periods=3)

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,7 @@ from app.db.models import ProjectBrand
 from app.services.storage import workspace_path
 
 
-class BrandingLevel(str, Enum):
+class BrandingLevel(StrEnum):
     DELOITTE_DEFAULT = "deloitte_default"
     PROJECT_CUSTOM = "project_custom"
     INGESTED_DESIGN_SYSTEM = "ingested_design_system"
@@ -40,9 +40,9 @@ class BrandingContext:
     palette: ColorPalette
     font_family: str
     font_size_base: int
-    logo_url: Optional[str]
+    logo_url: str | None
     company_name: str
-    custom_footer_text: Optional[str]
+    custom_footer_text: str | None
 
 
 class BrandingService:
@@ -155,7 +155,7 @@ class BrandingService:
                     return nested
         return None
 
-    def _ingested_design_system(self, project_id: Optional[Union[str, int]]) -> BrandingContext | None:
+    def _ingested_design_system(self, project_id: str | int | None) -> BrandingContext | None:
         repo_root = self._repo_root()
         frontend_css_path = repo_root / "frontend" / "styles" / "tokens.css"
         frontend_tw_path = repo_root / "frontend" / "tailwind.config.ts"
@@ -188,14 +188,14 @@ class BrandingService:
                 continue
             try:
                 css_chunks.append(path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
         for path in [frontend_tw_path, project_tw_path]:
             if path is None or not path.exists():
                 continue
             try:
                 tw_chunks.append(path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
         for path in [frontend_tokens_path, project_tokens_path]:
             if path is None or not path.exists():
@@ -204,7 +204,7 @@ class BrandingService:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     json_sources.append(raw)
-            except Exception:
+            except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
 
         css = "\n".join(css_chunks)
@@ -305,7 +305,7 @@ class BrandingService:
             custom_footer_text=(str(override.get("footer_text")).strip() or None) if override.get("footer_text") else None,
         )
 
-    def get_branding_for_run(self, project_id: Optional[Union[str, int]], skill_card: Optional[dict] = None, run_config: Optional[dict] = None) -> BrandingContext:
+    def get_branding_for_run(self, project_id: str | int | None, skill_card: dict | None = None, run_config: dict | None = None) -> BrandingContext:
         if isinstance(run_config, dict) and isinstance(run_config.get("brand_override"), dict):
             return self._from_override(run_config["brand_override"], BrandingLevel.RUNTIME_OVERRIDE)
         if isinstance(skill_card, dict) and isinstance(skill_card.get("brand_override"), dict):

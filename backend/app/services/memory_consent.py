@@ -47,7 +47,6 @@ def memory_item_allowed_for_use(
             return False, "consent_field"
     if enforce_consent_ledger and session is not None:
         principal = (getattr(item, "principal_id", None) or "").strip()
-        if principal:
-            if not consent_ledger_latest_granted(session, project_id, principal):
-                return False, "consent_ledger"
+        if principal and not consent_ledger_latest_granted(session, project_id, principal):
+            return False, "consent_ledger"
     return True, ""

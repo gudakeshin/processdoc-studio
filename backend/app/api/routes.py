@@ -1,8 +1,23 @@
 from fastapi import APIRouter
 
-from app.api import agent_bash, auth, documents, dpdp, formats, lp_library, memory, model_realtime_ws, models, projects, runs, skills, swarm, tasks
-
-from app.api import drawio_collab, run_artifacts
+from app.api import (
+    agent_bash,
+    auth,
+    documents,
+    dpdp,
+    drawio_collab,
+    formats,
+    lp_library,
+    memory,
+    model_realtime_ws,
+    models,
+    projects,
+    run_artifacts,
+    runs,
+    skills,
+    swarm,
+    tasks,
+)
 
 router = APIRouter()
 router.include_router(auth.router, prefix="/auth", tags=["auth"])

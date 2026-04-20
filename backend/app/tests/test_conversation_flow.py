@@ -9,13 +9,13 @@ Verifies that the agent behaves like a colleague, not a plan-generating machine:
 """
 
 import pytest
-from app.api.projects import (
-    _is_commit_intent,
-    _is_acknowledgment,
-    _is_vague_instruction,
-    _is_contextual_followup,
-)
 
+from app.api.projects import (
+    _is_acknowledgment,
+    _is_commit_intent,
+    _is_contextual_followup,
+    _is_vague_instruction,
+)
 
 # ── Commit intent detection ─────────────────────────────────────────────
 

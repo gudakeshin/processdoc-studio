@@ -34,11 +34,8 @@ def _parse_host_port(hostname: str, parsed_port: int | None) -> tuple[str, int]:
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_reserved:
         return True
-    if ip.version == 6:
-        # Unique local (fc00::/7)
-        if int(ip) & (0xFE << 120) == (0xFC << 120):
-            return True
-    return False
+    # Unique local for IPv6 (fc00::/7)
+    return ip.version == 6 and int(ip) & (0xFE << 120) == (0xFC << 120)
 
 
 def _resolved_addrs(hostname: str) -> list[str]:

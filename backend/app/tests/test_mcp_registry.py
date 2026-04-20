@@ -1,10 +1,10 @@
 """Unit tests for MCP registry module."""
 
-import asyncio
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+
 from app.services.mcp.registry import (
     MCPRegistry,
     MCPServerInstance,

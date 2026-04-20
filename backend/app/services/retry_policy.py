@@ -17,7 +17,7 @@ def compute_rate_limit_backoff(*, retry_after_sec: float | None, attempt: int, b
     if retry_after_sec is not None and retry_after_sec > 0:
         return float(min(max_sec, max(0.5, retry_after_sec)))
     exp = base_sec * (2 ** max(0, attempt - 1))
-    jitter = random.uniform(0.0, min(1.5, base_sec))
+    jitter = random.uniform(0.0, min(1.5, base_sec))  # noqa: S311 — non-cryptographic backoff jitter
     return float(min(max_sec, max(0.5, exp + jitter)))
 
 

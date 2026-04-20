@@ -4,13 +4,13 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Optional, Union
+from enum import StrEnum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-class QualityDimension(str, Enum):
+class QualityDimension(StrEnum):
     CONTENT_QUALITY = "content_quality"
     NARRATIVE_COHERENCE = "narrative_coherence"
     BRANDING_COMPLIANCE = "branding_compliance"
@@ -321,7 +321,7 @@ class NarrativeCoherenceRule(QualityRule):
         bodies = [b for b in bodies if b]
         if len(bodies) >= 2:
             overlaps = []
-            for a, b in zip(bodies, bodies[1:]):
+            for a, b in zip(bodies, bodies[1:], strict=False):
                 if not a or not b:
                     continue
                 overlaps.append(len(a & b) / float(len(a | b)) if (a | b) else 0.0)
@@ -459,7 +459,7 @@ class EvaluatorRegistry:
         logger.info(f"Registered evaluator kind: {kind}")
 
     @classmethod
-    def get(cls, kind: str) -> Optional[type[EvaluatorKind]]:
+    def get(cls, kind: str) -> type[EvaluatorKind] | None:
         """Get an evaluator kind by name."""
         return cls._evaluators.get(str(kind).lower())
 
@@ -473,7 +473,7 @@ class ContractRuleFactory:
     """Factory to create QualityRule instances from JSON contract dimensions."""
 
     @staticmethod
-    def create_rule_from_dimension(dimension_config: dict[str, Any]) -> Optional[QualityRule]:
+    def create_rule_from_dimension(dimension_config: dict[str, Any]) -> QualityRule | None:
         """Create a QualityRule from a contract dimension JSON.
 
         Args:
@@ -487,8 +487,8 @@ class ContractRuleFactory:
             logger.warning("Dimension config missing 'kind'")
             return None
 
-        dimension_id = dimension_config.get("id") or str(kind)
-        weight = float(dimension_config.get("weight", 0.33))
+        dimension_config.get("id") or str(kind)
+        float(dimension_config.get("weight", 0.33))
         output_types = set(dimension_config.get("output_types", []))
         if not output_types:
             output_types = {"pptx", "docx", "pdf", "xlsx"}

@@ -5,15 +5,15 @@ Handles ingest, query, and lint operations with automatic retry on transient fai
 Uses exponential backoff formula: min(1.5, 0.25 * 2^attempt)
 """
 
-import time
+import hashlib
 import json
 import logging
-import hashlib
 import re
-from typing import Any, Optional, Tuple
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
+from typing import Any
 
-from app.services.wiki_ingest import _parse_source, _extract_text_from_file
+from app.services.wiki_ingest import _parse_source
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def classify_error(error: Exception) -> str:
 def search_wiki(
     query: str,
     *,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     max_results: int = 8,
 ) -> list[dict[str, Any]]:
     """BM25 search over project wiki pages.
@@ -160,9 +160,9 @@ def wiki_ingest_with_retry(
     source_type: str,
     source_data: dict,
     wiki_type: str = "project",
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     max_retries: int = MAX_RETRY_ATTEMPTS,
-) -> Tuple[Optional[dict], Optional[str]]:
+) -> tuple[dict | None, str | None]:
     """
     Ingest a source into the wiki with automatic retry on transient failures.
 
@@ -259,10 +259,10 @@ def wiki_ingest_with_retry(
 def wiki_query_with_retry(
     question: str,
     wiki_type: str = "project",
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     include_qa: bool = False,
     max_retries: int = MAX_RETRY_ATTEMPTS,
-) -> Tuple[Optional[dict], Optional[str]]:
+) -> tuple[dict | None, str | None]:
     """
     Query the wiki with automatic retry on transient failures.
 
@@ -343,9 +343,9 @@ def wiki_query_with_retry(
 
 def wiki_lint_with_retry(
     wiki_type: str = "project",
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     max_retries: int = MAX_RETRY_ATTEMPTS,
-) -> Tuple[Optional[dict], Optional[str]]:
+) -> tuple[dict | None, str | None]:
     """
     Run wiki health check (lint) with automatic retry on transient failures.
 
@@ -454,7 +454,7 @@ def _llm_enrich_page(raw_title: str, content: str) -> dict:
         return {}
 
 
-def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str]) -> dict:
+def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) -> dict:
     """Create/update wiki pages from extracted content, using Claude for enrichment."""
     try:
         if not extracted or not extracted.get("content"):
@@ -487,7 +487,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str
         sections = enriched.get("sections", [])
 
         page_id = title.lower().replace(" ", "_").replace(".", "").replace("/", "").replace("\\", "")[:60]
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # Build frontmatter
         fm_lines = [
@@ -497,7 +497,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str
             f'semantic_type: "{semantic_type}"',
             f'confidence: "{confidence}"',
             f'source_url: "{extracted.get("source_url", "")}"',
-            f'source_count: 1',
+            'source_count: 1',
             f'last_updated: "{now}"',
             f'created_at: "{now}"',
         ]
@@ -549,7 +549,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: Optional[str
         return {"created": 0, "updated": 0, "page_ids": [], "corrections": []}
 
 
-def _update_wiki_index(wiki_type: str, project_id: Optional[str]) -> dict:
+def _update_wiki_index(wiki_type: str, project_id: str | None) -> dict:
     """Regenerate wiki index from all pages."""
     try:
         from app.services.storage import workspace_path
@@ -579,12 +579,12 @@ def _update_wiki_index(wiki_type: str, project_id: Optional[str]) -> dict:
 
 def _append_wiki_log(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     operation: str,
-    source_name: Optional[str] = None,
-    pages_touched: Optional[list] = None,
-    corrections_made: Optional[list] = None,
-    qa_results: Optional[str] = None,
+    source_name: str | None = None,
+    pages_touched: list | None = None,
+    corrections_made: list | None = None,
+    qa_results: str | None = None,
 ) -> str:
     """Append operation to wiki log."""
     try:
@@ -599,7 +599,7 @@ def _append_wiki_log(
         log_file = wiki_dir / "log.md"
 
         # Create log entry
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
         entry = f"\n## {timestamp}\n"
         entry += f"**Operation:** {operation}\n"
         if source_name:
@@ -614,11 +614,11 @@ def _append_wiki_log(
         else:
             log_file.write_text("# Wiki Log\n" + entry)
 
-        log_entry_id = f"log_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+        log_entry_id = f"log_{int(datetime.now(UTC).timestamp() * 1000)}"
         return log_entry_id
     except Exception as e:
         logger.error(f"Error appending to wiki log: {e}")
-        return f"log_{int(datetime.now(timezone.utc).timestamp())}"
+        return f"log_{int(datetime.now(UTC).timestamp())}"
 
 
 def _extract_relationships(
@@ -671,7 +671,7 @@ def _extract_relationships(
                     "confidence": "EXPLICIT",
                     "confidence_score": 1.0,
                     "source_location": f"L{content[:match.start()].count(chr(10)) + 1}",
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
                 })
 
         # Extract inferred links: page title mentions
@@ -696,7 +696,7 @@ def _extract_relationships(
                         "confidence": "INFERRED",
                         "confidence_score": confidence_score,
                         "source_location": f"L{content[:matches[0].start()].count(chr(10)) + 1}",
-                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
                     })
     except Exception as e:
         logger.warning(f"Error extracting relationships from {source_page_id}: {e}")
@@ -708,7 +708,7 @@ def _extract_cross_wiki_relationships(
     source_page_id: str,
     source_wiki_type: str,
     content: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
 ) -> list[dict]:
     """
     Extract cross-wiki relationships (LP <-> Project wiki links).
@@ -758,7 +758,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             })
 
         # Pattern for cross-project wiki links
@@ -778,7 +778,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             })
 
     except Exception as e:
@@ -789,7 +789,7 @@ def _extract_cross_wiki_relationships(
 
 def _build_cross_wiki_relationships(
     wiki_type: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
 ) -> dict:
     """
     Build and persist cross-wiki relationships between LP and Project wikis.
@@ -857,7 +857,7 @@ def _build_cross_wiki_relationships(
             "lp_to_projects": lp_to_projects,
             "projects_to_lp": projects_to_lp,
             "total_links": len(lp_to_projects) + len(projects_to_lp),
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }, indent=2))
 
         logger.info(f"Built cross-wiki relationships: {len(lp_to_projects)} LP refs, {len(projects_to_lp)} Project refs")
@@ -875,7 +875,7 @@ def _build_cross_wiki_relationships(
 def _get_cross_wiki_references(
     wiki_type: str,
     page_id: str,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
 ) -> dict:
     """
     Get cross-wiki references for a specific page.
@@ -945,7 +945,7 @@ def _get_cross_wiki_references(
 
 def _save_persistent_graph(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> bool:
     """
     Save persistent graph.json for fast querying without re-extraction.
@@ -953,8 +953,8 @@ def _save_persistent_graph(
     Stores NetworkX adjacency format for quick loading.
     """
     try:
-        import networkx as nx
         from networkx.readwrite import json_graph
+
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
@@ -975,7 +975,7 @@ def _save_persistent_graph(
             "metadata": {
                 "node_count": G.number_of_nodes(),
                 "edge_count": G.number_of_edges(),
-                "last_updated": datetime.now(timezone.utc).isoformat(),
+                "last_updated": datetime.now(UTC).isoformat(),
             }
         }, indent=2))
 
@@ -989,7 +989,7 @@ def _save_persistent_graph(
 
 def _load_persistent_graph(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> tuple:
     """
     Load persistent graph from graph.json for fast queries.
@@ -999,6 +999,7 @@ def _load_persistent_graph(
     """
     try:
         from networkx.readwrite import json_graph
+
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
@@ -1071,7 +1072,7 @@ def _llm_find_relationships(pages: dict) -> list:
             return []
 
         all_ids = set(pages.keys())
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         return [
             {
                 "source_id": r["source_id"],
@@ -1095,7 +1096,7 @@ def _llm_find_relationships(pages: dict) -> list:
 
 def _build_and_persist_relationships(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> dict:
     """
     Build complete relationship graph from all wiki pages and persist to relationships.json.
@@ -1108,9 +1109,9 @@ def _build_and_persist_relationships(
         }
     """
     try:
-        from app.services.storage import workspace_path
-        from pathlib import Path
         import re
+
+        from app.services.storage import workspace_path
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -1179,7 +1180,7 @@ def _build_and_persist_relationships(
         relationships_file.write_text(json.dumps({
             "total": len(all_relationships),
             "relationships": all_relationships,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }, indent=2))
 
         # Detect communities from the relationship graph
@@ -1224,7 +1225,7 @@ def _compute_content_hash(content: str) -> str:
     return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
 
-def _load_page_manifest(wiki_type: str, project_id: Optional[str]) -> dict:
+def _load_page_manifest(wiki_type: str, project_id: str | None) -> dict:
     """
     Load manifest of page hashes for incremental updates.
 
@@ -1267,7 +1268,7 @@ def _load_page_manifest(wiki_type: str, project_id: Optional[str]) -> dict:
         return {"pages": {}, "last_full_rebuild": None, "relationships_version": 0}
 
 
-def _save_page_manifest(wiki_type: str, project_id: Optional[str], manifest: dict) -> bool:
+def _save_page_manifest(wiki_type: str, project_id: str | None, manifest: dict) -> bool:
     """
     Save page manifest for incremental indexing.
 
@@ -1296,7 +1297,7 @@ def _save_page_manifest(wiki_type: str, project_id: Optional[str], manifest: dic
         return False
 
 
-def _detect_changed_pages(wiki_type: str, project_id: Optional[str]) -> tuple:
+def _detect_changed_pages(wiki_type: str, project_id: str | None) -> tuple:
     """
     Detect which pages have changed since last update using content hashing.
 
@@ -1305,8 +1306,9 @@ def _detect_changed_pages(wiki_type: str, project_id: Optional[str]) -> tuple:
         where each is a dict mapping page_id to page_data
     """
     try:
-        from app.services.storage import workspace_path
         import re
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -1375,7 +1377,7 @@ def _detect_changed_pages(wiki_type: str, project_id: Optional[str]) -> tuple:
 
 def _build_relationships_incremental(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> dict:
     """
     Build relationships incrementally by only processing changed pages.
@@ -1395,8 +1397,9 @@ def _build_relationships_incremental(
         }
     """
     try:
-        from app.services.storage import workspace_path
         import time as time_module
+
+        from app.services.storage import workspace_path
 
         start_time = time_module.time()
 
@@ -1446,7 +1449,7 @@ def _build_relationships_incremental(
         relationships_file.write_text(json.dumps({
             "total": len(all_relationships),
             "relationships": all_relationships,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
             "incremental_update": True,
             "changed_pages_count": len(changed_pages),
         }, indent=2))
@@ -1478,13 +1481,13 @@ def _build_relationships_incremental(
             manifest["pages"][page_id] = {
                 "hash": page_data["hash"],
                 "title": page_data["title"],
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             }
         # Remove deleted pages from manifest
         for page_id in deleted_pages:
             manifest["pages"].pop(page_id, None)
 
-        manifest["last_full_rebuild"] = datetime.now(timezone.utc).isoformat()
+        manifest["last_full_rebuild"] = datetime.now(UTC).isoformat()
         manifest["relationships_version"] = manifest.get("relationships_version", 0) + 1
         _save_page_manifest(wiki_type, project_id, manifest)
 
@@ -1523,7 +1526,7 @@ def _build_relationships_incremental(
         }
 
 
-def _get_wiki_performance_metrics(wiki_type: str, project_id: Optional[str]) -> dict:
+def _get_wiki_performance_metrics(wiki_type: str, project_id: str | None) -> dict:
     """
     Get performance metrics for wiki operations.
 
@@ -1583,7 +1586,7 @@ def _get_wiki_performance_metrics(wiki_type: str, project_id: Optional[str]) -> 
 
 def _detect_communities(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> dict:
     """
     Detect communities (functional clusters) from wiki relationship graph using Louvain algorithm.
@@ -1606,10 +1609,12 @@ def _detect_communities(
         }
     """
     try:
+        import json
+
         import networkx as nx
         from networkx.algorithms import community
+
         from app.services.storage import workspace_path
-        import json
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -1719,7 +1724,7 @@ def _detect_communities(
 
 def _detect_god_nodes(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
 ) -> dict:
     """
     Detect 'god nodes' (most-important pages) using combined centrality metrics.
@@ -1749,10 +1754,12 @@ def _detect_god_nodes(
         }
     """
     try:
-        import networkx as nx
-        from app.services.storage import workspace_path
         import json
         import re
+
+        import networkx as nx
+
+        from app.services.storage import workspace_path
 
         # Determine wiki directory
         if wiki_type == "leading_practice":
@@ -1809,7 +1816,7 @@ def _detect_god_nodes(
         # 2. Betweenness centrality (already normalized 0-1)
         try:
             betweenness = nx.betweenness_centrality(G, weight="weight")
-        except:
+        except Exception:  # noqa: BLE001 — network algorithm can fail on degenerate graphs
             betweenness = {node: 0.0 for node in G.nodes()}
 
         # 3. Combined importance score
@@ -1859,7 +1866,7 @@ def _detect_god_nodes(
 
 def _save_god_nodes(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     god_nodes_data: dict,
 ) -> bool:
     """Save god nodes (important pages) to god_nodes.json."""
@@ -1878,7 +1885,7 @@ def _save_god_nodes(
             "total_pages": god_nodes_data["total_pages"],
             "avg_importance": god_nodes_data["avg_importance"],
             "god_nodes": god_nodes_data["god_nodes"],
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }, indent=2))
 
         return True
@@ -1887,7 +1894,7 @@ def _save_god_nodes(
         return False
 
 
-def _load_wiki_graph(wiki_type: str, project_id: Optional[str]) -> tuple:
+def _load_wiki_graph(wiki_type: str, project_id: str | None) -> tuple:
     """
     Load wiki relationship graph from relationships.json.
 
@@ -1895,10 +1902,12 @@ def _load_wiki_graph(wiki_type: str, project_id: Optional[str]) -> tuple:
         (G, page_titles): NetworkX graph and mapping of page_id to page_title
     """
     try:
-        import networkx as nx
-        from app.services.storage import workspace_path
         import json
         import re
+
+        import networkx as nx
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -1953,7 +1962,6 @@ def _query_graph_bfs(
     Returns list of (node, distance, path) tuples.
     """
     try:
-        import networkx as nx
 
         results = []
         visited = set()
@@ -1989,7 +1997,7 @@ def _query_graph_shortest_path(
     G: Any,
     start_node: str,
     end_node: str,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Find shortest path between two nodes.
     """
@@ -2042,11 +2050,11 @@ def _query_graph_neighbors(
 
 def _execute_graph_query(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     query: str,
     query_type: str = "neighbors",
-    start_node: Optional[str] = None,
-    end_node: Optional[str] = None,
+    start_node: str | None = None,
+    end_node: str | None = None,
     max_distance: int = 3,
     max_results: int = 20,
 ) -> dict:
@@ -2131,7 +2139,7 @@ def _execute_graph_query(
         }
 
 
-def _get_god_nodes(wiki_type: str, project_id: Optional[str], limit: int = 10) -> list:
+def _get_god_nodes(wiki_type: str, project_id: str | None, limit: int = 10) -> list:
     """Get top N god nodes (most important pages)."""
     try:
         from app.services.storage import workspace_path
@@ -2154,7 +2162,7 @@ def _get_god_nodes(wiki_type: str, project_id: Optional[str], limit: int = 10) -
 
 def _save_communities(
     wiki_type: str,
-    project_id: Optional[str],
+    project_id: str | None,
     communities_data: dict,
 ) -> bool:
     """Save community assignments to communities.json."""
@@ -2173,7 +2181,7 @@ def _save_communities(
             "total_communities": communities_data["total_communities"],
             "communities": communities_data["communities"],
             "page_community_map": communities_data["page_community_map"],
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "last_updated": datetime.now(UTC).isoformat(),
         }, indent=2))
 
         return True
@@ -2182,7 +2190,7 @@ def _save_communities(
         return False
 
 
-def _get_community_for_page(wiki_type: str, project_id: Optional[str], page_id: str) -> Optional[dict]:
+def _get_community_for_page(wiki_type: str, project_id: str | None, page_id: str) -> dict | None:
     """Get community information for a specific page."""
     try:
         from app.services.storage import workspace_path
@@ -2211,7 +2219,7 @@ def _get_community_for_page(wiki_type: str, project_id: Optional[str], page_id: 
         return None
 
 
-def _get_relationship_counts(wiki_type: str, project_id: Optional[str]) -> dict:
+def _get_relationship_counts(wiki_type: str, project_id: str | None) -> dict:
     """
     Load relationship statistics from relationships.json.
 
@@ -2251,7 +2259,7 @@ def _get_relationship_counts(wiki_type: str, project_id: Optional[str]) -> dict:
         return {}
 
 
-def _check_broken_links(wiki_type: str, project_id: Optional[str]) -> list:
+def _check_broken_links(wiki_type: str, project_id: str | None) -> list:
     """
     Check for broken links in wiki pages.
 
@@ -2259,6 +2267,7 @@ def _check_broken_links(wiki_type: str, project_id: Optional[str]) -> list:
     """
     try:
         import re
+
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
@@ -2316,16 +2325,16 @@ def _check_broken_links(wiki_type: str, project_id: Optional[str]) -> list:
         return []
 
 
-def _check_orphaned_pages(wiki_type: str, project_id: Optional[str]) -> list:
+def _check_orphaned_pages(wiki_type: str, project_id: str | None) -> list:
     """
     Find orphaned pages (no inbound links).
 
     Pages with zero inbound links may need to be merged or deleted.
     """
     try:
-        from app.services.storage import workspace_path
         import re
-        import json
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -2370,7 +2379,7 @@ def _check_orphaned_pages(wiki_type: str, project_id: Optional[str]) -> list:
         return []
 
 
-def _check_missing_entities(wiki_type: str, project_id: Optional[str]) -> list:
+def _check_missing_entities(wiki_type: str, project_id: str | None) -> list:
     """
     Find missing entities: concepts mentioned 5+ times without dedicated page.
 
@@ -2378,8 +2387,9 @@ def _check_missing_entities(wiki_type: str, project_id: Optional[str]) -> list:
     """
     try:
         import re
-        from app.services.storage import workspace_path
         from collections import Counter
+
+        from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
             wiki_dir = workspace_path("leading_practices") / "wiki"
@@ -2430,7 +2440,7 @@ def _check_missing_entities(wiki_type: str, project_id: Optional[str]) -> list:
         return []
 
 
-def _evaluate_wiki_qa(wiki_type: str, project_id: Optional[str]) -> dict:
+def _evaluate_wiki_qa(wiki_type: str, project_id: str | None) -> dict:
     """
     Complete Tier 3 QA evaluation of wiki health.
 
@@ -2495,13 +2505,13 @@ def _evaluate_wiki_qa(wiki_type: str, project_id: Optional[str]) -> dict:
         }
 
 
-def _get_wiki_index(wiki_type: str, project_id: Optional[str]) -> Optional[dict]:
+def _get_wiki_index(wiki_type: str, project_id: str | None) -> dict | None:
     """Get current wiki index. (To be implemented in Phase 2)"""
     # Stub
     return {"pages": []}
 
 
-def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id: Optional[str]) -> list:
+def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id: str | None) -> list:
     """Search wiki pages by relevance. (To be implemented in Phase 2)"""
     # Stub
     return []
@@ -2519,13 +2529,13 @@ def _extract_citations(pages: list) -> list:
     return []
 
 
-def _evaluate_answer_quality(answer: str, pages: list, question: str) -> Optional[dict]:
+def _evaluate_answer_quality(answer: str, pages: list, question: str) -> dict | None:
     """Evaluate answer quality. (To be implemented in Phase 3)"""
     # Stub
     return None
 
 
-def _get_all_wiki_pages(wiki_type: str, project_id: Optional[str]) -> list:
+def _get_all_wiki_pages(wiki_type: str, project_id: str | None) -> list:
     """Get all wiki pages. (To be implemented in Phase 3)"""
     # Stub
     return []

@@ -4,12 +4,6 @@ Tests for wiki QA/Linting checks (Tier 3 Quality Assurance).
 Tests Priority 6: Tier 3 QA/Linting for Wiki Health Checks
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-import json
-import os
-import tempfile
-from pathlib import Path
 
 
 class TestBrokenLinksDetection:
@@ -25,7 +19,6 @@ class TestBrokenLinksDetection:
             }
         }
 
-        page_ids = {"page_1", "page_2", "page_3"}
         page_titles = {
             "page_1": "Architecture Overview",
             "page_2": "Database Schema",
@@ -85,7 +78,6 @@ class TestBrokenLinksDetection:
 
     def test_empty_page_content(self):
         """Test handling of pages with no links."""
-        page_titles = {"page_1": "Empty Page"}
         page_content = "This page has no wiki links."
 
         import re
@@ -261,7 +253,6 @@ class TestEdgeCases:
 
     def test_empty_wiki(self):
         """Test QA evaluation on empty wiki."""
-        pages = {}
 
         # Empty wiki should have no issues
         qa_result = {
@@ -282,7 +273,6 @@ class TestEdgeCases:
 
     def test_single_page_wiki(self):
         """Test QA evaluation on single-page wiki."""
-        page_titles = {"page_1": "Only Page"}
         rel_counts = {"page_1": {"inbound": 0, "outbound": 0}}
 
         # Single isolated page might trigger orphaned warning
@@ -295,11 +285,6 @@ class TestEdgeCases:
 
     def test_circular_references(self):
         """Test handling of circular page references."""
-        links = {
-            "page_1": ["page_2"],
-            "page_2": ["page_3"],
-            "page_3": ["page_1"],  # Circular
-        }
 
         # Circular references are valid
         rel_counts = {

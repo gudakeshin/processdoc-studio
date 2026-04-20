@@ -1,12 +1,12 @@
 """End-to-end integration tests for Coordinator event loop with mock data."""
 
-import json
-import pytest
-from unittest.mock import Mock, MagicMock, patch, PropertyMock
 from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.agents.coordinator import Coordinator, ExecutionPlan
-from app.agents.coordinator_state_manager import CoordinatorStateManager, ExecutionPlanSnapshot
+from app.agents.coordinator_state_manager import CoordinatorStateManager
 from app.core.state import ProcessDocState
 
 
@@ -185,7 +185,7 @@ class TestCoordinatorE2EIntegration:
 
                                             # Verify event loop completed
                                             assert result is not None
-                                            print(f"\n✅ Event loop completed successfully")
+                                            print("\n✅ Event loop completed successfully")
                                             print(f"📊 Total events emitted: {len(events_emitted)}")
 
                                             # Verify events were emitted
@@ -248,7 +248,7 @@ class TestCoordinatorE2EIntegration:
                                             )
 
                                             assert result is not None
-                                            print(f"\n✅ Multi-output event loop completed")
+                                            print("\n✅ Multi-output event loop completed")
                                             print(f"📊 Total events: {len(events_emitted)}")
 
     def test_state_manager_task_board_workflow(self):
@@ -301,7 +301,7 @@ class TestCoordinatorE2EIntegration:
         assert sm.current_state == "done"
         assert sm.all_tasks_done()
 
-        print(f"✅ Complete workflow executed successfully")
+        print("✅ Complete workflow executed successfully")
         print(f"📊 State transitions: {len(workflow_log) + 3}")
 
     def test_checkpoint_restore_workflow(self):
@@ -332,7 +332,7 @@ class TestCoordinatorE2EIntegration:
         assert "plan" in ready
 
         print(f"✅ Restored successfully, continuing from state: {sm2.current_state}")
-        print(f"✅ Task board state preserved correctly")
+        print("✅ Task board state preserved correctly")
 
     def test_failure_and_recovery_workflow(self):
         """Test failure detection and replanning."""
@@ -374,7 +374,7 @@ class TestCoordinatorE2EIntegration:
 
         sm.assign_task("out:docx", "teammate-2")
         sm.mark_task_done("out:docx")
-        print(f"✅ Task succeeded on retry")
+        print("✅ Task succeeded on retry")
 
         # Continue to finalization
         sm.transition_to("execution")
@@ -400,19 +400,19 @@ class TestCoordinatorE2EIntegration:
         # Verify initial state
         ready = sm.get_ready_task_ids()
         assert ready == ["context"], f"Expected only context ready, got: {ready}"
-        print(f"\n✅ Initial: Only context is ready")
+        print("\n✅ Initial: Only context is ready")
 
         # Mark context done
         sm.mark_task_done("context")
         ready = sm.get_ready_task_ids()
         assert ready == ["process_model"], f"Expected only process_model, got: {ready}"
-        print(f"✅ After context: Only process_model is ready")
+        print("✅ After context: Only process_model is ready")
 
         # Mark process_model done
         sm.mark_task_done("process_model")
         ready = sm.get_ready_task_ids()
         assert ready == ["plan"], f"Expected only plan, got: {ready}"
-        print(f"✅ After process_model: Only plan is ready")
+        print("✅ After process_model: Only plan is ready")
 
         # Mark plan done
         sm.mark_task_done("plan")
@@ -428,26 +428,26 @@ class TestCoordinatorE2EIntegration:
 
         ready = sm.get_ready_task_ids()
         assert ready == ["qa"], f"Expected only qa, got: {ready}"
-        print(f"✅ After outputs: Only QA is ready")
+        print("✅ After outputs: Only QA is ready")
 
         # Mark qa done
         sm.mark_task_done("qa")
         ready = sm.get_ready_task_ids()
         assert ready == ["guardrails"], f"Expected only guardrails, got: {ready}"
-        print(f"✅ After QA: Only guardrails is ready")
+        print("✅ After QA: Only guardrails is ready")
 
         # Mark guardrails done
         sm.mark_task_done("guardrails")
         ready = sm.get_ready_task_ids()
         assert ready == ["finalize"], f"Expected only finalize, got: {ready}"
-        print(f"✅ After guardrails: Only finalize is ready")
+        print("✅ After guardrails: Only finalize is ready")
 
         # Mark finalize done
         sm.mark_task_done("finalize")
         ready = sm.get_ready_task_ids()
         assert ready == [], f"Expected no ready tasks, got: {ready}"
         assert sm.all_tasks_done(), "All tasks should be done"
-        print(f"✅ All tasks complete: workflow verified")
+        print("✅ All tasks complete: workflow verified")
 
 
 class TestCoordinatorMockWorkers:
@@ -481,7 +481,7 @@ class TestCoordinatorMockWorkers:
             )
 
             assert err is None
-            print(f"✅ Task execution succeeded")
+            print("✅ Task execution succeeded")
 
         # Test non-output task (should skip)
         update, err = mock_coordinator._execute_single_task(
@@ -492,7 +492,7 @@ class TestCoordinatorMockWorkers:
 
         assert err is None
         assert update == {}
-        print(f"✅ Non-output task skipped correctly")
+        print("✅ Non-output task skipped correctly")
 
     def test_poll_and_execute_tasks_mock(self, mock_coordinator):
         """Test task polling and execution."""
@@ -520,7 +520,7 @@ class TestCoordinatorMockWorkers:
 
             assert len(failed) == 0
             assert sm.task_board["out:docx"]["status"] == "completed"
-            print(f"✅ Task polling and execution successful")
+            print("✅ Task polling and execution successful")
 
     def test_lead_replan_mock(self, mock_coordinator, events_emitted):
         """Test lead replanning logic."""
@@ -536,7 +536,8 @@ class TestCoordinatorMockWorkers:
         sm.mark_task_failed("out:docx", error="Worker timeout")
 
         events = []
-        emit_fn = lambda et, pl: events.append((et, pl))
+        def emit_fn(et, pl):
+            return events.append((et, pl))
 
         mock_coordinator._lead_replan(
             mock_state,
@@ -549,7 +550,7 @@ class TestCoordinatorMockWorkers:
         # Task should be reset for retry
         assert sm.task_board["out:docx"]["status"] == "queued"
         assert len(events) > 0
-        print(f"✅ Replanning executed, task reset for retry")
+        print("✅ Replanning executed, task reset for retry")
 
 
 if __name__ == "__main__":
