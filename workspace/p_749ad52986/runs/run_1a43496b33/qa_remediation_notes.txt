@@ -1,1 +1,0 @@
-docx_markdown: Add at least one explicit citation or source marker for key claims. | Tighten structure and remove weak/generalized claims. | Ensure recommendations are explicitly grounded in available context.

@@ -1,2 +1,0 @@
-{"event_id": 1, "event_type": "model_created", "project_id": "p_ed0f8c1a9c", "model_id": "model_575a2836", "server_ts": "2026-04-11T02:47:30.833908+00:00", "payload": {"name": "Sync Model"}}
-{"event_id": 2, "event_type": "sync_state_changed", "project_id": "p_ed0f8c1a9c", "model_id": "model_575a2836", "server_ts": "2026-04-11T02:47:30.839234+00:00", "payload": {"status": "degraded", "sync_state": "degraded", "request_id": "req_6bd62d0ed9", "pull_applied": 0, "pushed": 0}}

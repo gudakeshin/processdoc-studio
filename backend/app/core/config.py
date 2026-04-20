@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     )
 
     processdoc_env: str = "development"
-    jwt_secret: str = "change-me"
+    jwt_secret: str = ""
     database_url: str = "sqlite:///./processdoc.db"
     # Applied to non-SQLite engines (e.g. Postgres). Size ≈ concurrent DB-bound requests per process.
     database_pool_size: int = 5
@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     jwt_sse_exp_seconds: int = 90
 
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # SlowAPI limit strings, e.g. "30/minute" (see limits.readthedocs.io).
+    auth_login_rate_limit: str = "30/minute"
+    auth_refresh_rate_limit: str = "60/minute"
     scheduler_enabled: bool = True
     auth_allow_self_signup: bool = False
     otel_sdk_enabled: bool = False
@@ -221,8 +224,25 @@ class Settings(BaseSettings):
     enable_deliverable_registry: bool = True
     enable_unified_quality_framework: bool = True
     enable_content_enrichment_engine: bool = True
+    # Feature flag for PPTX structural vision critic (fail-open when disabled or unavailable).
+    pptx_visual_critic_enabled: bool = True
+    # Optional model override for PPTX visual critic; empty uses ANTHROPIC_CLAUDE_MODEL.
+    pptx_visual_critic_model: str = ""
+    # Feature flag for narrative-coherence LLM critique blend (fail-open when disabled or unavailable).
+    # When enabled, a short LLM critique augments the deterministic issues list
+    # before the narrative score is aggregated.
+    narrative_llm_critique_enabled: bool = False
+    # Maximum issues taken from the LLM critique blend per evaluation.
+    narrative_llm_critique_max_issues: int = 4
 
     upload_max_bytes: int = 50 * 1024 * 1024
+
+    # Outbound HTTP (wiki URL ingest / refresh) — SSRF limits
+    http_fetch_max_bytes: int = 2_000_000
+    http_fetch_timeout_sec: float = 15.0
+    # Comma-separated lowercase hostnames; empty = any public https host (still IP/DNS blocked)
+    http_fetch_allowed_hosts: str = ""
+    zip_max_uncompressed_bytes: int = 100 * 1024 * 1024
 
     @field_validator(
         "bash_tool_enabled",
@@ -251,6 +271,8 @@ class Settings(BaseSettings):
         "enable_deliverable_registry",
         "enable_unified_quality_framework",
         "enable_content_enrichment_engine",
+        "pptx_visual_critic_enabled",
+        "narrative_llm_critique_enabled",
         "structured_logging_enabled",
         "run_queue_embed_redis_consumer",
         "run_queue_startup_reconcile",
@@ -290,19 +312,34 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_secrets_and_urls(self) -> Settings:
-        env_name = (self.processdoc_env or "development").strip().lower()
-        if env_name in ("production", "prod", "staging"):
-            bad = ("change-me", "", "changeme")
-            secret = self.jwt_secret.strip().lower()
-            if secret in bad or len(self.jwt_secret.strip()) < 16:
-                raise ValueError(
-                    "JWT_SECRET must be a strong secret (min 16 chars, not 'change-me') "
-                    f"when PROCESSDOC_ENV is {self.processdoc_env!r}"
-                )
+        secret_raw = (self.jwt_secret or "").strip()
+        secret_lower = secret_raw.lower()
+        bad = ("", "change-me", "changeme")
+        if secret_lower in bad or len(secret_raw) < 16:
+            raise ValueError(
+                "JWT_SECRET must be set to a strong secret (minimum 16 characters, not 'change-me'). "
+                "For local development run `make dev.secret` or: "
+                "python -c \"import secrets; print(secrets.token_urlsafe(32))\" and add JWT_SECRET to .env"
+            )
         if not (self.database_url or "").strip():
             raise ValueError("DATABASE_URL must not be empty")
         if self.run_queue_backend not in {"local", "redis"}:
             raise ValueError("RUN_QUEUE_BACKEND must be 'local' or 'redis'")
+        for origin in self.cors_origins_list:
+            if origin.strip() == "*" or origin.strip().lower() == "*":
+                raise ValueError(
+                    "CORS_ORIGINS must not contain '*' — the API uses credential-bearing requests; "
+                    "list explicit browser origins (e.g. http://localhost:3000)."
+                )
+        env_name = (self.processdoc_env or "development").strip().lower()
+        if env_name in ("production", "prod", "staging"):
+            if not self.cors_origins_list:
+                raise ValueError(
+                    "CORS_ORIGINS must list at least one explicit browser origin when "
+                    "PROCESSDOC_ENV is production or staging (wildcard credentials are unsafe)."
+                )
+            if self.bash_tool_enabled:
+                raise ValueError("BASH_TOOL_ENABLED must be false in production and staging.")
         return self
 
     @property

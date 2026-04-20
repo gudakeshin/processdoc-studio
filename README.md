@@ -4,6 +4,10 @@ AI-native process documentation platform. Upload source documents, describe your
 
 **Local-first:** run everything on your machine with Python and Node. PostgreSQL, Redis, and Docker are optional.
 
+### Repository hygiene
+
+The following paths are **machine-local** and must not be committed: `processdoc.db`, the entire `workspace/` tree (per-project uploads, parsed JSON, runs, wiki mirrors), Office lock files such as `~$*.pptx`, and stray generated `.pptx`/`.docx` at the repo root. They are ignored via the root `.gitignore`. After cloning, start the backend once (or run Alembic migrations) so SQLite or Postgres creates a fresh database; project workspaces are created automatically under `workspace/` when you use the app.
+
 ---
 
 ## Architecture

@@ -1,11 +1,16 @@
 "use client";
 
 import { CheckCircle2, CircleDashed, Loader2, XCircle } from "lucide-react";
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { AgentStatusGraph } from "@/components/run-studio/AgentStatusGraph";
 import { TodoChecklist } from "@/components/run-studio/TodoChecklist";
+import { Button } from "@/components/ui/Button";
+import { DeckCanvas, DeckTabPanel } from "@/components/deck-canvas";
 import { useTodoChecklistState } from "@/hooks/useTodoChecklistState";
-import { toolCallsFromAgentRoundPayload } from "@/lib/agentToolRound";
+import {
+  toolCallsFromAgentRoundPayload,
+  type ToolCallPreview,
+} from "@/lib/agentToolRound";
 import type { ParsedRunEvent } from "@/lib/runEvents";
 import type { RunTodoRow } from "@/lib/runTodosFromEvents";
 
@@ -17,7 +22,10 @@ type ToolCall = {
   name: string;
   status: "running" | "done" | "failed";
   summary: string;
+  preview?: ToolCallPreview;
 };
+
+const DECK_CANVAS_ENABLED = process.env.NEXT_PUBLIC_DECK_CANVAS_ENABLED !== "false";
 
 type SkillGroup = {
   key: string;
@@ -174,6 +182,7 @@ function buildSkillGroups(events: string[]): SkillGroup[] {
             name: row.name,
             status: "done",
             summary: parts.join(" · "),
+            preview: row.preview,
           });
         });
       }
@@ -236,6 +245,62 @@ function ToolStatusIcon({ status }: { status: ToolCall["status"] }) {
   return <XCircle className={`${c} text-[var(--error)]`} aria-hidden />;
 }
 
+function ToolPreview({ preview }: { preview: ToolCallPreview }) {
+  if (preview.kind === "web_capture") {
+    const hostname = (() => {
+      if (!preview.url) return "";
+      try {
+        return new URL(preview.url).hostname;
+      } catch {
+        return preview.url;
+      }
+    })();
+    return (
+      <div
+        className="mt-1 rounded border border-[var(--surface-border)] bg-[var(--surface-muted)] px-2 py-1.5"
+        role="group"
+        aria-label="Web capture preview"
+      >
+        <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+          <span>Web capture</span>
+          {preview.ok === false ? (
+            <span className="text-[var(--error)]">· error</span>
+          ) : preview.truncated ? (
+            <span>· truncated</span>
+          ) : null}
+        </div>
+        {preview.title ? (
+          <p className="break-words text-2xs font-medium leading-snug text-[var(--text-default)]">
+            {preview.title}
+          </p>
+        ) : null}
+        {preview.url ? (
+          <a
+            href={preview.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="break-all text-[11px] leading-snug text-[var(--info)] underline-offset-2 hover:underline"
+            title={preview.url}
+          >
+            {hostname || preview.url}
+          </a>
+        ) : null}
+        {preview.snippet ? (
+          <p className="mt-1 break-words text-2xs leading-snug text-[var(--primary-600)]">
+            {preview.snippet}
+          </p>
+        ) : null}
+        {preview.error ? (
+          <p className="mt-1 break-words text-2xs leading-snug text-[var(--error)]">
+            {preview.error}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -256,6 +321,8 @@ export function ToolActivityFeed({
   pollMode,
   streamError,
   onTaskAction,
+  onRegenerateSlide,
+  slideRegenerateBusyIndex,
   downloadsContent,
   showAgentGraph = true,
   hooksPanel,
@@ -271,6 +338,8 @@ export function ToolActivityFeed({
   /** Render slot for download buttons — passed from the parent with full artifact access */
   downloadsContent?: React.ReactNode;
   onTaskAction?: (taskId: string, action: "retry" | "skip" | "approve") => void;
+  onRegenerateSlide?: (slideIndex: number, instruction?: string, elementPath?: string) => void;
+  slideRegenerateBusyIndex?: number | null;
   hooksPanel?: {
     hooks: Array<Record<string, unknown>>;
     loading: boolean;
@@ -283,10 +352,15 @@ export function ToolActivityFeed({
     onSimulate: () => void;
   };
 }) {
-  const [activeTab, setActiveTab] = useState<"activity" | "artifacts" | "context" | "governance">(
+  const [activeTab, setActiveTab] = useState<"activity" | "artifacts" | "deck" | "context" | "governance">(
     "activity"
   );
   const [disableReason, setDisableReason] = useState("");
+  const [slideModalOpen, setSlideModalOpen] = useState(false);
+  const [selectedSlideIndex, setSelectedSlideIndex] = useState<number | null>(null);
+  const [selectedSlideTitle, setSelectedSlideTitle] = useState("");
+  const [slideInstruction, setSlideInstruction] = useState("");
+  const [selectedElementPath, setSelectedElementPath] = useState<string>("");
 
   const skillGroups = useMemo(() => buildSkillGroups(events), [events]);
   const checklist = useTodoChecklistState({
@@ -294,9 +368,13 @@ export function ToolActivityFeed({
     snapshotRows: runChecklistTodos ?? [],
   });
 
-  const readyDownloads: string[] = Array.isArray(artifacts?.ready_downloads)
-    ? artifacts.ready_downloads.map((x: unknown) => String(x))
-    : [];
+  const readyDownloads: string[] = useMemo(
+    () =>
+      Array.isArray(artifacts?.ready_downloads)
+        ? artifacts.ready_downloads.map((x: unknown) => String(x))
+        : [],
+    [artifacts?.ready_downloads]
+  );
 
   const outputFilenames: Record<string, string> = useMemo(() => {
     if (!artifacts?.output_filenames || typeof artifacts.output_filenames !== "object") return {};
@@ -312,6 +390,10 @@ export function ToolActivityFeed({
   );
 
   const hasArtifactDownloads = readyDownloads.length > 0 || Boolean(downloadsContent);
+  const pptxSlides = useMemo(
+    () => (Array.isArray(artifacts?.pptx_slides) ? artifacts.pptx_slides : []),
+    [artifacts?.pptx_slides]
+  );
 
   const lpSnippets: string[] = useMemo(() => {
     const ctx =
@@ -356,6 +438,75 @@ export function ToolActivityFeed({
     return null;
   }, [events]);
   const heartbeatSeen = useMemo(() => events.some((x) => x.startsWith("heartbeat:")), [events]);
+
+  const openSlideRegenerateModal = useCallback((slideIndex: number, slideTitle: string) => {
+    setSelectedSlideIndex(slideIndex);
+    setSelectedSlideTitle(slideTitle);
+    setSlideInstruction(
+      `Regenerate slide ${slideIndex} (${slideTitle}) to improve clarity, layout, and content quality while preserving slide intent.`
+    );
+    setSelectedElementPath("");
+    setSlideModalOpen(true);
+  }, []);
+
+  const closeSlideRegenerateModal = useCallback(() => {
+    if (slideRegenerateBusyIndex !== null) return;
+    setSlideModalOpen(false);
+    setSelectedSlideIndex(null);
+    setSelectedSlideTitle("");
+    setSlideInstruction("");
+    setSelectedElementPath("");
+  }, [slideRegenerateBusyIndex]);
+
+  const submitSlideRegeneration = useCallback(() => {
+    if (!onRegenerateSlide || selectedSlideIndex === null) return;
+    const instruction = slideInstruction.trim();
+    if (!instruction) return;
+    onRegenerateSlide(selectedSlideIndex, instruction, selectedElementPath || undefined);
+    setSlideModalOpen(false);
+  }, [onRegenerateSlide, selectedElementPath, selectedSlideIndex, slideInstruction]);
+
+  const onCanvasElementClick = useCallback(
+    ({ slideIndex, elementPath }: { slideIndex: number; elementPath: string }) => {
+      const slide = pptxSlides.find((s: any, i: number) => {
+        const idx = Number(s?.slide_index) > 0 ? Number(s.slide_index) : i + 1;
+        return idx === slideIndex;
+      });
+      const slideTitle = String(slide?.title || `Slide ${slideIndex}`).trim();
+      setSelectedSlideIndex(slideIndex);
+      setSelectedSlideTitle(slideTitle);
+      setSelectedElementPath(elementPath);
+      setSlideInstruction(
+        `Update only ${elementPath} on slide ${slideIndex} (${slideTitle}). Preserve all other content and layout on this slide and all other slides.`
+      );
+      setSlideModalOpen(true);
+    },
+    [pptxSlides]
+  );
+
+  useEffect(() => {
+    if (!slideModalOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSlideRegenerateModal();
+        return;
+      }
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        if (!slideInstruction.trim() || slideRegenerateBusyIndex !== null) return;
+        submitSlideRegeneration();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    closeSlideRegenerateModal,
+    slideInstruction,
+    slideModalOpen,
+    slideRegenerateBusyIndex,
+    submitSlideRegeneration,
+  ]);
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-lg border border-[var(--surface-border)] bg-white shadow-sm">
@@ -405,7 +556,7 @@ export function ToolActivityFeed({
         role="tablist"
         aria-label="Activity panel sections"
       >
-        {(["activity", "artifacts", "context", "governance"] as const).map((tab) => (
+        {(["activity", "artifacts", "deck", "context", "governance"] as const).map((tab) => (
           <button
             key={tab}
             type="button"
@@ -425,6 +576,11 @@ export function ToolActivityFeed({
             {tab === "artifacts" && hasArtifactDownloads && (
               <span className="inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[var(--success)] px-1 text-2xs leading-none text-white">
                 {readyDownloads.length > 0 ? readyDownloads.length : "•"}
+              </span>
+            )}
+            {tab === "deck" && pptxSlides.length > 0 && (
+              <span className="inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[var(--info)] px-1 text-2xs leading-none text-white">
+                {pptxSlides.length}
               </span>
             )}
           </button>
@@ -496,6 +652,9 @@ export function ToolActivityFeed({
                                   {tool.summary}
                                 </p>
                               ) : null}
+                              {tool.preview ? (
+                                <ToolPreview preview={tool.preview} />
+                              ) : null}
                             </div>
                           </li>
                         ))}
@@ -550,6 +709,78 @@ export function ToolActivityFeed({
                 ))}
               </div>
             ) : null}
+            {pptxSlides.length > 0 ? (
+              <div className="space-y-2 rounded border border-[var(--surface-border)] p-2">
+                <p className="text-xs font-semibold text-[var(--text-default)]">Slide actions</p>
+                <div className="space-y-1.5">
+                  {pptxSlides.map((slide: any, idx: number) => {
+                    const slideIndex = Number(slide?.slide_index) > 0 ? Number(slide.slide_index) : idx + 1;
+                    const slideTitle = String(slide?.title || `Slide ${slideIndex}`).trim();
+                    const busy = slideRegenerateBusyIndex === slideIndex;
+                    return (
+                      <div
+                        key={`slide-action-${slideIndex}`}
+                        className="flex items-center justify-between gap-2 rounded border border-[var(--surface-border)] px-2 py-1.5"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-2xs font-medium text-[var(--text-default)]">
+                            {slideIndex}. {slideTitle}
+                          </p>
+                          <p className="text-2xs text-[var(--text-muted)]">
+                            {String(slide?.slide_type || "slide")}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="min-h-9 shrink-0 px-2 py-1 text-2xs"
+                          disabled={Boolean(busy) || !onRegenerateSlide}
+                          onClick={() => openSlideRegenerateModal(slideIndex, slideTitle)}
+                        >
+                          {busy ? "Queuing..." : "Regenerate slide"}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+            {DECK_CANVAS_ENABLED && pptxSlides.length > 0 ? (
+              <div className="space-y-2 rounded border border-[var(--surface-border)] p-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-[var(--text-default)]">Canvas preview</p>
+                  <button
+                    type="button"
+                    className="text-2xs text-[var(--accent-blue)] hover:underline"
+                    onClick={() => setActiveTab("deck")}
+                  >
+                    Open Deck tab →
+                  </button>
+                </div>
+                <p className="text-2xs text-[var(--text-muted)]">
+                  Click an element to prefill a targeted update prompt.
+                </p>
+                <DeckCanvas slides={pptxSlides} className="max-h-[360px] overflow-auto space-y-2" onElementClick={onCanvasElementClick} />
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {/* Deck */}
+        {activeTab === "deck" && (
+          <div className="h-full min-h-0">
+            {pptxSlides.length === 0 ? (
+              <p className="text-[var(--primary-400)]">
+                Deck preview becomes available after the PPTX slide JSON is generated.
+              </p>
+            ) : (
+              <DeckTabPanel
+                slides={pptxSlides}
+                onElementClick={onCanvasElementClick}
+                slideRegenerateBusyIndex={slideRegenerateBusyIndex ?? null}
+                className="flex h-full min-h-0 flex-col gap-3 md:flex-row"
+              />
+            )}
           </div>
         )}
 
@@ -694,6 +925,53 @@ export function ToolActivityFeed({
           </div>
         )}
       </div>
+      {slideModalOpen && selectedSlideIndex !== null ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl rounded-lg border border-[var(--surface-border)] bg-white p-4 shadow-lg">
+            <h3 className="text-sm font-semibold text-[var(--text-default)]">
+              Regenerate slide {selectedSlideIndex}
+            </h3>
+            <p className="mt-1 text-2xs text-[var(--text-muted)]">
+              {selectedSlideTitle}
+            </p>
+            {selectedElementPath ? (
+              <p className="mt-1 text-2xs text-[var(--text-muted)]">
+                Target element path: <span className="mono">{selectedElementPath}</span>
+              </p>
+            ) : null}
+            <p className="mt-1 text-2xs text-[var(--text-muted)]">
+              Press <kbd>Esc</kbd> to cancel, <kbd>Cmd/Ctrl+Enter</kbd> to queue.
+            </p>
+            <label className="mt-3 block text-2xs font-medium text-[var(--text-default)]">
+              Instruction
+            </label>
+            <textarea
+              value={slideInstruction}
+              onChange={(e) => setSlideInstruction(e.target.value)}
+              rows={5}
+              className="mt-1 w-full rounded border border-[var(--surface-border)] px-2 py-2 text-xs"
+              placeholder="Describe the changes you want on this slide"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={closeSlideRegenerateModal}
+                disabled={slideRegenerateBusyIndex !== null}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={submitSlideRegeneration}
+                disabled={!slideInstruction.trim() || slideRegenerateBusyIndex !== null}
+              >
+                {slideRegenerateBusyIndex === selectedSlideIndex ? "Queuing..." : "Queue regeneration"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

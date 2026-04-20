@@ -23,6 +23,49 @@ TEXT_EDITOR_TOOL: dict[str, Any] = {
 }
 
 
+def _trace_preview_for_tool(tool_name: str, output_text: str) -> dict[str, Any] | None:
+    """Return a compact, UI-friendly preview for known tool outputs.
+
+    Fail-open: any parse error returns ``None`` so we still emit the default
+    ``output_chars`` / ``is_error`` summary without blocking the round.
+    """
+
+    if not output_text:
+        return None
+    previewable = {"web_capture"}
+    if tool_name not in previewable:
+        return None
+    try:
+        payload = json.loads(output_text)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if tool_name == "web_capture":
+        url = str(payload.get("url") or "").strip()
+        title = str(payload.get("title") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        ok = bool(payload.get("ok"))
+        error = str(payload.get("error") or "").strip() or None
+        truncated = bool(payload.get("truncated"))
+        snippet_source = text or error or ""
+        snippet = snippet_source[:320]
+        if len(snippet_source) > 320:
+            snippet = snippet.rstrip() + "…"
+        preview: dict[str, Any] = {
+            "kind": "web_capture",
+            "url": url,
+            "title": title[:180],
+            "snippet": snippet,
+            "ok": ok,
+            "truncated": truncated,
+        }
+        if error:
+            preview["error"] = error[:240]
+        return preview
+    return None
+
+
 def _assistant_blocks_to_params(content: Iterable[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for block in content:
@@ -331,15 +374,17 @@ def run_subagent_tool_loop(
                 except Exception as exc:  # noqa: BLE001
                     out_text = json.dumps({"error": str(exc)[:800]})
                     is_err = True
-            trace_summary.append(
-                {
-                    "round": rounds_completed,
-                    "tool": name_str,
-                    "tool_use_id": tid,
-                    "is_error": is_err,
-                    "output_chars": len(out_text),
-                }
-            )
+            trace_entry: dict[str, Any] = {
+                "round": rounds_completed,
+                "tool": name_str,
+                "tool_use_id": tid,
+                "is_error": is_err,
+                "output_chars": len(out_text),
+            }
+            preview = _trace_preview_for_tool(name_str, out_text) if not is_err else None
+            if preview:
+                trace_entry["preview"] = preview
+            trace_summary.append(trace_entry)
             tool_result_blocks.append(
                 {
                     "type": "tool_result",

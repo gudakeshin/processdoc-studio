@@ -1,3 +1,0 @@
-Plan rationale: User instruction 'Build a narrative' with process model output 'narrative' is constrained to docx-only output for this run. DOCX Authoring and Editing is the appropriate skill to create narrative content in Word format.
-Per-output notes:
-- docx: Process model specifies 'narrative' output type, but this run is constrained to docx only. DOCX Authoring skill will be used to author the narrative content in Word document format.

@@ -1,3 +1,0 @@
-Plan rationale: User instruction requires remediation of compliance gate failures (source grounding) by revising existing outputs to add inline provenance markers and a sources section. This is a direct document editing and restructuring task matching DOCX Authoring and Editing skill. Only allowed output type is docx.
-Per-output notes:
-- docx: Apply source remediation per guardrail requirements: (1) Add explicit inline provenance for all factual, quantitative, and benchmark claims using format '(source: client-provided data)', '(source: benchmark assumptions)'

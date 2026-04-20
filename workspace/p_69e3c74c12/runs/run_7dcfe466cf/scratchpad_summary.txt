@@ -1,3 +1,0 @@
-Plan rationale: Instruction 'Complete run' is vague with minimal process model definition. Only docx is allowed. Selecting DOCX Authoring and Editing as the general-purpose primary skill for Word document creation. Recommend clarifying the specific deliverable type (e.g., approach note, BRD, SOP, narrative summary) for more targeted execution.
-Per-output notes:
-- docx: Instruction does not map clearly to a specific skill's use_when condition. DOCX Authoring selected as the most general primary skill for Word document creation. Suggest clarifying document type to enable more specialized

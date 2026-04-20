@@ -45,6 +45,30 @@ jobs:
         run: pytest app/tests -q --cov=app --cov-report=term-missing
       - name: Skill script smoke suite
         run: pytest app/tests/test_skill_scripts_smoke.py -q
+      - name: Epic 2 + 3 smoke (deck exporter, web capture, handoff, parity, quality, narrative)
+        # Dedicated surface for the PPT-20x / PPT-30x work so regressions are
+        # visible per-epic via a named junit artifact rather than buried in the
+        # full pytest run.
+        run: |
+          mkdir -p reports
+          pytest \
+            app/tests/test_deck_exporter.py \
+            app/tests/test_web_capture.py \
+            app/tests/test_handoff_bundle.py \
+            app/tests/test_pptx_canvas_parity_harness.py \
+            app/tests/test_quality_framework_phase2.py \
+            app/tests/test_narrative_feedback.py \
+            app/tests/test_tool_round_preview.py \
+            -q --junit-xml=reports/epic-2-3-smoke.xml
+      - name: Upload Epic 2 + 3 junit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: epic-2-3-smoke-junit
+          path: backend/reports/epic-2-3-smoke.xml
+          if-no-files-found: warn
+      - name: PPTX canvas parity spikes (strict)
+        run: make -C .. pptx.canvas.parity
       - name: Alembic upgrade smoke (Postgres)
         env:
           DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/migtest

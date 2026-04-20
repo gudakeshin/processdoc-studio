@@ -3,11 +3,24 @@
 .env.local
 .env.*.local
 
+# Repo-local data & artifacts (never commit)
+/processdoc.db
+/workspace/
+*.pptx
+*.docx
+backend.log
+~$*
+**/~$*
+
 # Python runtime
 backend/.venv/
 backend/.pytest_cache/
 backend/__pycache__/
+__pycache__/
+**/__pycache__/
 backend/**/*.pyc
+
+# Legacy paths (kept for backwards compatibility with older clones)
 backend/processdoc.db
 backend/workspace/
 

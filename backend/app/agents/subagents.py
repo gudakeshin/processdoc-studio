@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.agent_types import AgentContext, AgentOutput
+from app.agents.prompt_hygiene import (
+    UNTRUSTED_SKILL_SYSTEM_NOTE,
+    context_excerpt_block,
+    process_model_json_block,
+    wrap_untrusted,
+    wrap_untrusted_bundle,
+)
 from app.core.state import ProcessDocState, ProcessModel
 from app.services.claude import (
     _extract_first_json_object,
@@ -74,7 +81,9 @@ def _append_conversation_digest_block(user: str, ctx: AgentContext) -> str:
     cap = max(0, int(settings.subagent_conversation_digest_max_chars))
     if cap <= 0 and d:
         return user
-    return f"{user}\n\n" + "\n\n".join(extra_parts) + "\n"
+    bundle = "\n\n".join(extra_parts).strip()
+    wrapped = wrap_untrusted("conversation_digest_and_enrichment", bundle)
+    return f"{user}\n\n{wrapped}\n" if wrapped else user
 
 
 def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
@@ -116,7 +125,8 @@ def _normalize_drawio_xml(raw: str) -> str | None:
 
 
 def run_process_extraction(state: ProcessDocState) -> ProcessDocState:
-    raw = state.get("raw_text") or ""
+    # Use the immutable original intent to avoid contamination from QA/guardrail annotations
+    raw = state.get("user_intent_original") or state.get("raw_text") or ""
     ctx = state.get("assembled_context") or ""
 
     if is_claude_enabled():
@@ -137,6 +147,8 @@ def run_process_extraction(state: ProcessDocState) -> ProcessDocState:
             "  steps          ProcessStep[] — one entry per discrete action in execution order\n"
             "  decisions      DecisionBranch[] — one entry per conditional fork; empty [] if none\n"
             "  swimlanes      { [role: string]: string[] } — maps each role to its step IDs in order\n"
+            "  metrics        MetricFact[] — every quantified fact in the text (time, count, %, currency, volume); "
+            "empty [] if no numeric data present\n"
             "  metadata       { [key: string]: string } — any named attributes (e.g. 'frequency', 'owner', 'SLA') "
             "found in the text; empty {} if none\n\n"
             "ProcessStep schema:\n"
@@ -153,11 +165,16 @@ def run_process_extraction(state: ProcessDocState) -> ProcessDocState:
             "  condition  string — the yes/no question at the fork (e.g. 'Documents complete?')\n"
             "  true_path  string[] — step IDs taken when condition is true\n"
             "  false_path string[] — step IDs taken when condition is false\n\n"
+            "MetricFact schema:\n"
+            "  stat    string — the value/number (e.g. '12 days', '94%', 'INR 50,000', '3')\n"
+            "  label   string — what it measures in 2–5 words (e.g. 'Invoice Cycle Time', 'Error Rate')\n"
+            "  source  string — one of: 'client-provided data' | 'benchmark assumptions' | 'inferred from context'\n\n"
             "Edge-case rules:\n"
             "  - If no numbered or bulleted steps exist, infer steps from verbs in the text (minimum 1 step).\n"
             "  - If no roles are named, use ['Process Owner'] as the sole role and assign all steps to it.\n"
             "  - Do not invent steps that are not implied by the source text.\n\n"
-            f"Instruction:\n{raw}\n\nContext:\n{ctx}\n"
+            f"Instruction:\n{wrap_untrusted('user_instruction', str(raw))}\n\n"
+            f"Context:\n{wrap_untrusted('assembled_context', str(ctx))}\n"
         )
         try:
             pm = claude_generate_json(system=system, user=user, temperature=0.2, max_tokens=2500)
@@ -189,6 +206,24 @@ def _skill_instruction(ctx: AgentContext, output_type: str) -> str:
         return ""
     text = str(all_instr.get(output_type) or "").strip()
     return text
+
+
+def _drawio_context_hints(ctx: AgentContext, limit: int = 800) -> str:
+    """Extract section headings + first content line from assembled_context for DrawIO hints."""
+    ctx_text = ctx.assembled_context or ""
+    if not ctx_text:
+        return ""
+    lines = ctx_text.split("\n")
+    hints: list[str] = []
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            hints.append(line)
+            # Include the next non-empty line as a brief summary of that section.
+            for j in range(i + 1, min(i + 4, len(lines))):
+                if lines[j].strip():
+                    hints.append(lines[j].strip())
+                    break
+    return "\n".join(hints)[:limit]
 
 
 def _primary_skill(ctx: AgentContext) -> dict | None:
@@ -288,7 +323,8 @@ def _build_system_from_skill(
     description = str(primary.get("description") or "").strip()
     zone1_parts.append(f"You are {display_name}.")
     if description:
-        zone1_parts.append(description)
+        desc_wrapped = wrap_untrusted("skill_description", description, max_chars=4000)
+        zone1_parts.append(desc_wrapped if desc_wrapped else description)
 
     # 2. Core craft instructions — the SKILL.md body (prompt_instructions).
     #    These go into the SYSTEM prompt so they define the agent's persona
@@ -296,15 +332,17 @@ def _build_system_from_skill(
     prompt_instructions = _skill_instruction(ctx, output_type)
     if prompt_instructions:
         zone1_parts.append("")
-        zone1_parts.append(prompt_instructions)
+        instr_wrapped = wrap_untrusted("skill_prompt_instructions", prompt_instructions, max_chars=48_000)
+        zone1_parts.append(instr_wrapped if instr_wrapped else prompt_instructions)
 
     # 3. Structured reasoning sequence from workflow_steps
     workflow_steps = primary.get("workflow_steps")
     if isinstance(workflow_steps, list) and workflow_steps:
         zone1_parts.append("")
         zone1_parts.append("Follow this reasoning sequence:")
-        for i, step in enumerate(workflow_steps, 1):
-            zone1_parts.append(f"  {i}. {step}")
+        seq_lines = "\n".join(f"  {i}. {step}" for i, step in enumerate(workflow_steps, 1))
+        seq_wrapped = wrap_untrusted("skill_workflow_steps", seq_lines, max_chars=16_000)
+        zone1_parts.append(seq_wrapped if seq_wrapped else seq_lines)
 
     # 4. Gap 3 — feedback_loop drives max_rounds and self-correction guidance.
     #    Each feedback_loop entry = one tool-use round budget.
@@ -314,8 +352,9 @@ def _build_system_from_skill(
         max_rounds = max(len(feedback_loop), 2)
         zone3_parts.append("")
         zone3_parts.append("Self-correction loop — use your available tools across these rounds:")
-        for i, step in enumerate(feedback_loop, 1):
-            zone3_parts.append(f"  Round {i}: {step}")
+        fb_lines = "\n".join(f"  Round {i}: {step}" for i, step in enumerate(feedback_loop, 1))
+        fb_wrapped = wrap_untrusted("skill_feedback_loop", fb_lines, max_chars=8000)
+        zone3_parts.append(fb_wrapped if fb_wrapped else fb_lines)
         zone3_parts.append(
             "Use qa_validator and style_enforcer tools where available to complete checking rounds. "
             "Produce the final output only after the loop is complete."
@@ -326,8 +365,9 @@ def _build_system_from_skill(
     if isinstance(acceptance_checks, list) and acceptance_checks:
         zone3_parts.append("")
         zone3_parts.append("Your output MUST satisfy ALL of the following acceptance criteria:")
-        for check in acceptance_checks:
-            zone3_parts.append(f"  - {check}")
+        chk_lines = "\n".join(f"  - {check}" for check in acceptance_checks)
+        chk_wrapped = wrap_untrusted("skill_acceptance_checks", chk_lines, max_chars=8000)
+        zone3_parts.append(chk_wrapped if chk_wrapped else chk_lines)
         zone3_parts.append(
             "After drafting, re-read your output and verify each criterion is met. "
             "Fix anything that fails before returning."
@@ -349,7 +389,9 @@ def _build_system_from_skill(
                 cf_path = (skill_dir / cf.strip()).resolve()
                 content = cf_path.read_text(encoding="utf-8").strip()
                 if content:
-                    loaded_companions.append(f"### Reference: {cf_path.name}\n\n{content}")
+                    safe_name = ("".join(c if c.isalnum() or c in ".-_" else "_" for c in cf_path.name))[:120] or "companion"
+                    cw = wrap_untrusted(f"skill_companion_{safe_name}", content, max_chars=48_000)
+                    loaded_companions.append(f"### Reference: {cf_path.name}\n\n{cw if cw else content}")
             except OSError:
                 pass
         if loaded_companions:
@@ -385,8 +427,10 @@ def _build_system_from_skill(
             pp_name = str(pp_skill.get("display_name") or pp_skill.get("id") or "Brand")
             pp_instr = str(pp_skill.get("prompt_instructions") or "").strip()
             if pp_instr:
+                pp_label = "".join(c if c.isalnum() or c in ".-_" else "_" for c in pp_name)[:64] or "post_processor"
+                pp_wrapped = wrap_untrusted(f"post_processor_{pp_label}", pp_instr, max_chars=16_000)
                 zone3_parts.append(f"  ## {pp_name}")
-                zone3_parts.append(f"  {pp_instr}")
+                zone3_parts.append(f"  {pp_wrapped}" if pp_wrapped else f"  {pp_instr}")
 
     # 6. Tool invocation policy — agents must be told when to call tools vs. generate
     #    directly. Without this guidance agents skip retrieve_context and generate
@@ -438,7 +482,8 @@ def _build_system_from_skill(
         zone2_parts.append(f"SelectedStrategyOption: {option_id}")
     regen = str(plan.get("regeneration_directive") or "").strip()
     if regen:
-        zone2_parts.append(f"RegenerationDirective: {regen[:800]}")
+        regen_wrapped = wrap_untrusted("regeneration_directive", regen, max_chars=800)
+        zone2_parts.append(f"RegenerationDirective:\n{regen_wrapped}" if regen_wrapped else f"RegenerationDirective: {regen[:800]}")
     zone1_fingerprint = hashlib.sha256("\n".join(zone1_parts).encode("utf-8")).hexdigest()[:16]
     zone2_parts.append(f"Zone1Fingerprint: {zone1_fingerprint}")
 
@@ -446,12 +491,13 @@ def _build_system_from_skill(
     freedom = str(primary.get("freedom_level") or "medium").strip().lower()
     temperature = _FREEDOM_TEMPERATURE.get(freedom, fallback_temperature)
 
+    rendered = _render_zoned_system_prompt(
+        zone1_stable=zone1_parts,
+        zone2_run_specific=zone2_parts,
+        zone3_dynamic=zone3_parts,
+    )
     return _SkillBuild(
-        system=_render_zoned_system_prompt(
-            zone1_stable=zone1_parts,
-            zone2_run_specific=zone2_parts,
-            zone3_dynamic=zone3_parts,
-        ),
+        system=f"{UNTRUSTED_SKILL_SYSTEM_NOTE}{rendered}",
         temperature=temperature,
         max_rounds=max_rounds,
     )
@@ -946,7 +992,7 @@ def run_raci_agent(ctx: AgentContext) -> AgentOutput:
             "Column order: Activity | Responsible | Accountable | Consulted | Informed\n"
             "One row per ProcessModel.steps entry. Do not add rows for roles — only for activities.\n"
             "Do not include a title row, caption, or explanatory text — table only.\n\n"
-            f"ProcessModel JSON:\n{json.dumps(pm)}\n"
+            f"{process_model_json_block(pm)}"
         )
         loop_out = _run_subagent_tool_loop_text(ctx, agent_id="raci", system=sb.system, user=user, temperature=sb.temperature, max_rounds=sb.max_rounds)
         model_out = loop_out
@@ -1002,7 +1048,7 @@ def run_sop_agent(ctx: AgentContext) -> AgentOutput:
             "7. `## References` — single bullet: 'Source: run instruction and assembled project context'\n\n"
             "Length constraint: ≤80 words per section (Purpose, Scope). Procedure steps: ≤20 words per step name line.\n"
             "Do not add sections beyond the seven listed above.\n\n"
-            f"ProcessModel JSON:\n{json.dumps(pm)}\n"
+            f"{process_model_json_block(pm)}"
         )
         md = _run_subagent_tool_loop_text(ctx, agent_id="sop", system=sb.system, user=user, temperature=sb.temperature, max_rounds=sb.max_rounds)
         if not md:
@@ -1103,8 +1149,8 @@ def run_narrative_agent(ctx: AgentContext) -> AgentOutput:
             "  - Do not add a 'Context Used' or 'References' section.\n"
             "  - Do not repeat information across sections.\n"
             "  - Do not use the phrase 'in conclusion' or 'in summary'.\n\n"
-            f"ProcessModel JSON:\n{json.dumps(pm)}\n\n"
-            f"Context excerpt:\n{actx[:4000]}\n"
+            f"{process_model_json_block(pm)}\n"
+            f"{context_excerpt_block(actx, 4000)}"
         )
         user = _append_conversation_digest_block(user, ctx)
         md: str | None = None
@@ -1234,8 +1280,11 @@ def run_drawio_agent(ctx: AgentContext) -> AgentOutput:
             "swimlane container cells (style='swimlane;') with child cells inside them (parent='containerCellId'). "
             "If swimlanes is empty, place all cells flat under parent='1'.\n\n"
             "Do not output anything outside the <mxGraphModel> element.\n\n"
-            f"ProcessModel JSON:\n{json.dumps(pm)}\n"
+            f"{process_model_json_block(pm)}"
         )
+        _drawio_hints = _drawio_context_hints(ctx)
+        if _drawio_hints:
+            user += f"\n\nContext hints for swimlane structure and roles:\n{_drawio_hints}"
         _pm_feedback = ctx.plan_payload.get("process_map_visual_feedback") or []
         if _pm_feedback and isinstance(_pm_feedback, list):
             _pm_hints = "\n".join(
@@ -1298,7 +1347,7 @@ def run_xlsx_agent(ctx: AgentContext) -> AgentOutput:
                 "Separator:  |---|---|---|---|---|\n"
                 "One data row per step. No title, no caption — table only.\n"
                 "Exactly one Accountable per row — never blank, never multiple.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n"
+                f"{process_model_json_block(pm)}"
             )
         else:
             user = (
@@ -1315,7 +1364,7 @@ def run_xlsx_agent(ctx: AgentContext) -> AgentOutput:
                 "Header row format: | Activity | Owner | Inputs | Outputs | Tools | Duration | Notes |\n"
                 "Separator row format: |---|---|---|---|---|---|---|\n"
                 "One data row per step. No title, no summary row.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n"
+                f"{process_model_json_block(pm)}"
             )
         _xlsx_feedback = ctx.plan_payload.get("xlsx_visual_feedback") or []
         if _xlsx_feedback and isinstance(_xlsx_feedback, list):
@@ -1405,8 +1454,8 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
                 "4. `## Roles and Accountability` — one bullet per role in ≤15 words\n"
                 "5. `## Recommended Next Actions` — exactly 2–4 numbered items, ≤20 words each\n\n"
                 "Constraints: no hedging language; no 'Context Used' section; no repeated information.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n\n"
-                f"Context excerpt:\n{actx[:3500]}"
+                f"{process_model_json_block(pm)}\n"
+                f"{context_excerpt_block(actx, 3500)}"
             )
         elif deliverable == "sop":
             user = (
@@ -1419,7 +1468,7 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
                 "5. `## Procedure` — numbered steps from ProcessModel.steps\n"
                 "6. `## Decision Points` — only if decisions is non-empty\n"
                 "7. `## References` — Source: run instruction and project context\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n"
+                f"{process_model_json_block(pm)}"
             )
         elif deliverable == "proposal":
             p_skill = _primary_skill(ctx)
@@ -1439,8 +1488,8 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
                 "- Return only markdown with `#` title and `##` sections.\n"
                 "- Include a concise value-case table (lever, impact, confidence, owner).\n"
                 "- Include a 90-day workplan with milestones and governance cadence.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n\n"
-                f"Context excerpt:\n{actx[:3500]}"
+                f"{process_model_json_block(pm)}\n"
+                f"{context_excerpt_block(actx, 3500)}"
             )
         else:
             user = (
@@ -1453,8 +1502,8 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
                 "4. `## Operational Considerations` — 3–5 bullets from ProcessModel or context only; "
                 "if none evident: 'No explicit risks or constraints were identified.'\n"
                 "5. `## Next Actions` — exactly 3 numbered items, ≤25 words each\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n\n"
-                f"Context excerpt:\n{actx[:3500]}"
+                f"{process_model_json_block(pm)}\n"
+                f"{context_excerpt_block(actx, 3500)}"
             )
 
         _pdf_feedback = ctx.plan_payload.get("pdf_visual_feedback") or []
@@ -1465,6 +1514,19 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
             )
             if _pdf_hints:
                 user += f"\n\nVisual QA feedback from previous generation (must be addressed):\n{_pdf_hints}"
+
+        _pdf_narrative = ctx.plan_payload.get("pdf_narrative_feedback") or []
+        if _pdf_narrative and isinstance(_pdf_narrative, list):
+            _pdf_narrative_hints = "\n".join(
+                f"- {h.get('instruction', '')}" for h in _pdf_narrative
+                if isinstance(h, dict) and h.get("instruction")
+            )
+            if _pdf_narrative_hints:
+                user += (
+                    "\n\nNarrative coherence feedback from previous generation "
+                    "(must be addressed — tighten arc, transitions, and topic continuity):\n"
+                    f"{_pdf_narrative_hints}"
+                )
         md = _run_subagent_tool_loop_text(ctx, agent_id="pdf", system=sb.system, user=user,
                                           temperature=sb.temperature, max_rounds=sb.max_rounds)
         if not md:
@@ -1562,7 +1624,7 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "7. `## References` — single bullet: 'Source: run instruction and assembled project context'\n\n"
                 "Length constraint: ≤80 words per section (Purpose, Scope). "
                 "Do not add sections beyond the seven listed above.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n"
+                f"{process_model_json_block(pm)}"
             )
         elif deliverable == "narrative":
             user = (
@@ -1574,8 +1636,8 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "4. `## Roles and Accountability` — one bullet per role in ≤15 words\n"
                 "5. `## Recommended Next Actions` — exactly 2–4 numbered items, ≤20 words each, specific to this process\n\n"
                 "Constraints: no hedging language; no 'Context Used' section; no section repetition.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n\n"
-                f"Context excerpt:\n{actx[:4000]}\n"
+                f"{process_model_json_block(pm)}\n"
+                f"{context_excerpt_block(actx, 4000)}"
             )
         elif deliverable == "raci":
             user = (
@@ -1588,7 +1650,7 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "   Assignment rules: R = step.role; A = first role in roles[] or most senior; "
                 "C/I = remaining roles; exactly one A per row; use '—' for empty cells.\n\n"
                 "Return ONLY valid Markdown starting with the # heading.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n"
+                f"{process_model_json_block(pm)}"
             )
         elif deliverable == "proposal":
             p_skill = _primary_skill(ctx)
@@ -1609,8 +1671,8 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "- Add a quantified value case with assumptions and confidence levels.\n"
                 "- Include implementation workstreams, sequencing, and ownership by role.\n"
                 "- Include risks, mitigations, and measurable success criteria.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n\n"
-                f"Context excerpt:\n{actx[:4000]}\n"
+                f"{process_model_json_block(pm)}\n"
+                f"{context_excerpt_block(actx, 4000)}"
             )
         elif deliverable == "brd":
             user = (
@@ -1623,8 +1685,8 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "5. `## Roles and Stakeholders` — one bullet per role with responsibility\n"
                 "6. `## Success Criteria` — 3–5 measurable criteria\n"
                 "7. `## References` — Source: run instruction and project context\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}\n\n"
-                f"Context excerpt:\n{actx[:3000]}\n"
+                f"{process_model_json_block(pm)}\n"
+                f"{context_excerpt_block(actx, 3000)}"
             )
         else:
             # Generic DOCX — procedure document
@@ -1640,7 +1702,7 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "7. `## References` — single bullet: 'Source: run instruction and assembled project context'\n\n"
                 "Constraints: Purpose and Scope ≤80 words each. "
                 "Do not invent controls not present in the ProcessModel.\n\n"
-                f"ProcessModel JSON:\n{json.dumps(pm)}"
+                f"{process_model_json_block(pm)}"
             )
 
         _docx_feedback = ctx.plan_payload.get("docx_visual_feedback") or []
@@ -1651,6 +1713,19 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
             )
             if _docx_hints:
                 user += f"\n\nVisual QA feedback from previous generation (must be addressed):\n{_docx_hints}"
+
+        _docx_narrative = ctx.plan_payload.get("docx_narrative_feedback") or []
+        if _docx_narrative and isinstance(_docx_narrative, list):
+            _docx_narrative_hints = "\n".join(
+                f"- {h.get('instruction', '')}" for h in _docx_narrative
+                if isinstance(h, dict) and h.get("instruction")
+            )
+            if _docx_narrative_hints:
+                user += (
+                    "\n\nNarrative coherence feedback from previous generation "
+                    "(must be addressed — tighten arc, transitions, and topic continuity):\n"
+                    f"{_docx_narrative_hints}"
+                )
         user = _append_conversation_digest_block(user, ctx)
         md = _run_subagent_tool_loop_text(ctx, agent_id="docx", system=sb.system, user=user,
                                           temperature=sb.temperature, max_rounds=sb.max_rounds)
@@ -1865,7 +1940,7 @@ def _shared_user_context_appendix(ctx: AgentContext) -> str:
         blocks.append(f"## Prior artifacts context\n{enrichment_context[:2200]}")
     if not blocks:
         return ""
-    return "\n\n".join(blocks) + "\n\n---\n\n"
+    return wrap_untrusted_bundle("\n\n".join(blocks) + "\n\n---\n\n")
 
 
 def _pptx_visual_feedback_indices(feedback: list[Any]) -> set[int]:
@@ -1897,6 +1972,45 @@ def _merge_pptx_slides_repair(
         if (j + 1) in fix_indices_1based and j < len(repaired) and isinstance(repaired[j], dict):
             out[j] = repaired[j]
     return out
+
+
+def _normalize_pptx_slide_identities(slides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure stable slide/element identities for targeted regeneration workflows."""
+    normalized: list[dict[str, Any]] = []
+    collection_key_map: dict[str, str] = {
+        "stat_cards": "card_id",
+        "column_cards": "card_id",
+        "stack_layers": "layer_id",
+    }
+    for idx, raw_slide in enumerate(slides, start=1):
+        if not isinstance(raw_slide, dict):
+            continue
+        slide = dict(raw_slide)
+        if not str(slide.get("slide_id") or "").strip():
+            slide["slide_id"] = f"slide_{idx:02d}"
+        slide.setdefault("slide_index", idx)
+        for key, id_field in collection_key_map.items():
+            value = slide.get(key)
+            if not isinstance(value, list):
+                continue
+            out_items: list[Any] = []
+            for item_idx, item in enumerate(value, start=1):
+                if isinstance(item, dict):
+                    next_item = dict(item)
+                    if not str(next_item.get(id_field) or "").strip():
+                        next_item[id_field] = f"{slide['slide_id']}_{key}_{item_idx:02d}"
+                    out_items.append(next_item)
+                else:
+                    out_items.append(item)
+            slide[key] = out_items
+        bullets = slide.get("bullets")
+        if isinstance(bullets, list) and bullets:
+            slide.setdefault(
+                "bullet_ids",
+                [f"{slide['slide_id']}_bullets_{i:02d}" for i in range(1, len(bullets) + 1)],
+            )
+        normalized.append(slide)
+    return normalized
 
 
 def _pptx_deterministic_slides(pm: ProcessModel) -> list[dict[str, Any]]:
@@ -2100,7 +2214,7 @@ def _generate_slides_batched(
             )
             batch_instruction += f"\nPrior slides already generated (maintain continuity):\n{prior_summary}\n"
 
-        batch_user = batch_instruction + "\n" + user_core + appendix + f"ProcessModel JSON:\n{json.dumps(pm)}"
+        batch_user = batch_instruction + "\n" + user_core + appendix + f"{process_model_json_block(pm)}"
 
         raw_json = _run_subagent_tool_loop_text(
             ctx, agent_id="pptx", system=system, user=batch_user,
@@ -2134,6 +2248,31 @@ def _generate_slides_batched(
             return None
 
     return all_slides if all_slides else None
+
+
+def _resolve_presentation_title(pm: dict, state: dict) -> str:
+    """
+    Return the best available presentation title.
+
+    Validates pm["process_name"] and falls back gracefully:
+    1. Use pm["process_name"] if it looks like a real title (not a chat message or annotation).
+    2. Else: use first meaningful line from user_intent_original.
+    3. Final fallback: "Process Overview".
+
+    Rules are domain-agnostic — no hardcoded domain keywords.
+    """
+    _CHAT_MARKERS = ("assistant:", "user:", "👋", "💬", "🎯", "🚀", "qa remediation", "guardrail")
+    name = (pm.get("process_name") or "").strip()
+    name_lower = name.lower()
+    if name and 5 <= len(name) <= 120 and not any(m in name_lower for m in _CHAT_MARKERS):
+        return name
+    # Fall back to user intent
+    intent = (state.get("user_intent_original") or "").strip()
+    if intent:
+        first_line = intent.splitlines()[0].strip()
+        if 5 <= len(first_line) <= 120:
+            return first_line
+    return "Process Overview"
 
 
 def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
@@ -2220,16 +2359,35 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             f"description=\"Applications and tools required for automation\"\n"
         )
 
-        data_for_slide_7 = (
-            f"\nDATA FOR SLIDE 7 (stat_cards) — MUST POPULATE WITH KEY METRICS:\n"
-            f"Use these 3 metrics or extract similar ones from the ProcessModel:\n"
-            f"- If cycle time available: include as Card 1\n"
-            f"- If error/exception rate available: include as Card 2\n"
-            f"- If control points or compliance metrics available: include as Card 3\n"
-            f"Each card MUST have stat (number/percentage), label (2-4 words), "
-            f"and description (1 sentence explaining significance).\n"
-            f"Use [TBC] ONLY if data is truly unavailable.\n"
-        )
+        extracted_metrics = pm.get("metrics") or []
+        if extracted_metrics and isinstance(extracted_metrics, list):
+            metric_hints = "\n".join(
+                f"  - stat=\"{m.get('stat', '')}\", label=\"{m.get('label', '')}\", "
+                f"source=\"{m.get('source', 'inferred from context')}\""
+                for m in extracted_metrics[:3]
+                if isinstance(m, dict) and m.get("stat") and m.get("label")
+            )
+            if metric_hints:
+                data_for_slide_7 = (
+                    f"\nDATA FOR SLIDE 7 (stat_cards) — use these extracted metrics:\n"
+                    f"{metric_hints}\n"
+                    "Each card MUST have stat, label, and description. "
+                    "Cite source inline using the source field provided.\n"
+                )
+            else:
+                data_for_slide_7 = (
+                    "\nDATA FOR SLIDE 7 (stat_cards) — derive 3 metrics from the ProcessModel "
+                    "(cycle time, error rate, control points, SLA, or volume counts). "
+                    "Each card needs stat, label, description. Use [TBC] only if truly unquantifiable.\n"
+                )
+        else:
+            data_for_slide_7 = (
+                "\nDATA FOR SLIDE 7 (stat_cards) — derive 3 metrics from the ProcessModel "
+                "(cycle time, error rate, control points, SLA, or volume counts). "
+                "Each card needs stat, label, description. Use [TBC] only if truly unquantifiable.\n"
+            )
+
+        presentation_title = _resolve_presentation_title(pm, {"user_intent_original": ctx.user_intent_original})
 
         # ── Skill-aware slide sequence ──────────────────────────────────────
         # If the primary skill defines a slide_sequence (e.g., proposal skills
@@ -2273,6 +2431,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
                 "below (user instruction, assembled context, prior narrative/document drafts).\n"
                 "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
+                f"Presentation title (use exactly): \"{presentation_title}\"\n"
                 + data_for_slide_2 + data_for_slide_7 + "\n"
                 f"Slide ordering mandate (follow this sequence):\n{slide_mandate}\n\n"
                 + _slide_schema
@@ -2283,9 +2442,10 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
                 "below (user instruction, assembled context, prior narrative/document drafts).\n"
                 "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
+                f"Presentation title (use exactly): \"{presentation_title}\"\n"
                 + data_for_slide_2 + data_for_slide_7 + "\n"
                 "Slide ordering mandate (follow this sequence):\n"
-                "1. slide_type=\"title\" — process name as title, subtitle=\"Process Overview\",\n"
+                f"1. slide_type=\"title\" — title=\"{presentation_title}\", subtitle=\"Process Overview\",\n"
                 "   badges=[up to 4 short capability phrases from ProcessModel context]\n"
                 "2. slide_type=\"stat_cards\" — exactly 3 cards quantifying scale/impact metrics;\n"
                 "   derive from step count, role count, or ProcessModel.metadata; fills: dark, mid_dark, gray\n"
@@ -2307,7 +2467,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 + _slide_schema
             )
         appendix = _shared_user_context_appendix(ctx)
-        user = user_core + appendix + f"ProcessModel JSON:\n{json.dumps(pm)}"
+        user = user_core + appendix + f"{process_model_json_block(pm)}"
         visual_feedback: list[dict] = (ctx.plan_payload or {}).get("pptx_visual_feedback") or []
         if visual_feedback and isinstance(visual_feedback, list):
             hints_text = "\n".join(
@@ -2379,6 +2539,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             except Exception:
                 pass
             slide_dicts = _run_pptx_post_processor(ctx, slide_dicts)
+            slide_dicts = _normalize_pptx_slide_identities(slide_dicts)
             return AgentOutput(updates={"pptx_slides": slide_dicts})
 
         # ── Single-shot generation (default path) ──
@@ -2410,6 +2571,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 except Exception:
                     pass
                 slide_dicts = _run_pptx_post_processor(ctx, slide_dicts)
+                slide_dicts = _normalize_pptx_slide_identities(slide_dicts)
                 # region agent log
                 _session_debug_log(
                     run_id=ctx.run_id,
@@ -2425,7 +2587,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 # endregion
                 return AgentOutput(updates={"pptx_slides": slide_dicts})
 
-    fallback_slides = _pptx_deterministic_slides(pm)
+    fallback_slides = _normalize_pptx_slide_identities(_pptx_deterministic_slides(pm))
     # region agent log
     _session_debug_log(
         run_id=ctx.run_id,

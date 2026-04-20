@@ -3,9 +3,22 @@
  * of { tool, is_error, output_chars, ... } per claude_tools.py — not `tool_name`.
  */
 
+export type WebCapturePreview = {
+  kind: "web_capture";
+  url?: string;
+  title?: string;
+  snippet?: string;
+  ok?: boolean;
+  truncated?: boolean;
+  error?: string;
+};
+
+export type ToolCallPreview = WebCapturePreview;
+
 export type ParsedToolCallRow = {
   name: string;
   summary: string;
+  preview?: ToolCallPreview;
 };
 
 function briefTraceSummary(row: Record<string, unknown>): string {
@@ -15,6 +28,25 @@ function briefTraceSummary(row: Record<string, unknown>): string {
   if (err) parts.push("returned error");
   if (chars != null) parts.push(`${chars} chars output`);
   return parts.join(" · ");
+}
+
+function extractPreview(row: Record<string, unknown>): ToolCallPreview | undefined {
+  const raw = row.preview;
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const kind = typeof r.kind === "string" ? r.kind : "";
+  if (kind === "web_capture") {
+    return {
+      kind: "web_capture",
+      url: typeof r.url === "string" ? r.url : undefined,
+      title: typeof r.title === "string" ? r.title : undefined,
+      snippet: typeof r.snippet === "string" ? r.snippet : undefined,
+      ok: typeof r.ok === "boolean" ? r.ok : undefined,
+      truncated: typeof r.truncated === "boolean" ? r.truncated : undefined,
+      error: typeof r.error === "string" ? r.error : undefined,
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -45,7 +77,8 @@ export function toolCallsFromAgentRoundPayload(
     const tool = typeof r.tool === "string" ? r.tool.trim() : "";
     if (!tool) continue;
     const summary = briefTraceSummary(r);
-    out.push({ name: tool, summary });
+    const preview = extractPreview(r);
+    out.push({ name: tool, summary, preview });
   }
 
   if (out.length === 0 && Array.isArray(p.tool_calls)) {

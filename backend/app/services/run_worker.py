@@ -22,6 +22,12 @@ from sqlalchemy.orm import Session
 from app.agents.coordinator import Coordinator
 from app.core.config import settings
 from app.core.exceptions import RunBudgetExceeded
+from app.core.narrative_feedback import (
+    build_narrative_feedback_hints,
+    extract_narrative_signals,
+    narrative_signals_from_run_dir,
+    persist_narrative_signals,
+)
 from app.core.run_control import RunAborted
 from app.schemas.coordinator_run import CoordinatorRunInput
 from app.schemas.run_payloads import GuardrailReportDoc, QaReportDoc
@@ -69,6 +75,8 @@ _PLAN_KEYS_TO_CLEAR_AFTER_SUCCESSFUL_EVALUATOR: tuple[str, ...] = (
     "xlsx_visual_feedback",
     "pdf_visual_feedback",
     "process_map_visual_feedback",
+    "docx_narrative_feedback",
+    "pdf_narrative_feedback",
 )
 
 
@@ -85,6 +93,101 @@ def _strip_visual_remediation_from_plan(plan_json: str | None) -> str | None:
         return json.dumps(obj)
     except Exception:
         return plan_json
+
+
+def _load_pptx_render_signal_hints(run_dir: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    path = run_dir / "pptx_render_signals.json"
+    if not path.exists():
+        return [], []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return [], []
+    pending = raw.get("content_pending") if isinstance(raw, dict) else None
+    if not isinstance(pending, list):
+        return [], []
+    hints: list[dict[str, Any]] = []
+    findings: list[str] = []
+    for item in pending:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("slide_index") or 0)
+        except Exception:
+            idx = 0
+        if idx <= 0:
+            continue
+        reason = str(item.get("reason") or "Rendered with content pending placeholder.").strip()
+        title = str(item.get("title") or f"Slide {idx}").strip()
+        hints.append({"slide_index": idx, "instruction": f"{title}: {reason}"})
+        findings.append(f"[PPTX Render] Slide {idx} ({title}): {reason}")
+    return hints, findings
+
+
+def _augment_visual_qa_with_render_hints(visual_qa_report: dict[str, Any], run_dir: Any) -> dict[str, Any]:
+    hints, findings = _load_pptx_render_signal_hints(run_dir)
+    if not hints:
+        return visual_qa_report
+    report = dict(visual_qa_report or {})
+    per_artifact = report.get("per_artifact")
+    if not isinstance(per_artifact, dict):
+        per_artifact = {}
+        report["per_artifact"] = per_artifact
+    pptx_assessment = per_artifact.get("pptx")
+    if not isinstance(pptx_assessment, dict):
+        pptx_assessment = {}
+    existing_hints = pptx_assessment.get("remediation_hints")
+    merged_hints = existing_hints if isinstance(existing_hints, list) else []
+    merged_hints.extend(hints)
+    pptx_assessment["remediation_hints"] = merged_hints
+    pptx_assessment["status"] = "fail"
+    prior_summary = str(pptx_assessment.get("summary") or "").strip()
+    suffix = f"{len(hints)} slide(s) contain render placeholders."
+    pptx_assessment["summary"] = f"{prior_summary} {suffix}".strip()
+    per_artifact["pptx"] = pptx_assessment
+    report["pptx_assessment"] = pptx_assessment
+    report_findings = report.get("findings")
+    merged_findings = report_findings if isinstance(report_findings, list) else []
+    merged_findings.extend(findings)
+    report["findings"] = merged_findings
+    report["status"] = "fail"
+    base_summary = str(report.get("summary") or "").strip()
+    report["summary"] = f"{base_summary} PPTX render checks found unresolved placeholders.".strip()
+    return report
+
+
+def _persist_pptx_visual_critic_signals(run_dir: Any, visual_qa_report: dict[str, Any]) -> None:
+    """Persist PPTX critic signals into pptx_render_signals.json (best effort)."""
+    if not isinstance(visual_qa_report, dict):
+        return
+    per_artifact = visual_qa_report.get("per_artifact")
+    pptx = per_artifact.get("pptx") if isinstance(per_artifact, dict) else None
+    if not isinstance(pptx, dict):
+        pptx = visual_qa_report.get("pptx_assessment")
+    if not isinstance(pptx, dict):
+        return
+    payload = {
+        "status": str(pptx.get("status") or "skip").lower(),
+        "summary": str(pptx.get("summary") or "").strip(),
+        "per_slide_findings": pptx.get("per_slide_findings") if isinstance(pptx.get("per_slide_findings"), list) else [],
+        "remediation_hints": pptx.get("remediation_hints") if isinstance(pptx.get("remediation_hints"), list) else [],
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    path = run_dir / "pptx_render_signals.json"
+    try:
+        current: dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    current = loaded
+            except Exception:
+                current = {}
+        current["visual_critic"] = payload
+        path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    except Exception:
+        # Fail-open: render-signal persistence should never break run completion.
+        pass
 
 
 def _build_evaluator_pipeline(
@@ -1297,7 +1400,18 @@ def _execute_run_job(
                     run_todos=run_todos,
                 )
             visual_qa_report = run_visual_quality_check(project_id, run_id, run_dir)
+            if isinstance(visual_qa_report, dict):
+                visual_qa_report = _augment_visual_qa_with_render_hints(visual_qa_report, run_dir)
+                _persist_pptx_visual_critic_signals(run_dir, visual_qa_report)
             save_visual_qa_report(run_dir, visual_qa_report)
+            try:
+                unified_reports_for_narrative = state.get("unified_quality_reports")
+                if isinstance(unified_reports_for_narrative, dict):
+                    narrative_signals = extract_narrative_signals(unified_reports_for_narrative)
+                    if narrative_signals:
+                        persist_narrative_signals(run_dir, narrative_signals)
+            except Exception as exc:
+                _log.warning("narrative_feedback persist failed for run %s: %s", run_id, exc)
             guardrail_report = state.get("guardrail_report") if isinstance(state.get("guardrail_report"), dict) else {}
             (run_dir / "guardrail_report.json").write_text(json.dumps(guardrail_report, indent=2), encoding="utf-8")
             for gate_event in guardrail_report.get("guardrail_events") or []:
@@ -1443,6 +1557,33 @@ def _execute_run_job(
                                 continue
                             retry_plan[payload_key] = hints
                             hints_injected[artifact_key] = len(hints)
+                        # Narrative coherence feedback: mirror pptx_visual_feedback
+                        # by loading persisted narrative_signals.json (or deriving from
+                        # unified_quality_reports) and injecting per-output hints for
+                        # docx/pdf subagents to consume on retry. Fail-open.
+                        try:
+                            narrative_signals = narrative_signals_from_run_dir(run_dir)
+                            if not narrative_signals:
+                                unified_reports_for_narrative = state.get("unified_quality_reports")
+                                if isinstance(unified_reports_for_narrative, dict):
+                                    narrative_signals = extract_narrative_signals(
+                                        unified_reports_for_narrative
+                                    )
+                            for narrative_output in ("docx", "pdf"):
+                                narrative_hints = build_narrative_feedback_hints(
+                                    narrative_signals, narrative_output
+                                )
+                                if not narrative_hints:
+                                    continue
+                                narrative_key = f"{narrative_output}_narrative_feedback"
+                                retry_plan[narrative_key] = narrative_hints
+                                hints_injected[narrative_key] = len(narrative_hints)
+                        except Exception as narrative_exc:
+                            _log.debug(
+                                "narrative_feedback retry injection skipped for run %s: %s",
+                                run_id,
+                                narrative_exc,
+                            )
                         # PPTX: keep prior slide JSON so the agent can patch only failing slides.
                         prior_path = run_dir / "pptx_slides.json"
                         if prior_path.exists():

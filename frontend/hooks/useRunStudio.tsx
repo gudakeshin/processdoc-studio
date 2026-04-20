@@ -85,6 +85,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
   const [finalApproveBusy, setFinalApproveBusy] = useState(false);
   const [savePlanBusy, setSavePlanBusy] = useState(false);
   const [runControlBusy, setRunControlBusy] = useState(false);
+  const [slideRegenerateBusyIndex, setSlideRegenerateBusyIndex] = useState<number | null>(null);
   const [decisionBusy, setDecisionBusy] = useState(false);
   const [permissionSimBusy, setPermissionSimBusy] = useState(false);
   const [permissionSimResult, setPermissionSimResult] = useState<any | null>(null);
@@ -171,7 +172,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         },
       },
     ];
-  }, [chatMessages, rid, liveEvents, vqaArtifactKey, artifacts?.visual_qa_report]);
+  }, [chatMessages, rid, liveEvents, artifacts?.visual_qa_report]);
 
   const runChecklistTodos = useMemo(() => runTodosFromEvents(liveEvents), [liveEvents]);
   const blockedContext = useMemo(() => {
@@ -620,6 +621,39 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     }
   }
 
+  async function regenerateSlide(slideIndex: number, instruction?: string, elementPath?: string) {
+    if (!pid || !rid) return;
+    if (!Number.isInteger(slideIndex) || slideIndex < 1) return;
+    if (slideRegenerateBusyIndex !== null) return;
+    const resolvedInstruction = (instruction || "").trim() || `Improve slide ${slideIndex} while preserving overall deck narrative and brand consistency.`;
+    setSlideRegenerateBusyIndex(slideIndex);
+    setArtifactsError(null);
+    try {
+      const res = await api(`/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/slides/${slideIndex}/regenerate`, {
+        method: "POST",
+        body: JSON.stringify({
+          instruction: resolvedInstruction,
+          scope: elementPath ? "element" : "slide",
+          element_path: elementPath || undefined,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to queue slide regeneration"));
+      setRunStatus("approved");
+      await refreshArtifactsFromServer({ silent: true });
+      emitToast({
+        kind: "info",
+        message: elementPath
+          ? `Slide regeneration queued — slide ${slideIndex} element '${elementPath}'.`
+          : `Slide regeneration queued — slide ${slideIndex}.`,
+      });
+    } catch (e) {
+      setArtifactsError(e instanceof Error ? e.message : "Failed to queue slide regeneration");
+    } finally {
+      setSlideRegenerateBusyIndex(null);
+    }
+  }
+
   async function applyTaskAction(taskId: string, action: "retry" | "skip" | "approve") {
     if (!pid || !rid || !taskId) return;
     setArtifactsError(null);
@@ -811,6 +845,122 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     URL.revokeObjectURL(url);
   }
 
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [copyBundlePromptDone, setCopyBundlePromptDone] = useState(false);
+
+  async function downloadHandoffBundle(filename: string) {
+    if (!pid || !rid || handoffBusy) return;
+    setHandoffBusy(true);
+    setArtifactsError(null);
+    try {
+      const res = await api(
+        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/handoff_bundle`
+      );
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(extractApiErrorMessage(data, "Handoff bundle download failed"));
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setArtifactsError(e instanceof Error ? e.message : "Handoff bundle download failed");
+    } finally {
+      setHandoffBusy(false);
+    }
+  }
+
+  /** Summarize the handoff bundle contents so the user can paste it into Claude Code as context. */
+  function buildClaudeCodePrompt(): string {
+    const projectId = String(artifacts?.plan_payload?.project_id || pid || "");
+    const runIdVal = String(rid || "");
+    const instr = String(instruction || "").trim();
+    const outputs = Array.isArray(selectedOutputTypes) ? selectedOutputTypes.filter(Boolean) : [];
+    const included: string[] = [];
+    if (artifacts?.assembled_context) included.push("assembled_context.txt");
+    if (artifacts?.process_model) included.push("process_model.json");
+    if (artifacts?.pptx_slides) included.push("pptx_slides.json");
+    if (artifacts?.narrative_md) included.push("narrative.md");
+    if (artifacts?.qa_report) included.push("qa_report.json");
+    if (artifacts?.guardrail_report) included.push("guardrail_report.json");
+    if (artifacts?.visual_qa_report) included.push("visual_qa_report.json");
+    if (artifacts?.deck_html) included.push("deck.html");
+    const binaries: string[] = [];
+    if (artifacts?.docx_base64) binaries.push("output.docx");
+    if (artifacts?.pptx_base64) binaries.push("output.pptx");
+    if (artifacts?.xlsx_base64) binaries.push("output.xlsx");
+    if (artifacts?.pdf_base64) binaries.push("output.pdf");
+    if (artifacts?.deck_pdf_base64) binaries.push("deck.pdf");
+    const lines: string[] = [
+      "# Claude Code handoff",
+      "",
+      "I just finished a ProcessDoc Studio run and want you to pick up where it left off.",
+      "Download the handoff bundle from the Artifacts panel (zip), extract it next to your repo, and open the files below.",
+      "",
+      `- Project: \`${projectId || "(unknown)"}\``,
+      `- Run: \`${runIdVal || "(unknown)"}\``,
+      `- Status: \`${runStatus || "(unknown)"}\``,
+      outputs.length ? `- Planned outputs: ${outputs.map((x) => `\`${x}\``).join(", ")}` : "",
+      "",
+      "## Original instruction",
+      "",
+      "```",
+      instr || "(no instruction captured)",
+      "```",
+      "",
+      "## Files in the handoff bundle",
+      "",
+      included.length
+        ? included.map((n) => `- \`${n}\``).join("\n")
+        : "- (bundle will fall back to whatever the run produced)",
+      binaries.length ? "\nBinary deliverables referenced by filename only:\n" : "",
+      binaries.length ? binaries.map((n) => `- \`${n}\``).join("\n") : "",
+      "",
+      "## What I want next",
+      "",
+      "1. Read `assembled_context.txt`, `process_model.json`, and any QA / guardrail JSON to understand the run state.",
+      "2. Call out any blockers (visual QA failures, guardrail flags, narrative coherence dips).",
+      "3. Propose the smallest set of code / content edits that would unblock the deliverables.",
+    ];
+    return lines.filter((line) => line !== undefined).join("\n");
+  }
+
+  async function copyClaudeCodePrompt() {
+    const text = buildClaudeCodePrompt();
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+      setCopyBundlePromptDone(true);
+      window.setTimeout(() => setCopyBundlePromptDone(false), 2000);
+      emitToast({ message: "Claude Code prompt copied to clipboard", kind: "info" });
+    } catch {
+      setArtifactsError("Could not copy prompt; please copy manually from browser console.");
+      try {
+        // eslint-disable-next-line no-console
+        console.info("[ClaudeCode Handoff]", text);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   const processMapPref = outputTypeRepresentations.process_map;
   const raciPref = outputTypeRepresentations.raci;
   const readyDownloads = Array.isArray(artifacts?.ready_downloads) ? artifacts.ready_downloads.map((x: unknown) => String(x)) : [];
@@ -914,6 +1064,48 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
             </Button>
           );
         })()}
+        {readyDownloads.includes("deck_html") && (() => {
+          const fname = downloadDisplayName(outputFilenames, "deck_html", "deck.html");
+          return (
+            <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, String(artifacts.deck_html || ""))}>
+              {fname}
+            </Button>
+          );
+        })()}
+        {readyDownloads.includes("deck_pdf") && (() => {
+          const fname = downloadDisplayName(outputFilenames, "deck_pdf", "deck.pdf");
+          return (
+            <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts.deck_pdf_base64 || ""), "application/pdf")}>
+              {fname}
+            </Button>
+          );
+        })()}
+        {artifacts?.handoff_bundle_available ? (() => {
+          const fname = downloadDisplayName(outputFilenames, "handoff_bundle", "handoff_bundle.zip");
+          return (
+            <div className="flex w-full flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className={downloadBtnClass}
+                title={fname}
+                disabled={handoffBusy}
+                onClick={() => void downloadHandoffBundle(fname)}
+              >
+                {handoffBusy ? "Packaging…" : `Handoff bundle — ${fname}`}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="text-xs"
+                onClick={() => void copyClaudeCodePrompt()}
+                title="Copy a Claude Code prompt that summarizes this bundle"
+              >
+                {copyBundlePromptDone ? "Copied ✓" : "Copy as Claude Code prompt"}
+              </Button>
+            </div>
+          );
+        })() : null}
         {readyDownloads.includes("xlsx") && (() => {
           const fname = downloadDisplayName(outputFilenames, "xlsx", "output.xlsx");
           return (
@@ -1034,6 +1226,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     finalApproveBusy,
     savePlanBusy,
     runControlBusy,
+    slideRegenerateBusyIndex,
     decisionBusy,
     permissionSimBusy,
     permissionSimResult,
@@ -1053,6 +1246,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     submitDecisionAnswers: submitDecisionAnswers,
     applyTaskAction,
     controlRun,
+    regenerateSlide,
     simulatePermissionPreflight,
     loadHooks,
     disableHookByName,

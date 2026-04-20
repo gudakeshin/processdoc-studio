@@ -1,3 +1,0 @@
-Plan rationale: User is building a narrative with guardrail remediation for source grounding and compliance. Only 'docx' is allowed. approach_note_v1 is appropriate for narrative/strategic documents and can output to docx. The remediation requirement (explicit provenance, sources section) aligns with approach note conventions.
-Per-output notes:
-- docx: approach_note_v1 will produce a narrative-style docx. Remediation priority: every factual, quantitative, or benchmark claim must include inline provenance (e.g., '(source: client-provided data)', '(source: internal estim

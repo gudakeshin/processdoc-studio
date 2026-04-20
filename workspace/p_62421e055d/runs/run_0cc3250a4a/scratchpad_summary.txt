@@ -1,3 +1,0 @@
-Plan rationale: User must complete run with guardrail remediation for source grounding compliance. All factual and quantitative claims in existing docx outputs require explicit in-line provenance citations (e.g., '(source: client-provided data)') and a 'Sources and assumptions' section. The DOCX Authoring and Editing skill is appropriate to revise the document to satisfy this compliance gate.
-Per-output notes:
-- docx: Revise existing output to add in-line source citations for all factual, quantitative, benchmark, and percentage claims. Use format: (source: [client-provided data|benchmark assumptions|internal estimate; illustrative]). 
