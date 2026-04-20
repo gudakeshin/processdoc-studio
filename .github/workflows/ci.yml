@@ -62,7 +62,7 @@ jobs:
             -q --junit-xml=reports/epic-2-3-smoke.xml
       - name: Upload Epic 2 + 3 junit report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: epic-2-3-smoke-junit
           path: backend/reports/epic-2-3-smoke.xml
