@@ -110,6 +110,11 @@ def _record_message_usage(message: Any) -> None:
         charge_llm_usage(input_tokens=inp, output_tokens=out)
 
 
+def _build_cached_system(system: str) -> list[dict[str, Any]]:
+    """Wrap a system prompt as a cacheable content block."""
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
+
 def claude_generate(
     *,
     system: str,
@@ -117,6 +122,7 @@ def claude_generate(
     model: Optional[str] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    cache_system: bool = True,
 ) -> str:
     """Low-level Claude call; returns raw text."""
     if not is_claude_enabled():
@@ -164,14 +170,19 @@ def claude_generate(
     client = Anthropic(api_key=settings.anthropic_api_key)
     _guard_circuit()
     try:
-        msg = client.messages.create(
+        kwargs: dict[str, Any] = dict(
             model=model or settings.anthropic_claude_model,
             max_tokens=max_tokens or settings.anthropic_max_tokens,
             temperature=temperature if temperature is not None else settings.anthropic_temperature,
-            system=system,
             messages=[{"role": "user", "content": user}],
             timeout=max(1, float(settings.anthropic_timeout_sec)),
         )
+        if cache_system:
+            kwargs["system"] = _build_cached_system(system)
+            kwargs["betas"] = ["prompt-caching-2024-07-31"]
+        else:
+            kwargs["system"] = system
+        msg = client.messages.create(**kwargs)
     except Exception:
         _record_failure()
         raise
@@ -212,9 +223,10 @@ def claude_generate_with_thinking(
         msg = client.messages.create(
             model=model or settings.anthropic_claude_model,
             max_tokens=cap,
-            system=system,
+            system=_build_cached_system(system),
             messages=[{"role": "user", "content": user}],
             thinking={"type": "enabled", "budget_tokens": budget},
+            betas=["prompt-caching-2024-07-31"],
             timeout=max(1, float(settings.anthropic_timeout_sec)),
         )
     except Exception:

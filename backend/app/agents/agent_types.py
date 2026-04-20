@@ -18,6 +18,7 @@ class AgentContext:
     user_id: str | None
     raw_text: str
     user_instruction: str
+    user_intent_original: str  # Immutable clean user intent; never contains run-time annotations
     process_model: dict[str, Any]
     assembled_context: str
     output_type_representations: dict[str, Any]
@@ -99,6 +100,7 @@ def build_agent_context(state: ProcessDocState, output_type: str) -> AgentContex
         user_id=state.get("user_id"),
         raw_text=str(state.get("raw_text") or ""),
         user_instruction=str(state.get("user_instruction") or ""),
+        user_intent_original=str(state.get("user_intent_original") or state.get("user_instruction") or ""),
         process_model=pm,
         assembled_context=str(state.get("assembled_context") or ""),
         output_type_representations=otr,

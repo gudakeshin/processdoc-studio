@@ -25,12 +25,14 @@ class ProcessModel(TypedDict):
     steps: list[ProcessStep]
     decisions: list[DecisionBranch]
     swimlanes: dict[str, list[str]]
+    metrics: list[dict[str, str]]  # [{stat, label, source}] — quantified facts extracted from context
     metadata: dict[str, str]
 
 
 class ProcessDocState(TypedDict, total=False):
     raw_text: str
     user_instruction: str
+    user_intent_original: str  # Immutable — clean user intent extracted once at init; never appended to
     requested_outputs: list[str]
     process_model: ProcessModel
     style_profile: dict[str, str]

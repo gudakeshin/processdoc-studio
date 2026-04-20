@@ -19,6 +19,7 @@ from app.services.claude import (
 )
 
 from app.agents.agent_types import AgentOutput, build_agent_context, merge_agent_output
+from app.agents.prompt_hygiene import UNTRUSTED_JSON_USER_NOTE, wrap_untrusted
 from app.agents.coordinator_teammate_integration import CoordinatorTeammateIntegration
 from app.agents.subagents import (
     run_docx_agent,
@@ -888,18 +889,35 @@ class Coordinator:
             '- For execution_milestones, only use output_type values from allowed_output_types; '
             "labels are shown in the run checklist (optional).\n"
             "- Optional fields conversation_digest and grounding_excerpt summarize prior HITL chat "
-            "and retrieval-aligned source snippets; use them to align ordering and notes with user intent."
+            "and retrieval-aligned source snippets; use them to align ordering and notes with user intent.\n"
+            + UNTRUSTED_JSON_USER_NOTE
         )
         conv_digest = str(state.get("conversation_digest") or "")
         ground_ex = str(state.get("planner_retrieval_excerpt") or "")
         user_payload = {
-            "user_instruction": str(state.get("user_instruction") or state.get("raw_text") or "")[:8000],
-            "process_model_json": _process_model_summary(state),
+            "user_instruction": wrap_untrusted(
+                "user_instruction",
+                str(state.get("user_instruction") or state.get("raw_text") or ""),
+                max_chars=8000,
+            ),
+            "process_model_json": wrap_untrusted(
+                "process_model_summary",
+                _process_model_summary(state),
+                max_chars=12000,
+            ),
             "allowed_output_types": ceiling,
             "skill_registry": _trim_registry_for_planning(effective_registry),
             "run_contract_present": bool(contract_nodes),
-            "conversation_digest": conv_digest[: settings.conversation_digest_planner_max_chars],
-            "grounding_excerpt": ground_ex[: settings.coordinator_planning_context_chars],
+            "conversation_digest": wrap_untrusted(
+                "conversation_digest",
+                conv_digest,
+                max_chars=settings.conversation_digest_planner_max_chars,
+            ),
+            "grounding_excerpt": wrap_untrusted(
+                "grounding_excerpt",
+                ground_ex,
+                max_chars=settings.coordinator_planning_context_chars,
+            ),
         }
         user = json.dumps(user_payload, ensure_ascii=True)
 
@@ -1267,6 +1285,29 @@ class Coordinator:
                     project_id=project_id,
                     dpdp_enabled=dpdp_enabled,
                 )
+                # Additional per-output-type LP searches for PPTX and DOCX.
+                _lp_seen_ids: set[str] = {str(r.get("id")) for r in lp_results if r.get("id")}
+                _output_labels = {"pptx": "Executive presentation", "docx": "Detailed process document"}
+                for _otype, _label in _output_labels.items():
+                    if _otype in (state.get("requested_outputs") or []):
+                        try:
+                            _extra = leading_practice_library_service.search(
+                                f"{redacted}\n[OUTPUT: {_label}]",
+                                project_id=project_id,
+                                dpdp_enabled=dpdp_enabled,
+                            )
+                            for _r in _extra:
+                                _rid = str(_r.get("id") or "")
+                                if _rid and _rid not in _lp_seen_ids:
+                                    lp_results.append(_r)
+                                    _lp_seen_ids.add(_rid)
+                        except Exception as exc:
+                            _LOG.warning(
+                                "LP extra search failed for output=%s: %s",
+                                _otype,
+                                exc,
+                            )
+                lp_results = lp_results[:50]
                 for r in lp_results:
                     text = r.get("text")
                     heading = r.get("heading") or ""
@@ -1275,6 +1316,49 @@ class Coordinator:
                         lp_snippets.append(f"{prefix}\n{text}")
             except Exception:
                 lp_snippets = []
+
+        # Intent-triggered pre-search: if the user's instruction signals a search
+        # request, run wiki + web searches before context assembly so results land
+        # in assembled_context for ALL subagents (not just the one that calls the tool).
+        _SEARCH_INTENT_RE = re.compile(
+            r"\b(search|look up|lookup|look for|find|research|browse|check|fetch|"
+            r"retrieve|pull|are there any|what does .{0,40} say|examples of|"
+            r"instances of|references to|tell me about)\b",
+            re.IGNORECASE,
+        )
+        if project_id and _SEARCH_INTENT_RE.search(redacted):
+            _pre_wiki: list[dict] = []
+            _pre_web: list[dict] = []
+            try:
+                from app.services.wiki_operations import search_wiki as _search_wiki_fn
+
+                _pre_wiki = _search_wiki_fn(redacted[:600], project_id=project_id, max_results=6)
+                for _w in _pre_wiki:
+                    _title = _w.get("title") or "Wiki"
+                    _body = str(_w.get("snippet") or "").strip()
+                    if _body:
+                        lp_snippets.append(f"[Wiki-Search: {_title}]\n{_body}")
+            except Exception as exc:
+                _LOG.warning("pre-run wiki search failed for project=%s: %s", project_id, exc)
+            try:
+                from app.services.web_search import web_search_service as _wss
+
+                _pre_web = _wss.search(redacted[:300], project_id=project_id)
+                for _r in _pre_web:
+                    _title = _r.get("title") or "Web"
+                    _url = _r.get("url") or ""
+                    _snip = str(_r.get("snippet") or "").strip()
+                    if _snip:
+                        lp_snippets.append(f"[Web: {_title}]\n{_url}\n{_snip}")
+            except Exception as exc:
+                _LOG.warning("pre-run web search failed for project=%s: %s", project_id, exc)
+            if emit_event and (_pre_wiki or _pre_web):
+                emit_event("pre_run_search_triggered", {
+                    "wiki_results": len(_pre_wiki),
+                    "web_results": len(_pre_web),
+                })
+            existing_web = state.get("web_search_results") or []
+            state["web_search_results"] = existing_web + _pre_web
 
         # Memory context (events + profile)
         memory_events: list[dict[str, object]] = []
@@ -1376,6 +1460,15 @@ class Coordinator:
             )
 
         state["assembled_context"] = context.text
+
+        if emit_event and context.metadata:
+            provenance = context.metadata.get("context_provenance")
+            if provenance:
+                emit_event("context_provenance_summary", provenance)
+            dropped = context.metadata.get("tier4_dropped_sources")
+            if dropped:
+                emit_event("context_compaction_warning", dropped)
+
         _coordinator_poll_abort()
 
         # Process extraction

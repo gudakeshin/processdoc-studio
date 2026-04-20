@@ -22,11 +22,48 @@ class CoordinatorRunInput(BaseModel):
     output_type_representations: dict[str, str] = Field(default_factory=dict)
     user_id: str | None = None
 
+    @staticmethod
+    def _extract_user_intent(raw: str) -> str:
+        """
+        Extract clean user-authored content from raw_text.
+
+        Strips assistant turns, chat prefixes, and run-time annotations
+        (QA remediations, guardrail notes, regeneration directives) that
+        get appended during execution. Runs once at initialisation so the
+        result is never contaminated by later mutations to raw_text.
+        """
+        _SKIP_PREFIXES = (
+            "assistant:",
+            "qa remediation:",
+            "guardrail remediation",
+            "regeneration directive:",
+            "user follow-up:",
+        )
+        lines: list[str] = []
+        for line in raw.splitlines():
+            stripped = line.strip()
+            lower = stripped.lower()
+            if any(lower.startswith(p) for p in _SKIP_PREFIXES):
+                continue
+            # Strip "user: " chat prefix but keep the content
+            if lower.startswith("user:"):
+                content = stripped[5:].strip()
+                if content:
+                    lines.append(content)
+            else:
+                if stripped:
+                    lines.append(stripped)
+        result = "\n".join(lines).strip()
+        # If nothing survived (e.g. raw_text was empty or all-annotations),
+        # fall back to the original so downstream always has something.
+        return result or raw.strip()
+
     def to_initial_state(self) -> dict[str, Any]:
         """Mutable execution dict; optional fields are added by the coordinator."""
         out: dict[str, Any] = {
             "raw_text": self.raw_text,
             "user_instruction": self.user_instruction,
+            "user_intent_original": self._extract_user_intent(self.raw_text or self.user_instruction),
             "requested_outputs": list(self.requested_outputs),
             "project_id": self.project_id,
             "run_id": self.run_id,

@@ -39,9 +39,30 @@ def get_remaining_token_budget() -> int | None:
 
 
 def extract_usage_counts(message: Any) -> tuple[int, int]:
+    """Return ``(input_tokens, output_tokens)`` charged against the per-run LLM budget.
+
+    Prompt-caching behavior (Anthropic beta): ``cache_read_input_tokens`` are billed at a
+    small fraction of normal input cost and ``cache_creation_input_tokens`` are billed at a
+    ~25% premium. To keep the aggregate run budget a conservative ceiling (never
+    under-charge), we fold cache-read into the input charge at a 10% weight and cache-create
+    at a 125% weight; both are also logged at DEBUG for observability. If you change these
+    weights, update ``docs/token_budget.md`` / README accordingly.
+    """
     usage = getattr(message, "usage", None)
     if usage is None:
         return 0, 0
     inp = int(getattr(usage, "input_tokens", 0) or 0)
     out = int(getattr(usage, "output_tokens", 0) or 0)
-    return inp, out
+    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+    cache_create = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    if cache_read or cache_create:
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "Prompt cache — read=%d tokens, creation=%d tokens (%.0f%% saved)",
+            cache_read,
+            cache_create,
+            100.0 * cache_read / max(1, inp + cache_read + cache_create),
+        )
+    billed_input = inp + (cache_read // 10) + ((cache_create * 5) // 4)
+    return billed_input, out

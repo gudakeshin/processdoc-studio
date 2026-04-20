@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +38,7 @@ class TieredContextEngine:
         self.k1 = 1.5
         self.b = 0.75
         self._parsed_cache: dict[str, tuple[float, list[str]]] = {}
+        self._wiki_cache: dict[str, tuple[float, list[str]]] = {}
 
     def _load_all_parsed_chunks(self, project_id: str | None) -> list[str]:
         if not project_id:
@@ -66,6 +68,60 @@ class TieredContextEngine:
             except Exception:
                 continue
         self._parsed_cache[cache_key] = (latest_mtime, list(chunks))
+        return chunks
+
+    _WIKI_STALE_HOURS = 72
+
+    def _load_wiki_chunks(self, project_id: str | None) -> list[str]:
+        """Load wiki pages as ranked text chunks for context injection.
+
+        Wiki pages are LLM-enriched summaries — higher signal than raw parsed_docs.
+        Each chunk is prefixed with its page title so the agent knows the source.
+        Pages older than _WIKI_STALE_HOURS get a [STALE] prefix so agents can weight them
+        accordingly. Results are mtime-cached to avoid re-reading on every call.
+        """
+        if not project_id:
+            return []
+        wiki_dir = workspace_path(project_id) / "wiki"
+        if not wiki_dir.exists():
+            return []
+        _skip = {"index.md", "log.md"}
+        md_files = [f for f in wiki_dir.glob("*.md") if f.name not in _skip]
+
+        # Mtime cache — re-read only when any file has changed.
+        cache_key = str(wiki_dir)
+        latest_mtime = 0.0
+        for f in md_files:
+            try:
+                latest_mtime = max(latest_mtime, f.stat().st_mtime)
+            except Exception:
+                continue
+        cached = self._wiki_cache.get(cache_key)
+        if cached and cached[0] == latest_mtime:
+            return list(cached[1])
+
+        now = time.time()
+        stale_threshold = self._WIKI_STALE_HOURS * 3600
+        chunks: list[str] = []
+        for md_file in md_files:
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
+                title = title_match.group(1) if title_match else md_file.stem.replace("_", " ").title()
+                body = re.sub(r"^---.*?---\s*", "", content, flags=re.DOTALL).strip()
+                if not body:
+                    continue
+                try:
+                    age_s = now - md_file.stat().st_mtime
+                    if age_s > stale_threshold:
+                        age_h = int(age_s / 3600)
+                        body = f"[STALE: {age_h}h old]\n{body}"
+                except Exception:
+                    pass
+                chunks.append(f"[Wiki: {title}]\n{body}")
+            except Exception:
+                continue
+        self._wiki_cache[cache_key] = (latest_mtime, list(chunks))
         return chunks
 
     def _bm25_scores(self, chunks: list[str], query: str) -> list[float]:
@@ -257,33 +313,48 @@ class TieredContextEngine:
         qt = (query_text or "").strip()
         if not project_id or not qt:
             return ""
-        chunks = self._load_all_parsed_chunks(project_id)
-        if not chunks:
-            return ""
         cap = max(500, int(char_cap))
         queries = self._expand_queries(qt)
-        candidates: dict[int, float] = {}
-        for q in queries:
-            scores = self._bm25_scores(chunks, q)
-            for idx, sc in enumerate(scores):
-                if sc <= 0:
-                    continue
-                prev = candidates.get(idx)
-                if prev is None or sc > prev:
-                    candidates[idx] = float(sc)
-            if len(candidates) > 60:
-                top = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
-                candidates = dict(top)
-        candidate_list = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
-        budget = max(400, cap - len("## Planner retrieval excerpt\n\n"))
-        selected_idxs = self._mmr_select(
-            candidate_list,
-            chunks,
-            max_chars=budget,
-        )
-        tier2 = "\n\n---\n\n".join(chunks[i] for i in selected_idxs)
+
+        # Wiki pages first (curated context, up to 40% of planner budget)
+        wiki_chunks = self._load_wiki_chunks(project_id)
+        wiki_text = ""
+        if wiki_chunks:
+            wiki_scores = self._bm25_scores(wiki_chunks, qt)
+            wiki_candidates = sorted(enumerate(wiki_scores), key=lambda kv: kv[1], reverse=True)[:10]
+            wiki_budget = min(4000, cap * 2 // 5)
+            if not any(score > 0 for _, score in wiki_candidates):
+                wiki_sel = list(range(min(3, len(wiki_chunks))))
+            else:
+                wiki_sel = self._mmr_select(wiki_candidates, wiki_chunks, max_chars=wiki_budget)
+            wiki_text = "\n\n---\n\n".join(wiki_chunks[i] for i in wiki_sel)
+
+        chunks = self._load_all_parsed_chunks(project_id)
+        doc_text = ""
+        if chunks:
+            candidates: dict[int, float] = {}
+            for q in queries:
+                scores = self._bm25_scores(chunks, q)
+                for idx, sc in enumerate(scores):
+                    if sc <= 0:
+                        continue
+                    prev = candidates.get(idx)
+                    if prev is None or sc > prev:
+                        candidates[idx] = float(sc)
+                if len(candidates) > 60:
+                    top = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
+                    candidates = dict(top)
+            candidate_list = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
+            doc_budget = max(400, cap - len(wiki_text) - len("## Planner retrieval excerpt\n\n"))
+            selected_idxs = self._mmr_select(candidate_list, chunks, max_chars=doc_budget)
+            doc_text = "\n\n---\n\n".join(chunks[i] for i in selected_idxs)
+
+        if not wiki_text and not doc_text:
+            return ""
+
+        parts = [p for p in [wiki_text, doc_text] if p]
         header = "## Planner retrieval excerpt\n\n"
-        return (header + tier2)[:cap]
+        return (header + "\n\n---\n\n".join(parts))[:cap]
 
     @staticmethod
     def _compact_items(items: list[str], max_chars: int) -> tuple[list[str], int]:
@@ -324,10 +395,24 @@ class TieredContextEngine:
         return summary[:max_chars]
 
     @staticmethod
-    def _context_collapse(sections: dict[str, str], char_cap: int) -> tuple[dict[str, str], bool]:
+    def _parse_dropped_sources(dropped_text: str) -> dict[str, list[str]]:
+        """Extract wiki page titles and LP headings from text that was hard-trimmed."""
+        wiki_titles = re.findall(r"\[Wiki:\s*([^\]]+)\]", dropped_text)
+        lp_headings = re.findall(r"\[LP\]([^\n]+)", dropped_text)
+        return {
+            "wiki_pages": [t.strip() for t in wiki_titles],
+            "lp_headings": [h.strip() for h in lp_headings],
+        }
+
+    @staticmethod
+    def _context_collapse(
+        sections: dict[str, str], char_cap: int
+    ) -> tuple[dict[str, str], bool, dict[str, object]]:
         """
         Tier 4 compaction: keep only essential sections under strict budget.
         Preserves objective/non-negotiables/failures and truncates evidence aggressively.
+        Returns the collapsed sections, a flag that collapse was applied, and a dict of
+        dropped source names (wiki pages / LP headings) for observability.
         """
         hard_cap = max(2000, int(char_cap * 0.55))
         collapsed = {
@@ -337,6 +422,7 @@ class TieredContextEngine:
             "Evidence": str(sections.get("Evidence") or "")[:1200],
             "KnownFailures": str(sections.get("KnownFailures") or "")[:700],
         }
+        dropped_sources: dict[str, object] = {}
         text = (
             "## ObjectiveNow\n"
             f"{collapsed['ObjectiveNow']}\n\n"
@@ -350,11 +436,15 @@ class TieredContextEngine:
             f"{collapsed['KnownFailures']}"
         )
         if len(text) <= hard_cap:
-            return collapsed, True
+            return collapsed, True, dropped_sources
         # Final hard trim on evidence first, then what changed.
         overflow = len(text) - hard_cap
         if overflow > 0:
-            collapsed["Evidence"] = collapsed["Evidence"][: max(0, len(collapsed["Evidence"]) - overflow)]
+            evidence_before = collapsed["Evidence"]
+            collapsed["Evidence"] = evidence_before[: max(0, len(evidence_before) - overflow)]
+            dropped_evidence = evidence_before[len(collapsed["Evidence"]):]
+            if dropped_evidence:
+                dropped_sources["Evidence"] = TieredContextEngine._parse_dropped_sources(dropped_evidence)
         text = (
             "## ObjectiveNow\n"
             f"{collapsed['ObjectiveNow']}\n\n"
@@ -369,8 +459,12 @@ class TieredContextEngine:
         )
         if len(text) > hard_cap:
             over2 = len(text) - hard_cap
-            collapsed["WhatChanged"] = collapsed["WhatChanged"][: max(0, len(collapsed["WhatChanged"]) - over2)]
-        return collapsed, True
+            wc_before = collapsed["WhatChanged"]
+            collapsed["WhatChanged"] = wc_before[: max(0, len(wc_before) - over2)]
+            dropped_wc = wc_before[len(collapsed["WhatChanged"]):]
+            if dropped_wc:
+                dropped_sources["WhatChanged"] = TieredContextEngine._parse_dropped_sources(dropped_wc)
+        return collapsed, True, dropped_sources
 
     def assemble_v2(
         self,
@@ -442,7 +536,33 @@ class TieredContextEngine:
             except FileNotFoundError:
                 context_md = ""
 
-        evidence_input = [s for s in [context_md, *(lp_snippets or [])] if isinstance(s, str) and s.strip()]
+        selected_lp_info: list[dict[str, object]] = []
+        lp_list = [s for s in (lp_snippets or []) if isinstance(s, str) and s.strip()]
+        for snippet in lp_list:
+            heading_line = snippet.split("\n")[0]
+            heading = heading_line[4:].strip() if heading_line.startswith("[LP]") else heading_line
+            selected_lp_info.append({"heading": heading, "chars": len(snippet)})
+
+        evidence_input = [s for s in [context_md, *lp_list] if isinstance(s, str) and s.strip()]
+
+        # Wiki pages (curated, LLM-enriched) — injected before raw parsed_docs so they
+        # get priority when the Evidence budget is tight.
+        selected_wiki_info: list[dict[str, object]] = []
+        wiki_chunks = self._load_wiki_chunks(project_id) if project_id else []
+        if wiki_chunks:
+            wiki_scores = self._bm25_scores(wiki_chunks, instruction or "")
+            wiki_candidates = sorted(enumerate(wiki_scores), key=lambda kv: kv[1], reverse=True)[:20]
+            wiki_budget = min(8000, section_caps["Evidence"] // 2)
+            if not any(score > 0 for _, score in wiki_candidates):
+                wiki_selected = list(range(min(5, len(wiki_chunks))))
+            else:
+                wiki_selected = self._mmr_select(wiki_candidates, wiki_chunks, max_chars=wiki_budget)
+            for i in wiki_selected:
+                chunk = wiki_chunks[i]
+                m = re.search(r"\[Wiki:\s*([^\]]+)\]", chunk)
+                selected_wiki_info.append({"title": m.group(1).strip() if m else "unknown", "chars": len(chunk)})
+            evidence_input.extend(wiki_chunks[i] for i in wiki_selected)
+
         chunks = self._load_all_parsed_chunks(project_id) if project_id else []
         if chunks:
             scores = self._bm25_scores(chunks, instruction or "")
@@ -496,8 +616,9 @@ class TieredContextEngine:
             f"{sections['KnownFailures']}"
         )[:char_cap]
         tier4_applied = False
+        tier4_dropped_sources: dict[str, object] = {}
         if len(assembled) >= char_cap:
-            collapsed, tier4_applied = self._context_collapse(sections, char_cap=char_cap)
+            collapsed, tier4_applied, tier4_dropped_sources = self._context_collapse(sections, char_cap=char_cap)
             sections = collapsed
             assembled = (
                 "## ObjectiveNow\n"
@@ -538,5 +659,11 @@ class TieredContextEngine:
                 "Evidence": evidence_dropped,
                 "KnownFailures": fail_dropped,
             },
+            "context_provenance": {
+                "selected_wiki_pages": selected_wiki_info,
+                "selected_lp_headings": selected_lp_info,
+                "parsed_doc_count": len(chunks),
+            },
+            "tier4_dropped_sources": tier4_dropped_sources,
         }
         return ContextBundle(text=assembled, char_budget=char_cap, metadata=metadata)
