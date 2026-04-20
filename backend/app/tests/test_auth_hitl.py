@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app as fastapi_app
 from app.core.config import settings
+from app.services.storage import workspace_path
 from app.tests.plan_helpers import confirm_plan_for_project
 
 
@@ -729,3 +730,71 @@ def test_dpdp_rights_forbidden_for_non_member() -> None:
         headers=outsider_headers,
     )
     assert resp.status_code == 403
+
+
+def test_slide_regeneration_element_scope_persists_inline_comment() -> None:
+    client = TestClient(fastapi_app)
+    headers = auth_header(client, email="element-scope@test.com")
+    project_resp = client.post("/api/projects", json={"name": "ElementScope"}, headers=headers)
+    assert project_resp.status_code == 200
+    project_id = project_resp.json()["id"]
+    conv_id, plan_hash = confirm_plan_for_project(client, headers, project_id)
+    run_resp = client.post(
+        "/api/runs",
+        json={
+            "project_id": project_id,
+            "conversation_id": conv_id,
+            "plan_hash": plan_hash,
+            "output_types": ["pptx"],
+            "instruction": "Create deck",
+        },
+        headers=headers,
+    )
+    assert run_resp.status_code == 200
+    run_id = run_resp.json()["run_id"]
+
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "pptx_slides.json").write_text(
+        json.dumps(
+            [
+                {"slide_id": "slide_01", "slide_index": 1, "slide_type": "bullets", "title": "Slide 1", "bullets": ["a"]},
+                {"slide_id": "slide_02", "slide_index": 2, "slide_type": "bullets", "title": "Slide 2", "bullets": ["b"]},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    regen_resp = client.post(
+        f"/api/runs/{project_id}/{run_id}/slides/1/regenerate",
+        json={
+            "instruction": "Tighten this bullet.",
+            "scope": "element",
+            "element_path": "bullets[0]",
+        },
+        headers=headers,
+    )
+    assert regen_resp.status_code == 200, regen_resp.text
+    body = regen_resp.json()
+    assert body.get("scope") == "element"
+    assert body.get("element_path") == "bullets[0]"
+
+    events_resp = client.get(f"/api/runs/{project_id}/{run_id}/events?after_event_id=0", headers=headers)
+    assert events_resp.status_code == 200
+    items = events_resp.json().get("items") or []
+    regen_events = [ev for ev in items if ev.get("event_type") == "slide_regeneration_requested"]
+    assert regen_events
+    latest_payload = regen_events[-1].get("payload") or {}
+    if isinstance(latest_payload, dict) and isinstance(latest_payload.get("payload"), dict):
+        latest_payload = latest_payload.get("payload") or latest_payload
+    assert latest_payload.get("scope") == "element"
+    assert latest_payload.get("element_path") == "bullets[0]"
+
+    artifacts_resp = client.get(f"/api/runs/{project_id}/{run_id}/artifacts", headers=headers)
+    assert artifacts_resp.status_code == 200
+    artifacts = artifacts_resp.json().get("artifacts") or {}
+    plan_payload = artifacts.get("plan_payload") if isinstance(artifacts, dict) else {}
+    inline_comments = plan_payload.get("pptx_inline_comments") if isinstance(plan_payload, dict) else []
+    assert isinstance(inline_comments, list) and inline_comments
+    assert inline_comments[-1].get("scope") == "element"
+    assert inline_comments[-1].get("element_path") == "bullets[0]"

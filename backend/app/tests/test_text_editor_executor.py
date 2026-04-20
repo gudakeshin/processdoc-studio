@@ -5,11 +5,16 @@ import pytest
 from app.core.config import Settings
 from app.services.text_editor_executor import execute_text_editor_tool
 
+_TEST_SETTINGS_BASE = {
+    "jwt_secret": "test-jwt-secret-min-16chars",
+    "database_url": "sqlite:///:memory:",
+}
+
 
 def _patch_cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     cfg = Settings(
+        **_TEST_SETTINGS_BASE,
         workspace_root=str(tmp_path),
-        jwt_secret="test",
         text_editor_tool_enabled=True,
         text_editor_allowed_extensions=".py,.md,.txt,.json",
         text_editor_backup_enabled=True,
@@ -17,7 +22,6 @@ def _patch_cfg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Settings:
     )
     monkeypatch.setattr("app.services.text_editor_executor.settings", cfg)
     monkeypatch.setattr("app.services.storage.settings", cfg)
-    monkeypatch.setattr("app.core.config.settings", cfg)
     return cfg
 
 

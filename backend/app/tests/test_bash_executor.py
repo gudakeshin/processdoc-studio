@@ -6,6 +6,11 @@ import pytest
 from app.core.config import Settings
 from app.services.bash_executor import BashExecutor, sanitize_output, validate_command
 
+_TEST_SETTINGS_BASE = {
+    "jwt_secret": "test-jwt-secret-min-16chars",
+    "database_url": "sqlite:///:memory:",
+}
+
 
 def test_validate_command_rejects_chaining() -> None:
     ok, msg = validate_command("echo a && echo b")
@@ -30,8 +35,8 @@ def test_sanitize_output_truncates_lines() -> None:
 
 def test_execute_echo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = Settings(
+        **_TEST_SETTINGS_BASE,
         workspace_root=str(tmp_path),
-        jwt_secret="test",
         bash_tool_enabled=True,
         bash_command_timeout_sec=30,
     )
@@ -45,7 +50,7 @@ def test_execute_echo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 def test_cd_rejects_escape(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    cfg = Settings(workspace_root=str(tmp_path), jwt_secret="test", bash_tool_enabled=True)
+    cfg = Settings(**_TEST_SETTINGS_BASE, workspace_root=str(tmp_path), bash_tool_enabled=True)
     monkeypatch.setattr("app.services.bash_executor.settings", cfg)
     monkeypatch.setattr("app.services.storage.settings", cfg)
     pid = "proj_cd"

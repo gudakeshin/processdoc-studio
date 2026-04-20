@@ -163,13 +163,19 @@ def require_project_role(project_id: str, allowed_roles: set[str], user: User, d
 
 
 def ensure_user(email: str, password: str, db: Session) -> User:
+    """Authenticate or provision a user.
+
+    When self-signup is disabled, unknown emails receive the same 401 as wrong passwords
+    to avoid account enumeration.
+    """
+    invalid = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     existing = db.scalar(select(User).where(User.email == email))
     if existing:
         if not verify_password(password, existing.hashed_password):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+            raise invalid
         return existing
     if not settings.auth_allow_self_signup:
-        raise HTTPException(status_code=403, detail="Self-signup is disabled")
+        raise invalid
     created = User(id=f"u_{uuid.uuid4().hex[:10]}", email=email, hashed_password=get_password_hash(password))
     db.add(created)
     db.commit()

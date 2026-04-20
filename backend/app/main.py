@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 
 from app.core.exceptions import ProcessDocHTTPException
@@ -29,6 +31,7 @@ from app.services.scheduled_tasks import start_scheduler_worker
 from app.services.observability import snapshot as observability_snapshot, prometheus_text
 from app.services.run_worker import admission_status, list_worker_heartbeats, queue_runtime_stats
 from app.core.config import log_memory_config_warnings, log_run_queue_startup_config, settings
+from app.core.rate_limit import limiter
 from app.core.request_context import get_correlation_id
 from app.core.deliverable import DeliverableRegistry
 from app.core.deliverable_docx import DOCXDeliverable
@@ -100,6 +103,8 @@ app = FastAPI(
         {"name": "models", "description": "Excel-backed models and realtime collaboration."},
     ],
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.middleware("http")(request_timing_middleware)
 
 
@@ -110,8 +115,24 @@ async def processdoc_http_exception_handler(_request, exc: ProcessDocHTTPExcepti
 _cors_kw: dict = {
     "allow_origins": settings.cors_origins_list,
     "allow_credentials": True,
-    "allow_methods": ["*"],
-    "allow_headers": ["*"],
+    "allow_methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    "allow_headers": [
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Accept-Language",
+        "Origin",
+        "X-Requested-With",
+        "X-Correlation-Id",
+        "X-Request-Id",
+    ],
+    "expose_headers": [
+        "Retry-After",
+        "X-Admission-Queue-Depth",
+        "X-Admission-Project-Limit",
+        "X-Admission-Global-Limit",
+        "X-Admission-User-Limit",
+    ],
 }
 if settings.cors_allow_origin_regex:
     _cors_kw["allow_origin_regex"] = settings.cors_allow_origin_regex

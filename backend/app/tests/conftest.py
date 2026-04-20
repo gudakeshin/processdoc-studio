@@ -5,8 +5,20 @@ import os
 import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-min-16chars")
 # Prevent optional localhost Redis from connecting during tests (draw.io collab fan-out / timing).
 os.environ["REDIS_URL"] = "redis://127.0.0.1:1/0"
+
+
+@pytest.fixture(autouse=True)
+def _disable_slowapi_rate_limits_for_tests() -> None:
+    """Many tests log in; SlowAPI's default /login cap causes flaky 429s in full suite."""
+    from app.core.rate_limit import limiter
+
+    prev = limiter.enabled
+    limiter.enabled = False
+    yield
+    limiter.enabled = prev
 
 
 @pytest.fixture(autouse=True)
