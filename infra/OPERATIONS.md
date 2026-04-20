@@ -29,6 +29,36 @@ These are **not interchangeable**: 500 idle readers stress the connection layer 
 - Emit SSE events for all key states.
 - Keep Langfuse optional; metrics/SSE must continue working if Langfuse is unreachable.
 
+## PPTX Canvas Parity Checks
+
+Use these checks to validate JSON parity and visual parity between PPTX and canvas pipelines.
+
+- Run both checks in strict mode:
+  - `make pptx.canvas.parity`
+- Run structural parity only:
+  - `python3 infra/scripts/pptx_canvas_parity_spike.py --strict`
+- Run visual diff parity only:
+  - `python3 infra/scripts/pptx_canvas_visual_diff_spike.py --strict`
+
+Generated artifacts:
+
+- Structural report:
+  - `infra/reports/pptx_canvas_parity_report.json`
+- Visual diff report:
+  - `infra/reports/pptx_canvas_visual_diff_report.json`
+- Visual diff images (per sample/slide):
+  - `infra/reports/pptx_canvas_visual_diff_images/`
+  - naming pattern: `<sample>_s<index>_{pptx|canvas|diff}.png`
+
+Quick inspection commands:
+
+- List generated diff assets:
+  - `ls infra/reports/pptx_canvas_visual_diff_images | rg "_diff\\.png$"`
+- Open one diff image on macOS:
+  - `open "infra/reports/pptx_canvas_visual_diff_images/sample_ops_exec_review_s1_diff.png"`
+- Open all diff images on macOS:
+  - `open infra/reports/pptx_canvas_visual_diff_images/*_diff.png`
+
 ## Rollout Gates
 1. Unit and integration tests pass.
 2. Health/metrics endpoints pass probes.

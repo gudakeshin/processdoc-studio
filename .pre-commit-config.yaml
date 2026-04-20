@@ -4,3 +4,56 @@ repos:
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  # Python: ruff (lint + import sort)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.10
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  # Python: mypy (type checking on service + core modules)
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        files: ^backend/app/(services|core)/
+        args:
+          - --ignore-missing-imports
+          - --no-strict-optional
+          - --allow-untyped-defs
+        additional_dependencies:
+          - types-PyYAML
+          - types-requests
+
+  # Frontend: eslint
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        language: node
+        entry: sh -c 'cd frontend && npx eslint --max-warnings 0 "$@"' --
+        types: [file]
+        files: ^frontend/.*\.(ts|tsx|js|jsx)$
+        pass_filenames: true
+
+  # Frontend: prettier
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier
+        language: node
+        entry: sh -c 'cd frontend && npx prettier --write "$@"' --
+        types: [file]
+        files: ^frontend/.*\.(ts|tsx|js|jsx|css|json|md)$
+        pass_filenames: true

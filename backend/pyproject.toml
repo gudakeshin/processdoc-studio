@@ -31,6 +31,7 @@ dependencies = [
   "pypdf",
   "pyyaml",
   "langfuse",
+  "slowapi",
 ]
 
 [project.optional-dependencies]
@@ -56,3 +57,29 @@ fail_under = 0
 [tool.setuptools.packages.find]
 include = ["app*"]
 exclude = ["config*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "SIM", "S"]
+ignore = [
+  "S101",   # assert statements (used in tests)
+  "S105",   # hardcoded passwords (false positives on config defaults)
+  "S106",
+  "S603",   # subprocess without shell=False (we do validate inputs)
+  "B008",   # do not perform function calls in argument defaults (FastAPI Depends pattern)
+  "SIM108", # use ternary operator (readability preference)
+  "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+no_strict_optional = true
+allow_untyped_defs = true
+warn_unused_ignores = false
