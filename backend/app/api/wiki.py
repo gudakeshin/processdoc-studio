@@ -20,6 +20,7 @@ from app.db.models import User
 from app.db.session import get_db
 from app.services.wiki_analytics import get_wiki_recommender
 from app.services.wiki_cache import get_wiki_cache
+from app.services.wiki_lint import get_lint_summary
 from app.services.wiki_integrations import (
     WikiConversationIntegration,
     WikiCoordinatorIntegration,
@@ -42,6 +43,13 @@ _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _PAGE_STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _WIKI_VIEW_ROLES = frozenset({"Owner", "Editor", "Viewer"})
 _WIKI_EDIT_ROLES = frozenset({"Owner", "Editor"})
+
+
+def _wiki_dir_for(wiki_type: str, project_id: str | None):
+    from app.services.storage import workspace_path
+    if wiki_type == "leading_practice":
+        return workspace_path("leading_practices") / "wiki"
+    return workspace_path(project_id) / "wiki"
 
 
 def _wiki_lp_admin_emails() -> frozenset[str]:
@@ -2013,6 +2021,49 @@ async def get_wiki_stats(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@router.get("/{wiki_type}/health/scorecard")
+async def get_wiki_health_scorecard(
+    wiki_type: str,
+    project_id: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Unified health scorecard for wiki quality and freshness."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    if not bool(getattr(settings, "wiki_health_scorecard_enabled", True)):
+        raise HTTPException(status_code=404, detail="Wiki health scorecard is disabled")
+    try:
+        stats_payload = await get_wiki_stats(wiki_type, project_id, user=user, db=db)
+        validation = await validate_wiki_relationships_route(wiki_type, project_id, user=user, db=db)
+        lint_summary = get_lint_summary(wiki_type, project_id)
+        wiki_dir = _wiki_dir_for(wiki_type, project_id)
+        maintenance_log = wiki_dir / "maintenance.log"
+        maintenance_updated_at = None
+        if maintenance_log.exists():
+            maintenance_updated_at = datetime.fromtimestamp(maintenance_log.stat().st_mtime, tz=UTC).isoformat()
+        return {
+            "status": "success",
+            "scorecard": {
+                "stats": stats_payload.get("stats", {}),
+                "relationship_validation": {
+                    "total_relationships": validation.get("total_relationships", 0),
+                    "issues_count": len(validation.get("issues", [])),
+                    "by_type": validation.get("by_type", {}),
+                },
+                "lint": lint_summary,
+                "freshness": {
+                    "last_ingest": stats_payload.get("stats", {}).get("last_ingest"),
+                    "maintenance_updated_at": maintenance_updated_at,
+                },
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Scorecard query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 # ===== Cross-Wiki Navigation =====
 
 @router.post("/{wiki_type}/cross-wiki/build")
@@ -2862,6 +2913,64 @@ async def create_wiki_synthesis_pages(
     if data.get("status") == "error":
         raise HTTPException(status_code=500, detail=data.get("error", "synthesis create failed"))
     return data
+
+
+@router.get("/{wiki_type}/storyline/draft")
+async def get_storyline_draft(
+    wiki_type: str,
+    project_id: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    if not bool(getattr(settings, "wiki_storyline_canvas_enabled", False)):
+        raise HTTPException(status_code=404, detail="Storyline canvas is disabled")
+    wiki_dir = _wiki_dir_for(wiki_type, project_id)
+    draft_file = wiki_dir / ".meta" / "storyline_draft.json"
+    if not draft_file.exists():
+        return {"status": "success", "draft": {"sections": []}}
+    payload = json.loads(draft_file.read_text(encoding="utf-8"))
+    if "data" in payload and isinstance(payload.get("data"), dict):
+        payload = payload["data"]
+    return {"status": "success", "draft": payload}
+
+
+@router.put("/{wiki_type}/storyline/draft")
+async def save_storyline_draft(
+    wiki_type: str,
+    payload: dict[str, Any],
+    project_id: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
+    if not bool(getattr(settings, "wiki_storyline_canvas_enabled", False)):
+        raise HTTPException(status_code=404, detail="Storyline canvas is disabled")
+    draft = payload.get("draft")
+    if not isinstance(draft, dict):
+        raise HTTPException(status_code=400, detail="Expected 'draft' object")
+    sections = draft.get("sections", [])
+    if not isinstance(sections, list):
+        raise HTTPException(status_code=400, detail="draft.sections must be an array")
+    order_values = [s.get("order") for s in sections if isinstance(s, dict)]
+    if any(not isinstance(v, int) for v in order_values):
+        raise HTTPException(status_code=400, detail="Each section must include integer 'order'")
+    if sorted(order_values) != list(range(1, len(order_values) + 1)):
+        raise HTTPException(status_code=400, detail="Section order must be contiguous starting at 1")
+    wiki_dir = _wiki_dir_for(wiki_type, project_id)
+    meta_dir = wiki_dir / ".meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    draft_file = meta_dir / "storyline_draft.json"
+    record = {
+        "schema_version": 1,
+        "data": {
+            **draft,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_by": user.id,
+        },
+    }
+    draft_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return {"status": "success"}
 
 
 @router.get("/{wiki_type}/refresh/schedule")

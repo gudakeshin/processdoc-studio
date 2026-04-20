@@ -23,6 +23,7 @@ from app.services.wiki_corrections import DataCorrector
 from app.services.wiki_relationships import classify_all_relationships
 from app.services.storage import workspace_path
 from app.services.wiki_operations import NonTransientError
+from app.core.config import settings
 
 _LOG = logging.getLogger(__name__)
 
@@ -431,6 +432,12 @@ def run_weekly_librarian_tick(
         _LOG.warning("Weekly correction pass failed: %s", exc)
 
     classification = classify_all_relationships(wiki_type, project_id)
+    if bool(getattr(settings, "wiki_evented_graph_rebuild_enabled", False)):
+        try:
+            from app.services.wiki_graph import build_relationships_incremental
+            build_relationships_incremental(wiki_type, project_id)
+        except Exception as exc:
+            _LOG.warning("Evented graph refresh failed during librarian tick: %s", exc)
     return {
         "maintenance": maintenance,
         "corrections_applied": corrections_applied,

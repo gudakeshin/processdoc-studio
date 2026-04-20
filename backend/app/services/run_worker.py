@@ -59,6 +59,7 @@ from app.services.swarm import enrich_run_todos_with_dependencies, ensure_swarm_
 from app.services.visual_qa import run_visual_quality_check, save_visual_qa_report
 from app.services.visual_qa_chat import persist_visual_qa_assistant_message
 from app.services.wiki_maintenance import run_weekly_librarian_tick
+from app.services.wiki_graph import build_relationships_incremental
 
 _queue_rt = RunQueueRuntime(settings)
 _log = logging.getLogger(__name__)
@@ -66,6 +67,31 @@ _embedded_redis_consumer_lock = threading.Lock()
 _embedded_redis_consumer_started = False
 _last_librarian_tick_ts = 0.0
 _librarian_tick_interval_sec = 7 * 24 * 60 * 60
+
+
+def _consume_wiki_rebuild_events() -> None:
+    """Best-effort consumer for wiki rebuild events emitted by ingest."""
+    if not bool(getattr(settings, "wiki_evented_graph_rebuild_enabled", False)):
+        return
+    root = workspace_path("")
+    event_files = list(root.glob("*/wiki/.meta/wiki_rebuild_events.jsonl"))
+    event_files.append(root / "leading_practices" / "wiki" / ".meta" / "wiki_rebuild_events.jsonl")
+    for events_file in event_files:
+        if not events_file.exists():
+            continue
+        try:
+            lines = [ln for ln in events_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if not lines:
+                continue
+            latest = json.loads(lines[-1])
+            wiki_type = str(latest.get("wiki_type") or "project")
+            project_id = latest.get("project_id")
+            if wiki_type == "project" and not project_id:
+                continue
+            build_relationships_incremental(wiki_type, project_id)
+            events_file.write_text("", encoding="utf-8")
+        except Exception as exc:
+            _log.debug("wiki rebuild event consume skipped for %s: %s", events_file, exc)
 
 # Auto re-run after Visual / evaluator gate failure: max remediation enqueue rounds.
 MAX_EVALUATOR_REMEDIATION_ROUNDS = 3
@@ -743,6 +769,7 @@ def _queue_worker_loop() -> None:
             except Exception:
                 pass
             _last_librarian_tick_ts = now
+        _consume_wiki_rebuild_events()
         job = _queue_rt.local_wait_pop_job()
         project_id = str(job.get("project_id", ""))
         run_id = str(job.get("run_id", ""))

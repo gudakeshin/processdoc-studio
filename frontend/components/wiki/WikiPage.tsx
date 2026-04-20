@@ -48,6 +48,7 @@ interface WikiPageProps {
 export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId, onBack, onSelectPage }) => {
   const { api } = useAuth();
   const webEditEnabled = process.env.NEXT_PUBLIC_WIKI_WEB_EDIT_ENABLED === 'true';
+  const storylineEnabled = process.env.NEXT_PUBLIC_WIKI_STORYLINE_CANVAS_ENABLED === 'true';
   const [page, setPage]       = useState<PageMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
@@ -165,6 +166,9 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
           )}
           {wikiType === 'project' && (
             <Button variant="secondary" className="text-xs px-3 py-1.5">Promote to LP</Button>
+          )}
+          {storylineEnabled && (
+            <Button variant="ghost" className="text-xs px-3 py-1.5">Edit Storyline</Button>
           )}
         </div>
       </div>

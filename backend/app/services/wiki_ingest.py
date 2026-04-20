@@ -11,6 +11,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
+from app.services.storage import workspace_path
+
 _LOG = logging.getLogger(__name__)
 _schema_cache: dict = {}
 
@@ -578,6 +581,38 @@ def _migrate_meta_directory(wiki_dir):
             old.rename(new)
 
 
+def emit_wiki_change_event(
+    wiki_type: str,
+    project_id: str | None,
+    change_type: str,
+    changed_page_ids: list[str],
+) -> None:
+    """Persist wiki change event for optional async graph rebuild workers."""
+    try:
+        if not bool(getattr(settings, "wiki_evented_graph_rebuild_enabled", False)):
+            return
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+        meta_dir = wiki_dir / ".meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        events_file = meta_dir / "wiki_rebuild_events.jsonl"
+        event = {
+            "schema_version": 1,
+            "event_type": "wiki_pages_changed",
+            "change_type": change_type,
+            "wiki_type": wiki_type,
+            "project_id": project_id,
+            "changed_page_ids": sorted(set(changed_page_ids or [])),
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        with events_file.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(event) + "\n")
+    except Exception as exc:
+        _LOG.warning("Failed to emit wiki change event: %s", exc)
+
+
 def _ensure_wiki_schema(wiki_dir: Any) -> None:
     """Write WIKI_SCHEMA.md on first use of a wiki directory."""
     _migrate_meta_directory(wiki_dir)
@@ -939,6 +974,12 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
         anomalies = _detect_anomalous_pages(wiki_type, project_id, page_ids)
 
         _LOG.info(f"Wiki updated: {created} created, {updated} updated, pages={page_ids}, anomalies={len(anomalies)}")
+        emit_wiki_change_event(
+            wiki_type=wiki_type,
+            project_id=project_id,
+            change_type="page_set_changed",
+            changed_page_ids=page_ids,
+        )
         return {"created": created, "updated": updated, "page_ids": page_ids, "corrections": anomalies}
 
     except Exception as e:
@@ -962,8 +1003,12 @@ def _persist_related_page_suggestions(
         meta_dir = wiki_dir / ".meta"
         meta_dir.mkdir(exist_ok=True)
         rel_file = meta_dir / "relationships.json"
+        schema_version = 2
         if rel_file.exists():
             data = json.loads(rel_file.read_text(encoding="utf-8"))
+            if "data" in data and isinstance(data.get("data"), dict):
+                schema_version = int(data.get("schema_version", schema_version) or schema_version)
+                data = data["data"]
         else:
             data = {"relationships": [], "total": 0}
 
@@ -992,7 +1037,11 @@ def _persist_related_page_suggestions(
         data["relationships"] = relationships
         data["total"] = len(relationships)
         data["last_updated"] = now
-        rel_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        if bool(getattr(settings, "wiki_meta_schema_versioning_enabled", True)):
+            payload = {"schema_version": schema_version, "data": data}
+        else:
+            payload = data
+        rel_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except Exception as exc:
         _LOG.warning("Persisting related page suggestions failed: %s", exc)
 

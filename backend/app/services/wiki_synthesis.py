@@ -95,6 +95,19 @@ class SynthesisEngine:
 
         return list(set(concepts))[:10]
 
+    def _load_storyline_draft(self) -> dict[str, Any]:
+        """Load optional storyline draft for synthesis guidance."""
+        try:
+            draft_file = self.wiki_dir / ".meta" / "storyline_draft.json"
+            if not draft_file.exists():
+                return {}
+            payload = json.loads(draft_file.read_text(encoding="utf-8"))
+            if "data" in payload and isinstance(payload.get("data"), dict):
+                payload = payload["data"]
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
     def find_synthesis_clusters(self) -> list[dict[str, Any]]:
         """
         Find page clusters that need synthesis pages.
@@ -290,6 +303,13 @@ class SynthesisEngine:
                 from app.services.claude import claude_generate, is_claude_enabled
                 if not is_claude_enabled():
                     raise RuntimeError("Claude disabled")
+                storyline = self._load_storyline_draft()
+                storyline_hint = ""
+                if storyline:
+                    storyline_hint = (
+                        "\n\nStoryline drafting hints (if relevant to this cluster):\n"
+                        f"{json.dumps(storyline.get('sections', []), indent=2)}\n"
+                    )
 
                 context_blocks = "\n\n".join(
                     f"### {p['title']} ([[{p['id']}]])\n{p['body']}"
@@ -309,7 +329,7 @@ class SynthesisEngine:
                     ),
                     user=(
                         f"Synthesise these {len(page_info)} related wiki pages:\n\n"
-                        f"{context_blocks}"
+                        f"{context_blocks}{storyline_hint}"
                     ),
                     max_tokens=900,
                 )

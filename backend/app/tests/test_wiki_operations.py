@@ -14,6 +14,7 @@ from app.services.wiki_operations import (
     wiki_lint_with_retry,
     wiki_query_with_retry,
 )
+from app.core.config import settings
 
 # ===== Tier 1: Exponential Backoff Tests (5 tests) =====
 
@@ -395,3 +396,27 @@ class TestWikiRetryIntegration:
             # Should have logged at least one warning about retry
             warning_calls = [c for c in mock_logger.warning.call_args_list if c]
             assert len(warning_calls) >= 1
+
+
+class TestWikiEventedRebuild:
+    def test_ingest_evented_rebuild_emits_event_and_skips_sync_when_fallback_off(self, monkeypatch):
+        monkeypatch.setattr(settings, "wiki_evented_graph_rebuild_enabled", True)
+        monkeypatch.setattr(settings, "wiki_evented_graph_rebuild_fallback_sync_enabled", False)
+        with patch('app.services.wiki_operations._parse_source') as mock_parse, \
+             patch('app.services.wiki_operations._update_wiki_pages') as mock_update, \
+             patch('app.services.wiki_operations._append_wiki_log') as mock_log, \
+             patch('app.services.wiki_ingest.emit_wiki_change_event') as mock_emit, \
+             patch('app.services.wiki_graph.build_relationships_incremental') as mock_build:
+            mock_parse.return_value = {"title": "Test", "content": "Content"}
+            mock_update.return_value = {"created": 1, "updated": 0, "page_ids": ["p1"], "corrections": []}
+            mock_log.return_value = "log_1"
+            result, error = wiki_ingest_with_retry(
+                source_type="url",
+                source_data={"url": "http://example.com"},
+                wiki_type="project",
+                project_id="proj_1",
+            )
+            assert error is None
+            assert result is not None
+            mock_emit.assert_called_once()
+            mock_build.assert_not_called()

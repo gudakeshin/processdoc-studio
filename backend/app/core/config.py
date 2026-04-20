@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     # Empty in development = any authenticated user (matches historical behavior);
     # in staging/production, an empty list blocks all LP mutations.
     wiki_lp_admin_emails: str = ""
+    wiki_meta_schema_versioning_enabled: bool = True
+    wiki_evented_graph_rebuild_enabled: bool = False
+    wiki_evented_graph_rebuild_fallback_sync_enabled: bool = True
+    wiki_health_scorecard_enabled: bool = True
+    wiki_storyline_canvas_enabled: bool = False
 
     # Intent-triggered pre-search: when the coordinator detects search-like phrasing
     # in the user's instruction, it runs wiki + web searches before context assembly.
@@ -278,6 +283,11 @@ class Settings(BaseSettings):
         "proposal_discovery_prompts_enabled",
         "scratchpad_visibility_enabled",
         "strategy_options_planning_enabled",
+        "wiki_meta_schema_versioning_enabled",
+        "wiki_evented_graph_rebuild_enabled",
+        "wiki_evented_graph_rebuild_fallback_sync_enabled",
+        "wiki_health_scorecard_enabled",
+        "wiki_storyline_canvas_enabled",
         "memory_v2_retrieval_enabled",
         "memory_compaction_v1_enabled",
         "memory_respect_consent_in_context",

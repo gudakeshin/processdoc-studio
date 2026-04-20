@@ -38,6 +38,10 @@ interface WikiLintProps {
   autoRun?: boolean;
 }
 
+interface ScorecardSnapshot {
+  lint?: { severity?: string };
+}
+
 type IssueFilter = 'all' | Issue['type'];
 type SeverityFilter = 'all' | 'low' | 'medium' | 'high';
 
@@ -60,6 +64,7 @@ export const WikiLint: React.FC<WikiLintProps> = ({ wikiType, projectId, autoRun
   const [issueFilter, setIssueFilter]       = useState<IssueFilter>('all');
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>('all');
   const [expandedIssue, setExpandedIssue]   = useState<string | null>(null);
+  const [scorecard, setScorecard] = useState<ScorecardSnapshot | null>(null);
 
   const runLint = useCallback(async () => {
     try {
@@ -70,6 +75,13 @@ export const WikiLint: React.FC<WikiLintProps> = ({ wikiType, projectId, autoRun
       const res = await api(`/api/wiki/${wikiType}/lint?${params}`, { method: 'POST' });
       if (!res.ok) throw new Error('Lint failed');
       setResult(await res.json());
+      const scoreRes = await api(`/api/wiki/${wikiType}/health/scorecard?${params}`);
+      if (scoreRes.ok) {
+        const scoreData = await scoreRes.json();
+        setScorecard(scoreData.scorecard ?? null);
+      } else {
+        setScorecard(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -95,6 +107,11 @@ export const WikiLint: React.FC<WikiLintProps> = ({ wikiType, projectId, autoRun
           <input type="checkbox" checked={autoFix} onChange={(e) => setAutoFix(e.target.checked)} />
           Auto-fix
         </label>
+        {scorecard?.lint?.severity && (
+          <span className="text-[10px] px-2 py-1 border border-[var(--surface-border)] text-[var(--text-muted)] capitalize">
+            Scorecard lint: {scorecard.lint.severity}
+          </span>
+        )}
       </div>
 
       {error && <p className="text-xs text-[var(--error)]">{error}</p>}
