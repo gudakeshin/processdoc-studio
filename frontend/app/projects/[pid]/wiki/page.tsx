@@ -25,9 +25,24 @@ const WikiIngest = dynamic(() => import("@/components/wiki/WikiIngest").then(m =
 const WikiLint = dynamic(() => import("@/components/wiki/WikiLint").then(m => ({ default: m.WikiLint })), {
   loading: () => <div className="p-6 text-sm text-gray-400">Loading…</div>,
 });
+const WikiSynthesis = dynamic(
+  () => import("@/components/wiki/WikiSynthesis").then((m) => ({ default: m.WikiSynthesis })),
+  { loading: () => <div className="p-6 text-sm text-gray-400">Loading…</div> },
+);
+const WikiSchemaAnalysis = dynamic(
+  () => import("@/components/wiki/WikiSchemaAnalysis").then((m) => ({ default: m.WikiSchemaAnalysis })),
+  { loading: () => <div className="p-6 text-sm text-gray-400">Loading…</div> },
+);
+const WikiSchemaEditor = dynamic(() => import("@/components/wiki/WikiSchemaEditor"), {
+  loading: () => <div className="p-6 text-sm text-gray-400">Loading…</div>,
+});
+const WikiRefreshScheduler = dynamic(
+  () => import("@/components/wiki/WikiRefreshScheduler").then((m) => ({ default: m.WikiRefreshScheduler })),
+  { loading: () => <div className="p-6 text-sm text-gray-400">Loading…</div> },
+);
 
 type WikiLevel = "project" | "leading_practice";
-type RightPanel = "page" | "query" | "ingest" | "health";
+type RightPanel = "page" | "query" | "ingest" | "health" | "graph" | "schema" | "refresh";
 
 interface PageSummary {
   id: string;
@@ -172,18 +187,27 @@ export default function WikiPageRoute() {
 
         <div className="flex items-center gap-2">
           {/* Action tabs */}
-          {(["query", "ingest", "health"] as const).map((panel) => (
+          {(
+            [
+              { key: "query",   label: "Ask AI" },
+              { key: "ingest",  label: "+ Ingest" },
+              { key: "graph",   label: "Graph" },
+              { key: "schema",  label: "Schema" },
+              { key: "refresh", label: "Refresh" },
+              { key: "health",  label: "Health" },
+            ] as const
+          ).map(({ key, label }) => (
             <button
-              key={panel}
+              key={key}
               type="button"
-              onClick={() => { setRightPanel(panel); setSelectedPageId(null); }}
-              className={`px-3 py-1 text-xs border transition capitalize ${
-                rightPanel === panel && !selectedPageId
+              onClick={() => { setRightPanel(key); setSelectedPageId(null); }}
+              className={`px-3 py-1 text-xs border transition ${
+                rightPanel === key && !selectedPageId
                   ? "border-[var(--accent-blue)] text-[var(--accent-blue)] bg-[var(--surface-muted)]"
                   : "border-[var(--surface-border)] text-[var(--text-muted)] hover:border-[var(--text-default)] hover:text-[var(--text-default)]"
               }`}
             >
-              {panel === "query" ? "Ask AI" : panel === "ingest" ? "+ Ingest" : "Health"}
+              {label}
             </button>
           ))}
           <Link href={`/projects/${pid}`} className="text-xs text-[var(--text-muted)] hover:text-[var(--text-default)] ml-1">
@@ -319,6 +343,26 @@ export default function WikiPageRoute() {
             <div className="max-w-2xl">
               <h2 className="text-sm font-semibold text-[var(--text-default)] mb-4">Wiki Health</h2>
               <WikiLint wikiType={wikiLevel} projectId={projectId} />
+            </div>
+          ) : rightPanel === "graph" ? (
+            <div className="max-w-4xl">
+              <h2 className="text-sm font-semibold text-[var(--text-default)] mb-4">Knowledge Synthesis</h2>
+              <WikiSynthesis wikiType={wikiLevel} projectId={projectId} />
+            </div>
+          ) : rightPanel === "schema" ? (
+            <div className="max-w-4xl space-y-6">
+              <div>
+                <h2 className="text-sm font-semibold text-[var(--text-default)] mb-4">Schema Analysis</h2>
+                <WikiSchemaAnalysis wikiType={wikiLevel} projectId={projectId} />
+              </div>
+              <div className="pt-4 border-t border-[var(--surface-border)]">
+                <WikiSchemaEditor wikiType={wikiLevel} projectId={projectId} />
+              </div>
+            </div>
+          ) : rightPanel === "refresh" ? (
+            <div className="max-w-3xl">
+              <h2 className="text-sm font-semibold text-[var(--text-default)] mb-4">Source Refresh</h2>
+              <WikiRefreshScheduler wikiType={wikiLevel} projectId={projectId} />
             </div>
           ) : (
             /* Default: no page selected, show landing */

@@ -149,7 +149,7 @@ export const WikiMemoryLink: React.FC<WikiMemoryLinkProps> = ({
       ) : (
         <div className="text-sm text-gray-600 space-y-3">
           <p>
-            {typeIcon[memoryType]} This {memoryType} hasn't been added to wiki yet
+            {typeIcon[memoryType]} This {memoryType} hasn&apos;t been added to wiki yet
           </p>
 
           <button

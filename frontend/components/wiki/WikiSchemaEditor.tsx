@@ -1,8 +1,5 @@
 "use client";
 
-import { useAuth } from '@/lib/auth-context';
-"use client";
-
 import React, { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/lib/auth-context";
 

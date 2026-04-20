@@ -177,7 +177,7 @@ export const WikiRefreshScheduler: React.FC<WikiRefreshSchedulerProps> = ({
       {/* Freshness details */}
       {activeTab === 'freshness' && (
         !freshness
-          ? <p className="text-xs text-[var(--text-muted)]">Click "Check Freshness" to scan sources.</p>
+          ? <p className="text-xs text-[var(--text-muted)]">Click &quot;Check Freshness&quot; to scan sources.</p>
           : freshness.pages_with_changes === 0
             ? <EmptyState
                 title="All sources current"

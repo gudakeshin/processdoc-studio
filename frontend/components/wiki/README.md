@@ -243,29 +243,13 @@ interface WikiPagePreviewProps {
 
 ## Integration Components
 
-### WikiTabInProjectStudio
-Embeds wiki interface as a tab within the Project Studio.
-
-**Props:**
-```typescript
-interface WikiTabInProjectStudioProps {
-  projectId: string;
-  projectName: string;
-}
-```
-
-**Features:**
-- 4 tabs: Dashboard, Search, Browse, Ingest
-- Quick access to project wiki operations
-- Full viewport integration
-- Persistent tab state
-
-**Usage:**
-```tsx
-<WikiTabInProjectStudio projectId="proj_123" projectName="Financial Transformation" />
-```
-
-**Integration Point:** Add as a tab in the Project Studio sidebar alongside Settings, Team, etc.
+### Standalone Wiki Route
+The single wiki entry point is the standalone route at `/projects/[pid]/wiki`
+(see `frontend/app/projects/[pid]/wiki/page.tsx`). It provides a sidebar
+page list plus right-panel modes: page viewer, Ask AI, Ingest, Graph, Schema,
+Refresh, Health. Link to it from Project Studio — **do not** re-embed the wiki
+UI elsewhere; the previous `WikiTabInProjectStudio` wrapper was removed to
+consolidate the information architecture.
 
 ### WikiArtifactSection
 Displays run artifacts and wiki pages created from runs.
@@ -427,12 +411,12 @@ All components include:
 
 ## Examples
 
-### Full Wiki Dashboard in Project
+### Linking to the wiki from Project Studio
 ```tsx
-import { WikiTabInProjectStudio } from '@/components/wiki';
+import Link from 'next/link';
 
-export default function ProjectWikiTab({ projectId, projectName }) {
-  return <WikiTabInProjectStudio projectId={projectId} projectName={projectName} />;
+export default function ProjectWikiLink({ projectId }: { projectId: string }) {
+  return <Link href={`/projects/${projectId}/wiki`}>Open wiki</Link>;
 }
 ```
 

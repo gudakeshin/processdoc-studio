@@ -6,10 +6,16 @@ import { useAuth } from '@/lib/auth-context';
  */
 
 import React, { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { WikiTabNav } from './WikiTabNav';
 import { confidenceClass } from '@/utils/wikiColors';
+
+const WikiRelationships = dynamic(
+  () => import('./WikiRelationships').then((m) => ({ default: m.WikiRelationships })),
+  { loading: () => <div className="p-2 text-xs text-[var(--text-muted)]">Loading relationships…</div> },
+);
 
 interface PageLink { id: string; title: string; type: 'inbound' | 'outbound' }
 
@@ -44,7 +50,7 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
   const [page, setPage]       = useState<PageMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'content' | 'links' | 'metadata'>('content');
+  const [activeTab, setActiveTab] = useState<'content' | 'links' | 'relationships' | 'metadata'>('content');
 
   useEffect(() => {
     let cancelled = false;
@@ -138,9 +144,10 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
       {/* Tabs */}
       <WikiTabNav
         tabs={[
-          { key: 'content',  label: 'Content' },
-          { key: 'links',    label: `Links (${page.inbound_links.length + page.outbound_links.length})` },
-          { key: 'metadata', label: 'Metadata' },
+          { key: 'content',       label: 'Content' },
+          { key: 'links',         label: `Links (${page.inbound_links.length + page.outbound_links.length})` },
+          { key: 'relationships', label: 'Relationships' },
+          { key: 'metadata',      label: 'Metadata' },
         ]}
         activeTab={activeTab}
         onChange={(k) => setActiveTab(k as typeof activeTab)}
@@ -168,6 +175,13 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
             </p>
             {renderLinkList(page.outbound_links, 'No outbound references')}
           </div>
+        </div>
+      )}
+
+      {/* Relationships */}
+      {activeTab === 'relationships' && (
+        <div className="pt-2 border-t border-[var(--surface-border)]">
+          <WikiRelationships wikiType={wikiType} pageId={page.id} projectId={projectId} />
         </div>
       )}
 
