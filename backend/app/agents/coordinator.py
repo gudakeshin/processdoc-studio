@@ -1320,13 +1320,20 @@ class Coordinator:
         # Intent-triggered pre-search: if the user's instruction signals a search
         # request, run wiki + web searches before context assembly so results land
         # in assembled_context for ALL subagents (not just the one that calls the tool).
+        # Gated by settings.coordinator_pre_search_enabled (overall) and
+        # coordinator_pre_search_web_enabled (web leg only) so operators can cap
+        # outbound-network cost without disabling the wiki side.
         _SEARCH_INTENT_RE = re.compile(
             r"\b(search|look up|lookup|look for|find|research|browse|check|fetch|"
             r"retrieve|pull|are there any|what does .{0,40} say|examples of|"
             r"instances of|references to|tell me about)\b",
             re.IGNORECASE,
         )
-        if project_id and _SEARCH_INTENT_RE.search(redacted):
+        if (
+            project_id
+            and settings.coordinator_pre_search_enabled
+            and _SEARCH_INTENT_RE.search(redacted)
+        ):
             _pre_wiki: list[dict] = []
             _pre_web: list[dict] = []
             try:
@@ -1340,18 +1347,19 @@ class Coordinator:
                         lp_snippets.append(f"[Wiki-Search: {_title}]\n{_body}")
             except Exception as exc:
                 _LOG.warning("pre-run wiki search failed for project=%s: %s", project_id, exc)
-            try:
-                from app.services.web_search import web_search_service as _wss
+            if settings.coordinator_pre_search_web_enabled:
+                try:
+                    from app.services.web_search import web_search_service as _wss
 
-                _pre_web = _wss.search(redacted[:300], project_id=project_id)
-                for _r in _pre_web:
-                    _title = _r.get("title") or "Web"
-                    _url = _r.get("url") or ""
-                    _snip = str(_r.get("snippet") or "").strip()
-                    if _snip:
-                        lp_snippets.append(f"[Web: {_title}]\n{_url}\n{_snip}")
-            except Exception as exc:
-                _LOG.warning("pre-run web search failed for project=%s: %s", project_id, exc)
+                    _pre_web = _wss.search(redacted[:300], project_id=project_id)
+                    for _r in _pre_web:
+                        _title = _r.get("title") or "Web"
+                        _url = _r.get("url") or ""
+                        _snip = str(_r.get("snippet") or "").strip()
+                        if _snip:
+                            lp_snippets.append(f"[Web: {_title}]\n{_url}\n{_snip}")
+                except Exception as exc:
+                    _LOG.warning("pre-run web search failed for project=%s: %s", project_id, exc)
             if emit_event and (_pre_wiki or _pre_web):
                 emit_event("pre_run_search_triggered", {
                     "wiki_results": len(_pre_wiki),

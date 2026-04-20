@@ -71,6 +71,19 @@ class Settings(BaseSettings):
     # Empty in development = any authenticated user (matches historical behavior);
     # in staging/production, an empty list blocks all LP mutations.
     wiki_lp_admin_emails: str = ""
+
+    # Intent-triggered pre-search: when the coordinator detects search-like phrasing
+    # in the user's instruction, it runs wiki + web searches before context assembly.
+    # Disable either leg to cap cost, latency, or outbound-network usage.
+    coordinator_pre_search_enabled: bool = True
+    coordinator_pre_search_web_enabled: bool = True
+
+    # Trust X-Forwarded-For / X-Forwarded-Proto from upstream proxies (ALB, nginx, Cloudflare).
+    # When enabled, SlowAPI rate limits key off the real client IP instead of the proxy IP.
+    # trust_forwarded_for_hosts is a comma-separated list; "*" trusts any upstream.
+    trust_forwarded_for_enabled: bool = False
+    trust_forwarded_for_hosts: str = "127.0.0.1"
+
     otel_sdk_enabled: bool = False
 
     anthropic_api_key: str = ""

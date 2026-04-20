@@ -107,6 +107,22 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.middleware("http")(request_timing_middleware)
 
+# Trust X-Forwarded-For from known upstream proxies so that request.client.host
+# (and therefore SlowAPI's per-IP rate limit key) reflects the real caller when we
+# run behind an ALB / nginx / Cloudflare. Off by default; operators must explicitly
+# opt in AND set TRUST_FORWARDED_FOR_HOSTS to the proxy addresses.
+if settings.trust_forwarded_for_enabled:
+    try:
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+        _trusted = settings.trust_forwarded_for_hosts.strip() or "127.0.0.1"
+        app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=_trusted)
+    except Exception as _exc:  # noqa: BLE001
+        logging.getLogger("app.main").warning(
+            "trust_forwarded_for_enabled=true but ProxyHeadersMiddleware failed to install: %s",
+            _exc,
+        )
+
 
 @app.exception_handler(ProcessDocHTTPException)
 async def processdoc_http_exception_handler(_request, exc: ProcessDocHTTPException) -> JSONResponse:
