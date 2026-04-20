@@ -992,7 +992,9 @@ def _load_persistent_graph(
         else:
             wiki_dir = workspace_path(project_id) / "wiki"
 
-        graph_file = wiki_dir / "graph.json"
+        graph_file = wiki_dir / ".meta" / "graph.json"
+        if not graph_file.exists():
+            graph_file = wiki_dir / "graph.json"
         if not graph_file.exists():
             return None, {}, None
 

@@ -40,6 +40,10 @@ const WikiRefreshScheduler = dynamic(
   () => import("@/components/wiki/WikiRefreshScheduler").then((m) => ({ default: m.WikiRefreshScheduler })),
   { loading: () => <div className="p-6 text-sm text-gray-400">Loading…</div> },
 );
+const WikiGraph = dynamic(
+  () => import("@/components/wiki/WikiGraph").then((m) => ({ default: m.WikiGraph })),
+  { loading: () => <div className="p-6 text-sm text-gray-400">Loading graph…</div> },
+);
 
 type WikiLevel = "project" | "leading_practice";
 type RightPanel = "page" | "query" | "ingest" | "health" | "graph" | "schema" | "refresh";
@@ -346,8 +350,8 @@ export default function WikiPageRoute() {
             </div>
           ) : rightPanel === "graph" ? (
             <div className="max-w-4xl">
-              <h2 className="text-sm font-semibold text-[var(--text-default)] mb-4">Knowledge Synthesis</h2>
-              <WikiSynthesis wikiType={wikiLevel} projectId={projectId} />
+              <h2 className="text-sm font-semibold text-[var(--text-default)] mb-4">Knowledge Graph</h2>
+              <WikiGraph wikiType={wikiLevel} projectId={projectId} />
             </div>
           ) : rightPanel === "schema" ? (
             <div className="max-w-4xl space-y-6">

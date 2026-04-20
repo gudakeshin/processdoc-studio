@@ -1796,6 +1796,49 @@ async def get_graph_stats(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@router.get("/{wiki_type}/graph/data")
+async def get_graph_data(
+    wiki_type: str,
+    project_id: str | None = None,
+    limit_nodes: int = Query(80, ge=1, le=500),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return graph nodes/edges for client-side rendering."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
+    try:
+        from app.services.wiki_operations import _load_persistent_graph
+
+        G, page_titles, metadata = _load_persistent_graph(wiki_type, project_id)
+        if not G or G.number_of_nodes() == 0:
+            return {"status": "success", "nodes": [], "edges": [], "metadata": metadata or {}}
+
+        # Keep payload bounded for UI responsiveness.
+        nodes = list(G.nodes())[:limit_nodes]
+        node_set = set(nodes)
+        edges = []
+        for source, target, attrs in G.edges(data=True):
+            if source in node_set and target in node_set:
+                edges.append({
+                    "source": source,
+                    "target": target,
+                    "weight": float(attrs.get("weight", 0.5)),
+                    "confidence": str(attrs.get("confidence", "INFERRED")),
+                })
+
+        return {
+            "status": "success",
+            "nodes": [{"id": n, "title": page_titles.get(n, n)} for n in nodes],
+            "edges": edges,
+            "metadata": metadata or {},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get graph data failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 # ===== Dashboard Operations =====
 
 @router.get("/{wiki_type}/stats")
