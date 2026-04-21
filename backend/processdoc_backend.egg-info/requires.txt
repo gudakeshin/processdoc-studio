@@ -20,6 +20,11 @@ pillow
 pypdfium2
 pypdf
 pyyaml
+langfuse
+slowapi
+sentence-transformers
+faiss-cpu
+networkx
 
 [dev]
 pytest

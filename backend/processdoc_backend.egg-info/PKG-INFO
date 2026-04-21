@@ -25,6 +25,11 @@ Requires-Dist: pillow
 Requires-Dist: pypdfium2
 Requires-Dist: pypdf
 Requires-Dist: pyyaml
+Requires-Dist: langfuse
+Requires-Dist: slowapi
+Requires-Dist: sentence-transformers
+Requires-Dist: faiss-cpu
+Requires-Dist: networkx
 Provides-Extra: dev
 Requires-Dist: pytest; extra == "dev"
 Requires-Dist: pytest-cov; extra == "dev"

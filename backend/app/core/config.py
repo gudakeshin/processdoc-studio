@@ -114,6 +114,8 @@ class Settings(BaseSettings):
     conversation_digest_max_chars: int = 12000
     conversation_digest_message_limit: int = 45
     conversation_digest_planner_max_chars: int = 6000
+    conversation_digest_tiered_compaction_enabled: bool = False
+    conversation_digest_tiered_compaction_threshold_chars: int = 32000
     subagent_conversation_digest_max_chars: int = 3500
     coordinator_planning_context_chars: int = 7000
     # Optional extended thinking for narrative subagent (extra cost when enabled).
@@ -314,6 +316,7 @@ class Settings(BaseSettings):
         "subagent_narrative_thinking_enabled",
         "prompt_compression_enabled",
         "prompt_compression_log_verbose",
+        "conversation_digest_tiered_compaction_enabled",
         mode="before",
     )
     @classmethod
