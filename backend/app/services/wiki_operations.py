@@ -233,6 +233,11 @@ def wiki_ingest_with_retry(
                 from app.services.wiki_graph import build_relationships_incremental
                 index_result = build_relationships_incremental(wiki_type, project_id)
 
+            # Compute and persist embeddings (semantic search index)
+            embedding_result = {}
+            if bool(getattr(settings, "wiki_embeddings_persistence_enabled", True)):
+                embedding_result = _try_compute_embeddings(wiki_type, project_id)
+
             # Auto-generate synthesis pages (emergent insights from connected knowledge)
             synthesis_result = {}
             if bool(getattr(settings, "wiki_synthesis_on_ingest_enabled", True)):
@@ -252,6 +257,7 @@ def wiki_ingest_with_retry(
                 "page_ids": pages_result.get("page_ids", []),
                 "corrections_made": len(pages_result.get("corrections", [])),
                 "log_entry_id": log_entry_id,
+                "embeddings_computed": embedding_result.get("computed", 0),
                 "synthesis_pages_created": synthesis_result.get("created", 0),
                 "performance": {
                     "changed_pages": index_result.get("changed_pages", 0),
@@ -539,6 +545,32 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
     except Exception as e:
         logger.error(f"Error updating wiki pages via wiki_ingest: {e}")
         return {"created": 0, "updated": 0, "page_ids": [], "corrections": []}
+
+
+def _try_compute_embeddings(wiki_type: str, project_id: str | None) -> dict:
+    """Compute and persist embeddings for wiki pages (semantic search index).
+
+    Called after ingest, non-blocking. Enables fast semantic search without recomputing
+    embeddings on every query.
+
+    Returns:
+        {"computed": int, "saved": bool, "index_size": int}
+    """
+    try:
+        from app.services.wiki_query import _get_wiki_index, _compute_and_save_embeddings
+
+        index = _get_wiki_index(wiki_type, project_id)
+        if not index or not index.get("pages"):
+            return {"computed": 0, "saved": False}
+
+        result = _compute_and_save_embeddings(index.get("pages", []), wiki_type, project_id)
+        if result.get("saved"):
+            logger.info(f"Embeddings persisted for {result.get('computed', 0)} pages")
+        return result
+
+    except Exception as e:
+        logger.warning(f"Embedding computation failed (non-blocking): {e}")
+        return {"computed": 0, "saved": False, "error": str(e)}
 
 
 def _try_generate_synthesis_pages(wiki_type: str, project_id: str | None) -> dict:

@@ -4,11 +4,15 @@ wiki_query.py — Wiki query helpers.
 Handles wiki index loading, BM25 + embedding-rerank search, answer synthesis,
 citation parsing, and answer quality evaluation.
 """
+import json
 import logging
 import re
+from pathlib import Path
 
 _LOG = logging.getLogger(__name__)
 _embed_model = None
+_faiss_index = None
+_index_metadata = None
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +66,156 @@ def _get_wiki_index(wiki_type: str, project_id: str | None) -> dict | None:
     except Exception as e:
         _LOG.error(f"Error building wiki index: {e}")
         return {"pages": []}
+
+
+# ---------------------------------------------------------------------------
+# Embedding persistence — semantic search via FAISS index
+# ---------------------------------------------------------------------------
+
+def _compute_and_save_embeddings(pages: list, wiki_type: str, project_id: str | None) -> dict:
+    """Compute embeddings for wiki pages and persist to FAISS index.
+
+    Args:
+        pages: List of page dicts with page_id, title, content
+        wiki_type: "project" or "leading_practice"
+        project_id: Project ID (None for leading_practice)
+
+    Returns:
+        {"computed": int, "saved": bool, "index_size": int}
+    """
+    if not pages:
+        return {"computed": 0, "saved": False, "index_size": 0}
+
+    try:
+        from sentence_transformers import SentenceTransformer
+        from app.services.storage import workspace_path
+        import numpy as np
+
+        global _embed_model
+        if _embed_model is None:
+            _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        # Get meta directory
+        if wiki_type == "leading_practice":
+            meta_dir = workspace_path("leading_practices") / "wiki" / ".meta"
+        else:
+            meta_dir = workspace_path(project_id) / "wiki" / ".meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+
+        # Compute embeddings for all pages
+        texts = [
+            (p.get("title", "") + " " + p.get("content", "")[:800])
+            for p in pages
+        ]
+        page_ids = [p.get("page_id") or p.get("title", "").lower().replace(" ", "_") for p in pages]
+
+        embeddings = _embed_model.encode(texts, convert_to_tensor=False).astype(np.float32)
+
+        # Save to FAISS
+        try:
+            import faiss
+            index = faiss.IndexFlatL2(embeddings.shape[1])
+            index.add(embeddings)
+            faiss.write_index(index, str(meta_dir / "embeddings.faiss"))
+
+            # Save metadata (page_ids and page info for reconstruction)
+            metadata = {
+                "page_ids": page_ids,
+                "model": "all-MiniLM-L6-v2",
+                "embedding_dim": int(embeddings.shape[1]),
+                "count": len(page_ids),
+            }
+            (meta_dir / "embeddings_metadata.json").write_text(
+                json.dumps(metadata, indent=2), encoding="utf-8"
+            )
+
+            _LOG.info(f"Saved embeddings for {len(page_ids)} pages to FAISS index")
+            return {"computed": len(page_ids), "saved": True, "index_size": len(page_ids)}
+
+        except ImportError:
+            _LOG.warning("FAISS not installed; embeddings computed but not persisted")
+            return {"computed": len(page_ids), "saved": False, "index_size": 0}
+
+    except Exception as e:
+        _LOG.warning(f"Embedding persistence failed: {e}")
+        return {"computed": 0, "saved": False, "index_size": 0}
+
+
+def _load_embeddings_index(wiki_type: str, project_id: str | None) -> tuple[object, dict] | None:
+    """Load FAISS index and metadata from disk.
+
+    Returns:
+        (faiss_index, metadata_dict) or None if not available
+    """
+    global _faiss_index, _index_metadata
+
+    if _faiss_index is not None and _index_metadata is not None:
+        return _faiss_index, _index_metadata
+
+    try:
+        from app.services.storage import workspace_path
+        import faiss
+
+        if wiki_type == "leading_practice":
+            meta_dir = workspace_path("leading_practices") / "wiki" / ".meta"
+        else:
+            meta_dir = workspace_path(project_id) / "wiki" / ".meta"
+
+        index_file = meta_dir / "embeddings.faiss"
+        metadata_file = meta_dir / "embeddings_metadata.json"
+
+        if not index_file.exists() or not metadata_file.exists():
+            return None
+
+        _faiss_index = faiss.read_index(str(index_file))
+        _index_metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+
+        return _faiss_index, _index_metadata
+
+    except Exception as e:
+        _LOG.debug(f"Embeddings index not available: {e}")
+        return None
+
+
+def _semantic_search(question: str, wiki_type: str, project_id: str | None, index: dict | None, top_k: int = 5) -> list:
+    """Search wiki using semantic similarity via FAISS.
+
+    Falls back to empty list if index not available (will use BM25 instead).
+    """
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        global _embed_model
+        if _embed_model is None:
+            _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        index_data = _load_embeddings_index(wiki_type, project_id)
+        if not index_data:
+            return []
+
+        faiss_idx, metadata = index_data
+        q_emb = _embed_model.encode(question, convert_to_tensor=False).astype("float32").reshape(1, -1)
+
+        # Search FAISS index
+        distances, indices = faiss_idx.search(q_emb, min(top_k, metadata.get("count", 0)))
+
+        # Map indices back to page_ids and fetch from index
+        pages_map = {(p.get("page_id") or p.get("title", "").lower().replace(" ", "_")): p for p in (index.get("pages") or [])}
+        results = []
+
+        for idx in indices[0]:
+            if idx >= 0 and idx < len(metadata.get("page_ids", [])):
+                page_id = metadata["page_ids"][int(idx)]
+                if page_id in pages_map:
+                    results.append(pages_map[page_id])
+
+        return results
+
+    except ImportError:
+        return []
+    except Exception as e:
+        _LOG.debug(f"Semantic search failed: {e}")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -193,37 +347,57 @@ def _rerank_with_embeddings(question: str, candidates: list) -> list:
 
 
 def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id) -> list:
-    """BM25 search over wiki index, with embedding rerank and graph expansion for related pages."""
+    """Search wiki using semantic index (if available) + BM25, with embedding rerank and graph expansion."""
     pages = (index or {}).get("pages", [])
     if not pages:
         return []
-    try:
-        from rank_bm25 import BM25Okapi
-        corpus = [
-            re.findall(r"\w+", (p.get("title", "") + " " + p.get("content", "")).lower())
-            for p in pages
-        ]
-        query_tokens = re.findall(r"\w+", question.lower())
-        scores = BM25Okapi(corpus).get_scores(query_tokens)
-        ranked = sorted(zip(scores, pages, strict=False), key=lambda x: -x[0])
-        candidates = [p for score, p in ranked[:20] if score > 0]
-    except ImportError:
-        # Fallback to keyword overlap if rank_bm25 not installed
-        stop_words = {"what","how","why","when","where","who","is","are","was","were","the","a","an","and","or","of","in","to","for","be","do","have","that","this","with","on","at","from","by","about"}
-        q_words = set(re.findall(r"\w+", question.lower())) - stop_words
-        scored = []
-        for page in pages:
-            text = (page.get("title","") + " " + page.get("content","")).lower()
-            overlap = len(q_words & set(re.findall(r"\w+", text)))
-            if overlap > 0:
-                scored.append((overlap, page))
-        scored.sort(key=lambda x: -x[0])
-        candidates = [p for _, p in scored[:20]]
+
+    candidates = []
+
+    # Try semantic search first (fast, finds conceptual matches)
+    semantic_results = _semantic_search(question, wiki_type, project_id, index, top_k=10)
+    if semantic_results:
+        candidates.extend(semantic_results)
+        _LOG.debug(f"Semantic search returned {len(semantic_results)} results")
+
+    # If semantic search didn't return enough, supplement with BM25 keyword matching
+    if len(candidates) < 5:
+        try:
+            from rank_bm25 import BM25Okapi
+            corpus = [
+                re.findall(r"\w+", (p.get("title", "") + " " + p.get("content", "")).lower())
+                for p in pages
+            ]
+            query_tokens = re.findall(r"\w+", question.lower())
+            scores = BM25Okapi(corpus).get_scores(query_tokens)
+            ranked = sorted(zip(scores, pages, strict=False), key=lambda x: -x[0])
+            bm25_results = [p for score, p in ranked[:20] if score > 0]
+
+            # Deduplicate: add BM25 results not already in candidates
+            candidate_ids = set(p.get("page_id") or p.get("title", "").lower().replace(" ", "_") for p in candidates)
+            for p in bm25_results:
+                page_id = p.get("page_id") or p.get("title", "").lower().replace(" ", "_")
+                if page_id not in candidate_ids:
+                    candidates.append(p)
+                    candidate_ids.add(page_id)
+
+        except ImportError:
+            # Fallback to keyword overlap if rank_bm25 not installed
+            stop_words = {"what","how","why","when","where","who","is","are","was","were","the","a","an","and","or","of","in","to","for","be","do","have","that","this","with","on","at","from","by","about"}
+            q_words = set(re.findall(r"\w+", question.lower())) - stop_words
+            scored = []
+            for page in pages:
+                text = (page.get("title","") + " " + page.get("content","")).lower()
+                overlap = len(q_words & set(re.findall(r"\w+", text)))
+                if overlap > 0:
+                    scored.append((overlap, page))
+            scored.sort(key=lambda x: -x[0])
+            candidates.extend([p for _, p in scored[:20]])
 
     if not candidates:
         return []
 
-    # Embedding rerank to top 5
+    # Embedding rerank to top 5 (final ranking)
     primary_results = _rerank_with_embeddings(question, candidates)
 
     # Expand with related pages from graph (relationships + communities)
