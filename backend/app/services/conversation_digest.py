@@ -12,6 +12,7 @@ from app.db.models import Conversation, ConversationMessage
 from app.core.config import settings
 from app.services.compaction_trace import CompactionTrace
 from app.services.context_compaction import CompactionLine, TieredCompactor
+from app.services.source_freshness import mark_stale_sources
 
 
 def build_conversation_digest_for_run(
@@ -67,6 +68,10 @@ def build_conversation_digest_for_run_with_trace(
         ).all()
     )
     rows.reverse()
+    freshness_map = mark_stale_sources(
+        rows,
+        ttl_seconds=int(settings.conversation_source_freshness_ttl_seconds or 259200),
+    )
 
     lines: list[str] = []
     compaction_lines: list[CompactionLine] = []
@@ -74,6 +79,11 @@ def build_conversation_digest_for_run_with_trace(
     for m in rows:
         role = (m.role or "unknown").strip()
         body = redact_emails((m.content or "").strip())
+        info = freshness_map.get(int(m.id))
+        if info and info.is_stale and settings.conversation_digest_exclude_stale_sources:
+            continue
+        if info and info.prefix:
+            body = f"{info.prefix}{body}"
 
         extras: list[str] = []
         try:

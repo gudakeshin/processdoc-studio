@@ -1,6 +1,7 @@
 """Conversation digest for HITL continuity."""
 
 import pytest
+from datetime import datetime, timedelta
 
 from app.db.models import Conversation, ConversationMessage, Project, User
 from app.db.session import SessionLocal, init_db
@@ -117,3 +118,41 @@ def test_compaction_trace_to_dict_ratio() -> None:
     payload = trace.to_dict()
     assert payload["compression_ratio"] == 0.4
     assert payload["tiers_applied"] == ["tier1_micro_compact"]
+
+
+def test_build_conversation_digest_excludes_stale_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "conversation_digest_exclude_stale_sources", True)
+    monkeypatch.setattr(settings, "conversation_source_freshness_ttl_seconds", 60)
+
+    session = SessionLocal()
+    try:
+        uid, pid, cid = "u_digest4", "proj_digest4", "conv_digest4"
+        session.add(User(id=uid, email="digest4@test.local", hashed_password="x"))
+        session.add(Project(id=pid, name="P4", created_by=uid))
+        session.add(Conversation(id=cid, project_id=pid, user_id=uid))
+        stale_at = datetime.utcnow() - timedelta(hours=2)
+        session.add(
+            ConversationMessage(
+                conversation_id=cid,
+                role="user",
+                content="old discovery",
+                source_type="discovery_answer",
+                source_freshness_at=stale_at,
+            )
+        )
+        session.add(ConversationMessage(conversation_id=cid, role="assistant", content="fresh assistant turn"))
+        session.commit()
+
+        d = build_conversation_digest_for_run(
+            session=session,
+            project_id=pid,
+            conversation_id=cid,
+            char_cap=8000,
+            message_limit=10,
+        )
+        assert "old discovery" not in d
+        assert "fresh assistant turn" in d
+    finally:
+        session.close()

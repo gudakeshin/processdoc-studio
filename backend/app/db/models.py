@@ -302,6 +302,8 @@ class ConversationMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    source_type: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    source_freshness_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
