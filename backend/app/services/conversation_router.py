@@ -85,6 +85,7 @@ def route_turn(
     recent_messages: list[dict[str, Any]],
     project_context: str,
     available_output_types: list[dict[str, Any]],
+    history_summary: str = "",
 ) -> RouterDecision:
     catalog = [
         {
@@ -110,7 +111,13 @@ def route_turn(
         "{client:{name,industry}, outcome:{primary,decision}, win_themes:[...], audience, narrative_arc, tone}.\n"
         "missing_slots values should come from: client, outcome, win_themes.\n"
     )
+    summary_prefix = (
+        f"Conversation summary (prior turns):\n{history_summary}\n\n"
+        if history_summary.strip()
+        else ""
+    )
     user = (
+        f"{summary_prefix}"
         f"Current state: {conv_state}\n\n"
         f"Current slots: {conv_slots}\n\n"
         f"Recent messages: {recent_messages[-8:]}\n\n"

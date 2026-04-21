@@ -500,8 +500,13 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     if (!pid || chatBusy || !msg) return;
     setChatBusy(true);
     setArtifactsError(null);
+    const optimisticId = `opt-${Date.now()}`;
     try {
       setChatInput("");
+      setChatMessages((prev) => [
+        ...prev,
+        { clientId: optimisticId, role: "user" as const, content: msg, ts: Date.now() },
+      ]);
       const res = await api(`/api/projects/${encodeURIComponent(pid)}/conversation/messages`, {
         method: "POST",
         body: JSON.stringify({ content: msg }),
@@ -549,6 +554,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       setChatMessages(mapped);
       setInstruction(msg);
     } catch (e) {
+      setChatMessages((prev) => prev.filter((m) => m.clientId !== optimisticId));
       setArtifactsError(e instanceof Error ? e.message : "Conversation send failed");
     } finally {
       setChatBusy(false);

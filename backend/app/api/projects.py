@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import shutil
 import uuid
@@ -47,6 +48,7 @@ from app.services.run_worker import append_run_event
 from app.services.storage import ensure_workspace, workspace_path
 
 router = APIRouter()
+_LOG = logging.getLogger(__name__)
 
 
 def _is_contextual_followup(content: str, prior_messages: list[dict]) -> bool:
@@ -475,13 +477,17 @@ def _extract_entity_tokens(text: str) -> list[str]:
 
 
 def _top_parsed_doc_chunks_for_query(project_id: str, query_text: str, max_chunks: int = 2) -> list[dict]:
-    engine = TieredContextEngine()
-    chunks = engine._load_all_parsed_chunks(project_id)  # noqa: SLF001
-    if not chunks:
+    try:
+        engine = TieredContextEngine()
+        chunks = engine._load_all_parsed_chunks(project_id)  # noqa: SLF001
+        if not chunks:
+            return []
+        scores = engine._bm25_scores(chunks, query_text)  # noqa: SLF001
+        ranked = [chunks[i] for i, score in sorted(enumerate(scores), key=lambda x: x[1], reverse=True) if score > 0]
+        return ranked[:max_chunks]
+    except Exception as exc:
+        _LOG.warning("wiki slot extractor: parsed doc retrieval failed for project %s: %s", project_id, exc)
         return []
-    scores = engine._bm25_scores(chunks, query_text)  # noqa: SLF001
-    ranked = [chunks[i] for i, score in sorted(enumerate(scores), key=lambda x: x[1], reverse=True) if score > 0]
-    return ranked[:max_chunks]
 
 
 def _extract_discovery_answers_from_wiki(
@@ -717,7 +723,23 @@ def _extract_discovery_answers_fast(user_message: str) -> dict:
     )
     if outcome_match:
         out["outcome"] = {"primary": outcome_match.group(1).strip()}
-    elif "driving transformation" in lowered:
+    else:
+        # Common natural phrasing in chat: "proposal should help them decide X"
+        # or "should help decide X". Capture that as the decision and derive a
+        # primary outcome so we don't re-ask the same slot every turn.
+        decision_match = re.search(
+            r"\b(?:proposal|document|deck)?\s*should\s+help(?:\s+\w+){0,3}\s+decide\s*(?:on|whether|to)?\s*([^.\n]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if decision_match:
+            decision = decision_match.group(1).strip(" :,-")
+            if decision:
+                out["outcome"] = {
+                    "primary": f"Support decision-making on {decision}",
+                    "decision": decision,
+                }
+    if "outcome" not in out and "driving transformation" in lowered:
         out["outcome"] = {"primary": "Drive transformation across processes"}
 
     return _normalize_discovery(out)
@@ -802,6 +824,7 @@ def _persist_conversational_response(
     router_intent: str | None = None,
     router_confidence: float | None = None,
     project_id: str | None = None,
+    history_summary: str = "",
 ) -> dict:
     """Generate a natural, colleague-like conversational response grounded in captured context.
 
@@ -890,7 +913,13 @@ def _persist_conversational_response(
                 if ref not in wiki_refs:
                     wiki_refs.append(ref)
             unsurfaced_refs = [x for x in wiki_refs if x not in already_surfaced_refs]
+    summary_block = (
+        f"Conversation summary (prior turns):\n{history_summary}\n\n"
+        if history_summary.strip()
+        else ""
+    )
     user_prompt = (
+        f"{summary_block}"
         f"Captured context (known_slots):\n{known_block}\n\n"
         f"Missing slots: {missing_block}\n\n"
         f"Allowed wiki refs: {unsurfaced_refs[:8]}\n\n"
@@ -930,43 +959,75 @@ def _persist_conversational_response(
 
 
 def _persist_acknowledgment_response(
-    db: Session, conv: Conversation, user_message: str, prior_messages: list[dict]
+    db: Session,
+    conv: Conversation,
+    user_message: str,
+    prior_messages: list[dict],
+    *,
+    slots: dict | None = None,
+    project_context: str | None = None,
 ) -> dict:
-    """Generate a brief, natural response to a simple acknowledgment.
+    """Generate a brief, grounded response to a simple acknowledgment.
 
-    When user says "sounds good" or "makes sense", respond briefly and
-    guide them toward next steps without being pushy.
+    Grounds the reply in captured slots and project context so responses
+    remain coherent mid-conversation rather than generic.
     """
     from app.services.claude import claude_generate
 
     recent_context = "\n".join(
         f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:400]}"
-        for m in prior_messages[-4:]
+        for m in prior_messages[-8:]
         if str(m.get("content") or "").strip()
     )
+
+    slots = slots or {}
+    project_context = (project_context or "").strip()
+
+    known_bits: list[str] = []
+    client = slots.get("client") if isinstance(slots.get("client"), dict) else {}
+    if str(client.get("name") or "").strip():
+        known_bits.append(f"- Client: {client.get('name')}" + (f" ({client.get('industry')})" if client.get("industry") else ""))
+    outcome = slots.get("outcome") if isinstance(slots.get("outcome"), dict) else {}
+    if str(outcome.get("primary") or "").strip():
+        known_bits.append(f"- Outcome/Problem: {outcome.get('primary')}")
+    if slots.get("audience"):
+        known_bits.append(f"- Audience: {slots.get('audience')}")
+    themes = slots.get("win_themes") if isinstance(slots.get("win_themes"), list) else []
+    if themes:
+        known_bits.append(f"- Win themes: {', '.join(str(t) for t in themes)}")
+    known_block = "\n".join(known_bits) if known_bits else "(none captured yet)"
 
     system_prompt = """You are Sheldon, an energetic creative partner.
 The user just sent a brief acknowledgment (like "sounds good", "makes sense", "great").
 
+You MUST ground your reply in the captured context below. Reference the client, outcome,
+or win themes by name if they are known. Do not ask for information already captured.
+
 Respond with 1-2 sentences that:
-1. Acknowledge their response warmly
+1. Acknowledge their response warmly, referencing what was just discussed
 2. Either continue the discussion naturally OR gently ask what they'd like to do next
 3. Keep Sheldon's personality (energetic, supportive)
 
 Keep it SHORT — 1-2 sentences max. Don't be verbose."""
 
-    user_prompt = f"""Recent conversation:
+    user_prompt = f"""Captured context (known slots):
+{known_block}
+
+Project context excerpt:
+{project_context[:2000] if project_context else "(none)"}
+
+Recent conversation:
 {recent_context}
 
 User's acknowledgment: {user_message}
 
-Respond briefly."""
+Respond briefly, referencing the captured context above."""
 
     try:
         response_text = claude_generate(
             system=system_prompt,
             user=user_prompt,
-            temperature=0.7,
+            temperature=0.4,
             max_tokens=150
         ).strip()
     except Exception:
@@ -989,6 +1050,66 @@ Respond briefly."""
         "ready_for_confirmation": False,
         "plan_hash": None,
     }
+
+
+def _update_conversation_summary(
+    conv: "Conversation",
+    state: "ConversationState",
+    messages: list[dict],
+) -> bool:
+    """Generate and store a rolling summary of older conversation turns.
+
+    Triggers at 10 messages (first summary) and refreshes at every 10th message
+    thereafter (20, 30, …). Summarizes everything except the last 6 messages so
+    the normal recent-history window remains verbatim.
+
+    Returns True if the summary was updated; caller must call save_state() afterward.
+    Non-blocking: failures are swallowed and return False.
+    """
+    from app.services.claude import claude_generate
+
+    n = len(messages)
+    if n < 10:
+        return False
+    if state.history_summary and n % 10 != 0:
+        return False
+
+    messages_to_summarize = messages[:-6]
+    if not messages_to_summarize:
+        return False
+
+    transcript = "\n".join(
+        f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:800]}"
+        for m in messages_to_summarize
+        if str(m.get("content") or "").strip()
+    )
+    if not transcript.strip():
+        return False
+
+    system = (
+        "You are a concise summarizer for a consulting copilot conversation. "
+        "Produce a factual, third-person summary (max 200 words) covering: "
+        "what the user is trying to accomplish, any client/outcome/audience/win-theme facts stated, "
+        "key decisions made, and the current stage of the conversation. "
+        "Do not include pleasantries or filler. Output plain prose."
+    )
+    user = f"Conversation transcript to summarize:\n\n{transcript}\n\nSummary:"
+
+    try:
+        summary = claude_generate(
+            system=system,
+            user=user,
+            temperature=0.2,
+            max_tokens=300,
+        ).strip()
+    except Exception:
+        return False
+
+    if not summary:
+        return False
+
+    state.history_summary = summary
+    return True
 
 
 def _extract_user_name(email: str) -> str:
@@ -2097,20 +2218,37 @@ def post_project_conversation_message(
     prior_messages = _serialize_messages(db, conv.id)
     prior_plan_meta = _latest_assistant_plan_metadata(prior_messages)
     state = load_state(conv)
+    summary_updated = _update_conversation_summary(conv, state, prior_messages)
 
-    if _is_vague_instruction(content):
+    # Fast-paths only apply to fresh conversations with no established context.
+    # Once an assistant has responded or state has advanced, short messages like
+    # "ok", "yes", or "thanks" must go through the full LLM path so context is preserved.
+    has_prior_context = (
+        any(m.get("role") == "assistant" for m in prior_messages)
+        or state.state not in {"new", "exploring"}
+    )
+
+    if _is_vague_instruction(content) and not has_prior_context:
         state.state = "exploring"
         stamp_router(state, intent="greeting", confidence=1.0, rationale="vague_instruction_fast_path")
         save_state(conv, state)
         db.flush()
         return _persist_clarification_message(db, conv, content)
 
-    if _is_acknowledgment(content):
-        state.state = "exploring"
+    if _is_acknowledgment(content) and not has_prior_context:
+        # Preserve current state — do not reset to "exploring"
         stamp_router(state, intent="ack", confidence=1.0, rationale="acknowledgment_fast_path")
         save_state(conv, state)
         db.flush()
-        return _persist_acknowledgment_response(db, conv, content, prior_messages)
+        context_bundle = _load_project_context_bundle(db, pid, content)
+        return _persist_acknowledgment_response(
+            db,
+            conv,
+            content,
+            prior_messages,
+            slots=state.slots,
+            project_context=str(context_bundle.get("text") or ""),
+        )
 
     available_output_types = [
         item for item in _load_output_types() if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
@@ -2143,11 +2281,15 @@ def post_project_conversation_message(
     extracted_wiki: dict[str, object] = {}
     wiki_source_refs: list[str] = []
     if settings.wiki_aware_discovery_enabled:
-        extracted_wiki, wiki_source_refs = _extract_discovery_answers_from_wiki(
-            project_id=pid,
-            user_message=content,
-            prior_messages=prior_messages,
-        )
+        try:
+            extracted_wiki, wiki_source_refs = _extract_discovery_answers_from_wiki(
+                project_id=pid,
+                user_message=content,
+                prior_messages=prior_messages,
+            )
+        except Exception as exc:
+            _LOG.warning("wiki slot extractor failed for project %s conversation %s: %s", pid, conv.id, exc)
+            extracted_wiki, wiki_source_refs = {}, []
     premerged_slots = _merge_discovery(state.slots, extracted_fast)
     premerged_slots = _merge_discovery(premerged_slots, extracted_llm)
     premerged_slots = _merge_discovery(premerged_slots, extracted_wiki)
@@ -2167,6 +2309,9 @@ def post_project_conversation_message(
         )
         db.flush()
     state.slots = premerged_slots
+    if summary_updated:
+        save_state(conv, state)
+        db.flush()
 
     context_bundle = _load_project_context_bundle(db, pid, combined_instruction)
     project_context = str(context_bundle.get("text") or "")
@@ -2179,6 +2324,7 @@ def post_project_conversation_message(
         recent_messages=prior_messages,
         project_context=project_context,
         available_output_types=available_output_types,
+        history_summary=state.history_summary,
     )
 
     merged_discovery = _merge_discovery(premerged_slots, decision.extracted_slots)
@@ -2312,6 +2458,7 @@ def post_project_conversation_message(
                 router_intent=decision.intent,
                 router_confidence=decision.confidence,
                 project_id=pid,
+                history_summary=state.history_summary,
             )
 
     if decision.intent in {"smalltalk", "clarify", "greeting", "ack"} and not template_ids:
@@ -2337,6 +2484,7 @@ def post_project_conversation_message(
             router_intent=decision.intent,
             router_confidence=decision.confidence,
             project_id=pid,
+            history_summary=state.history_summary,
         )
 
     if not template_ids:
@@ -2361,6 +2509,7 @@ def post_project_conversation_message(
             router_intent=decision.intent,
             router_confidence=decision.confidence,
             project_id=pid,
+            history_summary=state.history_summary,
         )
 
     state.state = "ready_to_plan"
