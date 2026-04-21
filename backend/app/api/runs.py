@@ -1085,6 +1085,29 @@ def list_run_events(
     }
 
 
+@router.get("/{project_id}/{run_id}/context_trace")
+def get_run_context_trace(
+    project_id: str,
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return latest persisted context trace payload for this run."""
+    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    rows = db.scalars(
+        select(RunEvent)
+        .where(RunEvent.run_id == run_id, RunEvent.event_type == "context_trace")
+        .order_by(RunEvent.id.desc())
+        .limit(1)
+    ).all()
+    if not rows:
+        return {"run_id": run_id, "context_trace": None}
+    return {"run_id": run_id, "context_trace": rows[0].payload_json}
+
+
 @router.get("/{project_id}/{run_id}/tasks")
 def list_run_tasks(
     project_id: str,

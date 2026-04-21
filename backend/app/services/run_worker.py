@@ -50,7 +50,8 @@ from app.services.retry_policy import (
     validate_retry_transition,
 )
 from app.services.run_budget import run_llm_budget
-from app.services.run_events import build_event_payload, canonical_event_aliases, hook_exec_id
+from app.services.run_events import hook_exec_id
+from app.services.run_event_service import RunEventService
 from app.services.run_queue.runtime import RunQueueRuntime
 from app.services.run_tasks import sync_run_tasks_from_snapshot
 from app.services.run_todo_snapshot import emit_run_todo_snapshot, todo_set_status
@@ -62,6 +63,7 @@ from app.services.wiki_maintenance import run_weekly_librarian_tick
 from app.services.wiki_graph import build_relationships_incremental
 
 _queue_rt = RunQueueRuntime(settings)
+_run_event_service = RunEventService(publish_event=_queue_rt.publish_run_event)
 _log = logging.getLogger(__name__)
 _embedded_redis_consumer_lock = threading.Lock()
 _embedded_redis_consumer_started = False
@@ -444,26 +446,12 @@ def _bump_learning_runs_completed(session: Session, user_id: str, project_id: st
 
 
 def append_run_event(session: Session, run_id: str, event_type: str, payload_obj: Any) -> RunEvent:
-    payload_obj_dict = payload_obj if isinstance(payload_obj, dict) else {"value": payload_obj}
-    event_payload = build_event_payload(run_id=run_id, event_type=event_type, payload_obj=payload_obj_dict)
-    payload = json.dumps(event_payload)
-    ev = RunEvent(run_id=run_id, event_type=event_type, payload=payload)
-    session.add(ev)
-    session.flush()
-    _queue_rt.publish_run_event(run_id, ev.id, event_type, payload)
-    langfuse_event(
-        trace_id=run_id,
-        name=f"run_event.{event_type}",
-        metadata={"run_id": run_id, "payload": event_payload},
+    return _run_event_service.record_event(
+        session,
+        run_id=run_id,
+        event_type=event_type,
+        payload_obj=payload_obj,
     )
-    for alias in canonical_event_aliases(event_type=event_type, payload=payload_obj_dict):
-        alias_payload = build_event_payload(run_id=run_id, event_type=alias, payload_obj=payload_obj_dict)
-        alias_payload_str = json.dumps(alias_payload)
-        alias_ev = RunEvent(run_id=run_id, event_type=alias, payload=alias_payload_str)
-        session.add(alias_ev)
-        session.flush()
-        _queue_rt.publish_run_event(run_id, alias_ev.id, alias, alias_payload_str)
-    return ev
 
 
 def _emit_and_sync_todo_snapshot(
@@ -613,35 +601,8 @@ def enqueue_run_execution(project_id: str, run_id: str) -> bool:
             session.close()
 
 
-def _step_status_from_stored_event_payload(payload_str: str | None) -> str | None:
-    if not payload_str:
-        return None
-    try:
-        obj = json.loads(payload_str)
-    except Exception:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    inner = obj.get("payload")
-    status = None
-    if isinstance(inner, dict):
-        status = inner.get("status")
-    if status is None:
-        status = obj.get("status")
-    return str(status).strip().lower() if status is not None else None
-
-
 def _run_has_execution_enqueued_not_started(session: Session, run_id: str) -> bool:
-    evs = session.scalars(select(RunEvent).where(RunEvent.run_id == run_id)).all()
-    seen_enq = False
-    seen_start = False
-    for ev in evs:
-        st = _step_status_from_stored_event_payload(ev.payload)
-        if st == "execution_enqueued":
-            seen_enq = True
-        elif st == "execution_started":
-            seen_start = True
-    return seen_enq and not seen_start
+    return _run_event_service.has_execution_enqueued_not_started(session, run_id=run_id)
 
 
 _STARTUP_RECONCILE_LOCK_KEY = "processdoc:run-queue:startup-reconcile"
@@ -1103,10 +1064,14 @@ def _execute_run_job(
             session.commit()
             return False, run.error_message
         if run.status == "approved":
+            was_resume_requested = bool(run.resume_requested)
             run.status = "running"
             run.pause_requested = False
             run.resume_requested = False
             session.commit()
+            if was_resume_requested:
+                resume_state = _run_event_service.load_resume_state(session, run_id=run_id)
+                append_run_event(session, run_id, "resume_state_loaded", resume_state)
             append_run_event(session, run_id, "step", {"status": "execution_started"})
             append_run_event(session, run_id, "heartbeat", heartbeat_event(run_id=run_id, phase="execution_started"))
             session.commit()
