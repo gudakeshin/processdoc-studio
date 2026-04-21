@@ -32,6 +32,9 @@ dependencies = [
   "pyyaml",
   "langfuse",
   "slowapi",
+  "sentence-transformers",
+  "faiss-cpu",
+  "networkx",
 ]
 
 [project.optional-dependencies]
