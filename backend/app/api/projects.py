@@ -3,6 +3,7 @@ import re
 import shutil
 import uuid
 from datetime import datetime, timedelta
+from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -413,7 +414,16 @@ def _merge_discovery(base: object, incoming: object) -> dict:
         if key in extra:
             b = merged.get(key) if isinstance(merged.get(key), dict) else {}
             i = extra.get(key) if isinstance(extra.get(key), dict) else {}
-            merged[key] = {**b, **i}
+            # Keep prior non-empty values when a new extraction only provides
+            # partial fields (e.g. outcome.decision without outcome.primary).
+            next_obj = dict(b)
+            for fk, fv in i.items():
+                if isinstance(fv, str):
+                    if fv.strip():
+                        next_obj[fk] = fv
+                elif fv is not None:
+                    next_obj[fk] = fv
+            merged[key] = next_obj
     for key in ("audience", "narrative_arc", "tone", "edited_by_user"):
         if key in extra:
             merged[key] = extra[key]
@@ -433,6 +443,119 @@ def _has_sufficient_discovery(discovery: object) -> bool:
     return bool(str(client.get("name") or "").strip() and str(outcome.get("primary") or "").strip() and themes)
 
 
+def _required_discovery_missing_slots(discovery: object) -> list[str]:
+    """Compute required discovery gaps from canonical merged slots."""
+    data = _normalize_discovery(discovery)
+    client = data.get("client") if isinstance(data.get("client"), dict) else {}
+    outcome = data.get("outcome") if isinstance(data.get("outcome"), dict) else {}
+    themes = data.get("win_themes") if isinstance(data.get("win_themes"), list) else []
+    missing: list[str] = []
+    if not str(client.get("name") or "").strip():
+        missing.append("client")
+    if not str(outcome.get("primary") or "").strip():
+        missing.append("outcome")
+    if not [str(x).strip() for x in themes if str(x).strip()]:
+        missing.append("win_themes")
+    return missing
+
+
+def _extract_entity_tokens(text: str) -> list[str]:
+    candidates = re.findall(r"\b[A-Z][A-Za-z0-9&.\-]{2,}\b", str(text or ""))
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in candidates:
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(token)
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _top_parsed_doc_chunks_for_query(project_id: str, query_text: str, max_chunks: int = 2) -> list[dict]:
+    engine = TieredContextEngine()
+    chunks = engine._load_all_parsed_chunks(project_id)  # noqa: SLF001
+    if not chunks:
+        return []
+    scores = engine._bm25_scores(chunks, query_text)  # noqa: SLF001
+    ranked = [chunks[i] for i, score in sorted(enumerate(scores), key=lambda x: x[1], reverse=True) if score > 0]
+    return ranked[:max_chunks]
+
+
+def _extract_discovery_answers_from_wiki(
+    *,
+    project_id: str,
+    user_message: str,
+    prior_messages: list[dict],
+) -> tuple[dict[str, object], list[str]]:
+    from app.services.claude import claude_generate_json
+    from app.services.wiki_query import _get_wiki_index, _search_wiki_pages
+
+    seed_query = "client name industry primary audience outcome decision win themes proof points"
+    entity_tokens = _extract_entity_tokens(user_message)
+    query = f"{seed_query} {' '.join(entity_tokens)}".strip()
+    wiki_refs: list[str] = []
+    wiki_pages: list[dict] = []
+    try:
+        index = _get_wiki_index("project", project_id)
+        wiki_pages = _search_wiki_pages(query, index or {"pages": []}, "project", project_id)[:6]
+    except Exception:
+        wiki_pages = []
+    wiki_excerpt: list[str] = []
+    for page in wiki_pages:
+        title = str(page.get("title") or page.get("page_id") or "").strip()
+        if title:
+            wiki_refs.append(title)
+        body = str(page.get("content") or "").strip()
+        if title and body:
+            wiki_excerpt.append(f"[Wiki: {title}]\n{body[:700]}")
+    doc_chunks = _top_parsed_doc_chunks_for_query(project_id, query, max_chunks=2)
+    doc_excerpt = []
+    for chunk in doc_chunks:
+        source = str(chunk.get("source") or chunk.get("title") or "parsed_doc").strip()
+        text = str(chunk.get("text") or "").strip()
+        if text:
+            doc_excerpt.append(f"[Doc: {source}]\n{text[:700]}")
+    if not wiki_excerpt and not doc_excerpt:
+        return {}, []
+
+    prior_context = "\n".join(
+        f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
+        for m in prior_messages[-6:]
+        if str(m.get("content") or "").strip()
+    )
+    evidence = "\n\n".join(wiki_excerpt + doc_excerpt)[:5000]
+    try:
+        payload = claude_generate_json(
+            system=(
+                "Extract proposal discovery details from evidence snippets. "
+                "Return JSON only with keys: "
+                "client{name,industry}, outcome{primary,decision}, win_themes[array max 3], audience, source_refs[array]. "
+                "Use only explicit evidence. Leave unknown fields empty or omitted."
+            ),
+            user=(
+                f"Recent chat context:\n{prior_context}\n\n"
+                f"Latest user message:\n{user_message}\n\n"
+                f"Evidence:\n{evidence}"
+            ),
+            temperature=0.1,
+            max_tokens=500,
+        )
+    except Exception:
+        return {}, wiki_refs[:6]
+    normalized = _normalize_discovery(payload)
+    source_refs_raw = payload.get("source_refs") if isinstance(payload, dict) else []
+    source_refs = []
+    if isinstance(source_refs_raw, list):
+        for item in source_refs_raw:
+            text = str(item or "").strip()
+            if text and text in wiki_refs and text not in source_refs:
+                source_refs.append(text)
+    return normalized, (source_refs or wiki_refs[:6])
+
+
 def _propose_discovery_questions(
     db: Session,
     conv: Conversation,
@@ -440,6 +563,8 @@ def _propose_discovery_questions(
     prior_messages: list[dict],
     *,
     missing_slots: list[str] | None = None,
+    wiki_context: str | None = None,
+    wiki_prefilled_slots: list[str] | None = None,
 ) -> dict:
     from app.services.claude import claude_generate_json
 
@@ -453,14 +578,34 @@ def _propose_discovery_questions(
         "outcome": "Who is the primary audience, and what decision should this proposal help them make?",
         "win_themes": "What 2-3 win themes or proof points must we emphasize?",
     }
-    normalized_missing = [s for s in (missing_slots or []) if s in slot_questions]
+    wiki_prefilled = {str(x).strip() for x in (wiki_prefilled_slots or []) if str(x).strip()}
+    normalized_missing = [s for s in (missing_slots or []) if s in slot_questions and s not in wiki_prefilled]
     questions: list[str] = []
     if normalized_missing:
         questions = [slot_questions[s] for s in normalized_missing]
-    if normalized_missing:
-        # Skip LLM when we already know exactly what's missing.
-        pass
-    else:
+    if normalized_missing and wiki_context:
+        try:
+            payload = claude_generate_json(
+                system=(
+                    "Generate concise discovery questions for a consulting proposal kickoff. "
+                    "Use wiki context as hints and phrase questions as confirmation when possible. "
+                    "Ask ONLY for listed missing_slots. Return JSON: {\"questions\": [\"...\", ...]}."
+                ),
+                user=(
+                    f"Instruction:\n{instruction}\n\n"
+                    f"Missing slots: {normalized_missing}\n\n"
+                    f"Recent context:\n{prior_context}\n\n"
+                    f"Wiki context excerpt:\n{str(wiki_context)[:2500]}"
+                ),
+                temperature=0.2,
+                max_tokens=300,
+            )
+            raw_q = payload.get("questions") if isinstance(payload, dict) else None
+            if isinstance(raw_q, list):
+                questions = [str(q).strip() for q in raw_q if str(q).strip()][: max(1, len(normalized_missing))]
+        except Exception:
+            questions = []
+    elif not normalized_missing:
         try:
             payload = claude_generate_json(
                 system=(
@@ -479,11 +624,15 @@ def _propose_discovery_questions(
         except Exception:
             questions = []
     if len(questions) < 3:
-        questions = [
+        fallback = [
             "Who is the client (name + industry), and what transformation problem are we solving?",
             "Who is the primary audience, and what decision should this proposal help them make?",
             "What 2-3 win themes or proof points must we emphasize?",
         ]
+        if normalized_missing:
+            questions = [slot_questions[s] for s in normalized_missing]
+        else:
+            questions = fallback
     message = "Before I draft the proposal plan, I need 3 quick inputs:\n- " + "\n- ".join(questions)
     msg = ConversationMessage(
         conversation_id=conv.id,
@@ -648,6 +797,11 @@ def _persist_conversational_response(
     slots: dict | None = None,
     project_context: str | None = None,
     missing_slots: list[str] | None = None,
+    wiki_refs: list[str] | None = None,
+    already_surfaced_refs: list[str] | None = None,
+    router_intent: str | None = None,
+    router_confidence: float | None = None,
+    project_id: str | None = None,
 ) -> dict:
     """Generate a natural, colleague-like conversational response grounded in captured context.
 
@@ -665,6 +819,11 @@ def _persist_conversational_response(
     slots = slots or {}
     missing_slots = [s for s in (missing_slots or []) if s]
     project_context = (project_context or "").strip()
+    wiki_refs = [str(x).strip() for x in (wiki_refs or []) if str(x).strip()]
+    already_surfaced_refs = [str(x).strip() for x in (already_surfaced_refs or []) if str(x).strip()]
+    unsurfaced_refs = [x for x in wiki_refs if x not in already_surfaced_refs]
+    routed_intent = str(router_intent or "").strip().lower()
+    routed_confidence = float(router_confidence or 0.0)
 
     known_bits: list[str] = []
     client = slots.get("client") if isinstance(slots.get("client"), dict) else {}
@@ -688,11 +847,53 @@ def _persist_conversational_response(
         "acknowledge them explicitly and move the conversation forward.\n"
         "If missing_slots is non-empty, ask ONLY for those. If missing_slots is empty, confirm readiness "
         "and offer to create a specific deliverable (e.g. propose PPTX vs DOCX) — but do NOT say 'Plan Ready'.\n"
-        "Keep replies concise (2-4 sentences). Use at most 1 emoji. Never return the generic 'Great topic!' template."
+        "Keep replies concise (2-4 sentences). Use at most 1 emoji. Never return the generic 'Great topic!' template.\n"
+        "When using facts sourced from the project wiki, cite inline as '(source: [Wiki: Title])'. "
+        "Only cite titles from allowed_wiki_refs."
     )
+    if unsurfaced_refs:
+        system_prompt += (
+            "\nIf relevant, start with a one-line 'Heads up:' insight grounded in a wiki fact "
+            "from allowed_wiki_refs, then continue the normal reply."
+        )
+    if routed_intent in {"clarify", "discovery_answer"} and routed_confidence < 0.6 and project_id and settings.wiki_aware_discovery_enabled:
+        # Phase 2: lightweight, budgeted wiki lookup before response generation.
+        from app.services.wiki_query import _get_wiki_index, _search_wiki_pages
+
+        lookup_budget_sec = 1.5
+        lookup_start = perf_counter()
+        lookups = [
+            str(user_message or "").strip(),
+            "client name industry audience outcome decision win themes",
+        ]
+        extra_refs: list[str] = []
+        snippets: list[str] = []
+        for query in lookups[:2]:
+            if perf_counter() - lookup_start > lookup_budget_sec:
+                break
+            try:
+                index = _get_wiki_index("project", project_id)
+                pages = _search_wiki_pages(query[:400], index or {"pages": []}, "project", project_id)[:3]
+            except Exception:
+                pages = []
+            for page in pages:
+                title = str(page.get("title") or page.get("page_id") or "").strip()
+                body = str(page.get("content") or "").strip()
+                if not title or not body:
+                    continue
+                if title not in extra_refs:
+                    extra_refs.append(title)
+                snippets.append(f"[Wiki: {title}]\n{body[:500]}")
+        if snippets:
+            project_context = (project_context + "\n\n[Live wiki lookup]\n" + "\n\n".join(snippets))[:5500]
+            for ref in extra_refs:
+                if ref not in wiki_refs:
+                    wiki_refs.append(ref)
+            unsurfaced_refs = [x for x in wiki_refs if x not in already_surfaced_refs]
     user_prompt = (
         f"Captured context (known_slots):\n{known_block}\n\n"
         f"Missing slots: {missing_block}\n\n"
+        f"Allowed wiki refs: {unsurfaced_refs[:8]}\n\n"
         f"Project context excerpt (wiki/memory):\n{project_context[:4000] or '(none)'}\n\n"
         f"Conversation so far:\n{recent_context}\n\n"
         f"Latest user message:\n{user_message}\n\n"
@@ -713,7 +914,7 @@ def _persist_conversational_response(
         conversation_id=conv.id,
         role="assistant",
         content=response_text,
-        metadata_json=json.dumps({"kind": "conversational_response"}),
+        metadata_json=json.dumps({"kind": "conversational_response", "wiki_refs": wiki_refs[:10]}),
     )
     db.add(msg)
     db.commit()
@@ -1939,9 +2140,18 @@ def post_project_conversation_message(
     # into router so we avoid re-asking already supplied inputs.
     extracted_fast = _extract_discovery_answers_fast(content)
     extracted_llm = _extract_discovery_answers(content, prior_messages)
+    extracted_wiki: dict[str, object] = {}
+    wiki_source_refs: list[str] = []
+    if settings.wiki_aware_discovery_enabled:
+        extracted_wiki, wiki_source_refs = _extract_discovery_answers_from_wiki(
+            project_id=pid,
+            user_message=content,
+            prior_messages=prior_messages,
+        )
     premerged_slots = _merge_discovery(state.slots, extracted_fast)
     premerged_slots = _merge_discovery(premerged_slots, extracted_llm)
-    if extracted_fast or extracted_llm:
+    premerged_slots = _merge_discovery(premerged_slots, extracted_wiki)
+    if extracted_fast or extracted_llm or extracted_wiki:
         user_msg.metadata_json = json.dumps(
             {
                 "kind": "discovery_answer",
@@ -1950,13 +2160,18 @@ def post_project_conversation_message(
                 "sources": {
                     "fast": bool(extracted_fast),
                     "llm": bool(extracted_llm),
+                    "wiki": bool(extracted_wiki),
                 },
+                "wiki_refs": wiki_source_refs[:8],
             }
         )
         db.flush()
     state.slots = premerged_slots
 
-    project_context = _load_project_context_snapshot(db, pid, combined_instruction)
+    context_bundle = _load_project_context_bundle(db, pid, combined_instruction)
+    project_context = str(context_bundle.get("text") or "")
+    context_wiki_refs = context_bundle.get("wiki_refs") if isinstance(context_bundle.get("wiki_refs"), list) else []
+    resolved_wiki_refs = list(dict.fromkeys([*wiki_source_refs, *[str(x).strip() for x in context_wiki_refs if str(x).strip()]]))
     decision = route_turn(
         user_message=content,
         conv_state=state.state,
@@ -1971,6 +2186,11 @@ def post_project_conversation_message(
         user_msg.metadata_json = json.dumps({"kind": "discovery_answer", "discovery": merged_discovery, "captured": True})
         db.flush()
     state.slots = merged_discovery
+    canonical_missing_slots = _required_discovery_missing_slots(merged_discovery)
+    wiki_prefilled_slots = [
+        slot for slot in ("client", "outcome", "win_themes")
+        if slot not in _required_discovery_missing_slots(extracted_wiki)
+    ] if extracted_wiki else []
 
     deliverable = state.deliverable if isinstance(state.deliverable, dict) else {}
     template_ids = [str(x).strip() for x in decision.output_types if str(x).strip()]
@@ -2035,16 +2255,7 @@ def post_project_conversation_message(
     )
     if settings.proposal_discovery_enabled and proposal_detected:
         missing_slots = list(dict.fromkeys(
-            decision.missing_slots
-            or [
-                s
-                for s, ok in (
-                    ("client", bool(str((merged_discovery.get("client") or {}).get("name") if isinstance(merged_discovery.get("client"), dict) else ""))),
-                    ("outcome", bool(str((merged_discovery.get("outcome") or {}).get("primary") if isinstance(merged_discovery.get("outcome"), dict) else ""))),
-                    ("win_themes", bool(merged_discovery.get("win_themes"))),
-                )
-                if not ok
-            ]
+            canonical_missing_slots
         ))
         if missing_slots:
             state.state = "discovery"
@@ -2063,6 +2274,8 @@ def post_project_conversation_message(
                 combined_instruction,
                 prior_messages,
                 missing_slots=missing_slots,
+                wiki_context=project_context if settings.wiki_aware_discovery_enabled else None,
+                wiki_prefilled_slots=wiki_prefilled_slots,
             )
         # Slots captured but output format not resolved yet — ask the user to pick
         # (PPTX vs DOCX) instead of falling back to generic conversation.
@@ -2082,6 +2295,10 @@ def post_project_conversation_message(
             )
             save_state(conv, state)
             db.flush()
+            if resolved_wiki_refs:
+                state.surfaced_wiki_refs = list(dict.fromkeys([*state.surfaced_wiki_refs, *resolved_wiki_refs]))
+                save_state(conv, state)
+                db.flush()
             return _persist_conversational_response(
                 db,
                 conv,
@@ -2090,6 +2307,11 @@ def post_project_conversation_message(
                 slots=merged_discovery,
                 project_context=project_context,
                 missing_slots=["output_format"],
+                wiki_refs=resolved_wiki_refs,
+                already_surfaced_refs=state.surfaced_wiki_refs,
+                router_intent=decision.intent,
+                router_confidence=decision.confidence,
+                project_id=pid,
             )
 
     if decision.intent in {"smalltalk", "clarify", "greeting", "ack"} and not template_ids:
@@ -2098,6 +2320,10 @@ def post_project_conversation_message(
         stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
         save_state(conv, state)
         db.flush()
+        if resolved_wiki_refs:
+            state.surfaced_wiki_refs = list(dict.fromkeys([*state.surfaced_wiki_refs, *resolved_wiki_refs]))
+            save_state(conv, state)
+            db.flush()
         return _persist_conversational_response(
             db,
             conv,
@@ -2105,7 +2331,12 @@ def post_project_conversation_message(
             prior_messages,
             slots=merged_discovery,
             project_context=project_context,
-            missing_slots=list(decision.missing_slots or []),
+            missing_slots=canonical_missing_slots,
+            wiki_refs=resolved_wiki_refs,
+            already_surfaced_refs=state.surfaced_wiki_refs,
+            router_intent=decision.intent,
+            router_confidence=decision.confidence,
+            project_id=pid,
         )
 
     if not template_ids:
@@ -2113,6 +2344,10 @@ def post_project_conversation_message(
         stamp_router(state, intent="clarify", confidence=0.3, rationale="no_template_ids")
         save_state(conv, state)
         db.flush()
+        if resolved_wiki_refs:
+            state.surfaced_wiki_refs = list(dict.fromkeys([*state.surfaced_wiki_refs, *resolved_wiki_refs]))
+            save_state(conv, state)
+            db.flush()
         return _persist_conversational_response(
             db,
             conv,
@@ -2120,7 +2355,12 @@ def post_project_conversation_message(
             prior_messages,
             slots=merged_discovery,
             project_context=project_context,
-            missing_slots=list(decision.missing_slots or []),
+            missing_slots=canonical_missing_slots,
+            wiki_refs=resolved_wiki_refs,
+            already_surfaced_refs=state.surfaced_wiki_refs,
+            router_intent=decision.intent,
+            router_confidence=decision.confidence,
+            project_id=pid,
         )
 
     state.state = "ready_to_plan"

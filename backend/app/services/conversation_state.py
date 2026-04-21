@@ -9,7 +9,7 @@ from app.db.models import Conversation
 from app.services.storage import workspace_path
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _ALLOWED_STATES = {
     "new",
     "exploring",
@@ -29,6 +29,7 @@ class ConversationState:
     deliverable: dict[str, Any]
     last_router: dict[str, Any]
     pending_questions: list[str]
+    surfaced_wiki_refs: list[str]
 
     def to_json(self) -> str:
         return json.dumps(
@@ -39,6 +40,7 @@ class ConversationState:
                 "deliverable": self.deliverable,
                 "last_router": self.last_router,
                 "pending_questions": self.pending_questions,
+                "surfaced_wiki_refs": self.surfaced_wiki_refs,
             }
         )
 
@@ -51,6 +53,7 @@ def default_state() -> ConversationState:
         deliverable={},
         last_router={},
         pending_questions=[],
+        surfaced_wiki_refs=[],
     )
 
 
@@ -72,6 +75,7 @@ def load_state(conv: Conversation) -> ConversationState:
     deliverable = payload.get("deliverable")
     last_router = payload.get("last_router")
     pending_questions = payload.get("pending_questions")
+    surfaced_wiki_refs = payload.get("surfaced_wiki_refs")
     return ConversationState(
         schema_version=schema_version,
         state=state,
@@ -79,6 +83,7 @@ def load_state(conv: Conversation) -> ConversationState:
         deliverable=deliverable if isinstance(deliverable, dict) else {},
         last_router=last_router if isinstance(last_router, dict) else {},
         pending_questions=[str(x).strip() for x in (pending_questions or []) if str(x).strip()],
+        surfaced_wiki_refs=[str(x).strip() for x in (surfaced_wiki_refs or []) if str(x).strip()],
     )
 
 

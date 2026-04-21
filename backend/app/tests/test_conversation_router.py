@@ -1,12 +1,14 @@
 from fastapi.testclient import TestClient
 
 import app.api.projects as projects_module
+import app.services.claude as claude_service
 import app.services.conversation_router as router_module
 from app.main import app as fastapi_app
 from app.services.conversation_router import RouterDecision
 from app.services.conversation_state import load_state
 from app.db.session import SessionLocal
 from app.db.models import Conversation
+from app.services.storage import workspace_path
 
 
 def _auth_header(client: TestClient, email: str = "router@admin.com") -> dict[str, str]:
@@ -162,3 +164,137 @@ def test_out_of_scope_requires_high_confidence_and_no_deliverable_signal(monkeyp
     assert resp.status_code == 200
     msg = resp.json()["messages"][-1]
     assert msg["metadata"]["kind"] == "out_of_scope_response"
+
+
+def test_wiki_prefills_client_slot_from_wiki(monkeypatch) -> None:
+    client = TestClient(fastapi_app)
+    headers = _auth_header(client, email="wiki-prefill@admin.com")
+    project_resp = client.post("/api/projects", json={"name": "Wiki prefill"}, headers=headers)
+    assert project_resp.status_code == 200
+    project_id = project_resp.json()["id"]
+    wiki_dir = workspace_path(project_id) / "wiki"
+    wiki_dir.mkdir(parents=True, exist_ok=True)
+    (wiki_dir / "client_profile.md").write_text("# Varroc Context\nClient: Varroc\nIndustry: Manufacturing\n", encoding="utf-8")
+
+    monkeypatch.setattr(projects_module, "_extract_discovery_answers", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        projects_module,
+        "_extract_discovery_answers_from_wiki",
+        lambda **_kwargs: ({"client": {"name": "Varroc", "industry": "Manufacturing"}}, ["client_profile"]),
+    )
+
+    def _fake_route_turn(**_: object) -> RouterDecision:
+        return RouterDecision(
+            intent="clarify",
+            confidence=0.7,
+            extracted_slots={},
+            output_types=[],
+            representations={},
+            content_skill_hint=None,
+            next_state="discovery",
+            missing_slots=["outcome", "win_themes"],
+            reply_hint=None,
+            rationale="need more info",
+        )
+
+    monkeypatch.setattr(projects_module, "route_turn", _fake_route_turn)
+    resp = client.post(
+        f"/api/projects/{project_id}/conversation/messages",
+        json={"content": "Please help create a point of view for CFO"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    with SessionLocal() as db:
+        conv = db.query(Conversation).filter(Conversation.project_id == project_id).first()
+        assert conv is not None
+        state = load_state(conv)
+        assert state.slots.get("client", {}).get("name") == "Varroc"
+
+
+def test_discovery_questions_skip_wiki_filled_slots(monkeypatch) -> None:
+    client = TestClient(fastapi_app)
+    headers = _auth_header(client, email="wiki-questions@admin.com")
+    project_resp = client.post("/api/projects", json={"name": "Wiki questions"}, headers=headers)
+    assert project_resp.status_code == 200
+    project_id = project_resp.json()["id"]
+
+    monkeypatch.setattr(projects_module, "_extract_discovery_answers", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        projects_module,
+        "_extract_discovery_answers_from_wiki",
+        lambda **_kwargs: ({"client": {"name": "Varroc"}}, ["client_page"]),
+    )
+
+    def _fake_route_turn(**_: object) -> RouterDecision:
+        return RouterDecision(
+            intent="commit",
+            confidence=0.9,
+            extracted_slots={},
+            output_types=["docx"],
+            representations={"docx": "docx"},
+            content_skill_hint=None,
+            next_state="discovery",
+            missing_slots=["client", "outcome", "win_themes"],
+            reply_hint=None,
+            rationale="proposal discovery",
+        )
+
+    monkeypatch.setattr(projects_module, "route_turn", _fake_route_turn)
+    resp = client.post(
+        f"/api/projects/{project_id}/conversation/messages",
+        json={"content": "Create a proposal for CFO function"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    msg = resp.json()["messages"][-1]
+    assert msg["metadata"]["kind"] == "discovery_questions"
+    rendered = "\n".join(msg["metadata"].get("discovery_questions") or [])
+    assert "Who is the client" not in rendered
+
+
+def test_assistant_reply_cites_wiki_refs(monkeypatch) -> None:
+    client = TestClient(fastapi_app)
+    headers = _auth_header(client, email="wiki-cite@admin.com")
+    project_resp = client.post("/api/projects", json={"name": "Wiki citation"}, headers=headers)
+    assert project_resp.status_code == 200
+    project_id = project_resp.json()["id"]
+
+    monkeypatch.setattr(projects_module, "_extract_discovery_answers", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(projects_module, "_extract_discovery_answers_from_wiki", lambda **_kwargs: ({}, ["Finance Baseline"]))
+    monkeypatch.setattr(
+        projects_module,
+        "_load_project_context_bundle",
+        lambda *_args, **_kwargs: {"text": "Context\n[Wiki: Finance Baseline]\nDetails", "wiki_refs": ["Finance Baseline"]},
+    )
+    monkeypatch.setattr(
+        projects_module,
+        "route_turn",
+        lambda **_kwargs: RouterDecision(
+            intent="clarify",
+            confidence=0.8,
+            extracted_slots={},
+            output_types=[],
+            representations={},
+            content_skill_hint=None,
+            next_state="exploring",
+            missing_slots=[],
+            reply_hint=None,
+            rationale="clarify",
+        ),
+    )
+    monkeypatch.setattr(projects_module, "_contains_deliverable_signal", lambda _text: True)
+    monkeypatch.setattr(projects_module, "_is_proposal_instruction", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(projects_module, "_has_proposal_slot_signal", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(projects_module, "_recommend_output_types", lambda *_args, **_kwargs: ([], [], {}, "", None))
+    monkeypatch.setattr(projects_module, "_grounded_conversational_fallback", lambda **_kwargs: "Using wiki context.")
+    monkeypatch.setattr(claude_service, "claude_generate", lambda **_kwargs: "Using wiki context (source: [Wiki: Finance Baseline]).")
+    resp = client.post(
+        f"/api/projects/{project_id}/conversation/messages",
+        json={"content": "what should we do next"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assistant_msgs = [m for m in resp.json()["messages"] if m.get("role") == "assistant"]
+    assert assistant_msgs
+    msg = assistant_msgs[-1]
+    assert "Finance Baseline" in (msg.get("metadata", {}).get("wiki_refs") or [])

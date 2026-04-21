@@ -11,6 +11,8 @@ Verifies that the agent behaves like a colleague, not a plan-generating machine:
 import pytest
 
 from app.api.projects import (
+    _merge_discovery,
+    _required_discovery_missing_slots,
     _has_sufficient_discovery,
     _is_acknowledgment,
     _is_commit_intent,
@@ -289,3 +291,26 @@ class TestProposalDiscoveryHelpers:
             "win_themes": ["Control uplift"],
         }
         assert _has_sufficient_discovery(payload) is False
+
+    def test_merge_discovery_does_not_overwrite_non_empty_with_empty(self) -> None:
+        base = {
+            "client": {"name": "Varroc", "industry": "Auto"},
+            "outcome": {"primary": "Transform PTP", "decision": ""},
+        }
+        incoming = {
+            "client": {"name": "", "industry": "Manufacturing"},
+            "outcome": {"primary": "", "decision": "Approve phase 1"},
+        }
+        merged = _merge_discovery(base, incoming)
+        assert merged["client"]["name"] == "Varroc"
+        assert merged["client"]["industry"] == "Manufacturing"
+        assert merged["outcome"]["primary"] == "Transform PTP"
+        assert merged["outcome"]["decision"] == "Approve phase 1"
+
+    def test_required_missing_slots_uses_canonical_discovery(self) -> None:
+        payload = {
+            "client": {"name": "Varroc"},
+            "win_themes": ["CFO transformation"],
+            "outcome": {"primary": ""},
+        }
+        assert _required_discovery_missing_slots(payload) == ["outcome"]

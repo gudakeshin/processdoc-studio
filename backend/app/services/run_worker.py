@@ -1733,6 +1733,14 @@ def _execute_run_job(
                 "non_negotiables": state.get("memory_summary", {}).get("non_negotiables", []),
                 "recent_changes": state.get("memory_summary", {}).get("recent_changes", []),
             }
+            proposal_discovery = state.get("proposal_discovery")
+            if isinstance(proposal_discovery, dict):
+                profile_obj["proposal_discovery"] = {
+                    "client": proposal_discovery.get("client") if isinstance(proposal_discovery.get("client"), dict) else {},
+                    "outcome": proposal_discovery.get("outcome") if isinstance(proposal_discovery.get("outcome"), dict) else {},
+                    "audience": str(proposal_discovery.get("audience") or "").strip(),
+                    "win_themes": proposal_discovery.get("win_themes") if isinstance(proposal_discovery.get("win_themes"), list) else [],
+                }
             upsert_project_memory_profile(session, project_id, profile_obj)
             if run.approved_by:
                 _bump_learning_runs_completed(session, run.approved_by, project_id)

@@ -185,6 +185,7 @@ class Settings(BaseSettings):
     instruction_decision_prompts_enabled: bool = False
     proposal_discovery_enabled: bool = True
     proposal_discovery_prompts_enabled: bool = True
+    wiki_aware_discovery_enabled: bool = True
     scratchpad_visibility_enabled: bool = True
     # Phase C: LLM strategy options + execution_strategy decision prompt (extra Anthropic call per plan message).
     strategy_options_planning_enabled: bool = False
@@ -281,6 +282,7 @@ class Settings(BaseSettings):
         "instruction_decision_prompts_enabled",
         "proposal_discovery_enabled",
         "proposal_discovery_prompts_enabled",
+        "wiki_aware_discovery_enabled",
         "scratchpad_visibility_enabled",
         "strategy_options_planning_enabled",
         "wiki_meta_schema_versioning_enabled",
