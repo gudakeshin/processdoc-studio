@@ -52,7 +52,9 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
   const [page, setPage]       = useState<PageMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'content' | 'links' | 'relationships' | 'metadata'>('content');
+  const [activeTab, setActiveTab] = useState<'content' | 'links' | 'relationships' | 'related' | 'metadata'>('content');
+  const [relatedPages, setRelatedPages] = useState<Array<{page_id: string; relation_type: string; confidence: number; source: string}> | null>(null);
+  const [relatedLoading, setRelatedLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,6 +77,30 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
     fetchPage();
     return () => { cancelled = true; };
   }, [wikiType, pageId, projectId, api]);
+
+  // Fetch related pages when the "related" tab is opened
+  useEffect(() => {
+    if (activeTab !== 'related' || !pageId || relatedPages !== null) return;
+
+    let cancelled = false;
+    const fetchRelated = async () => {
+      try {
+        setRelatedLoading(true);
+        const params = new URLSearchParams();
+        if (projectId) params.append('project_id', projectId);
+        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}/related?${params}`);
+        if (!res.ok) throw new Error(`Failed to load related pages (${res.status})`);
+        const data = await res.json();
+        if (!cancelled) setRelatedPages(data.related_pages || []);
+      } catch (e) {
+        if (!cancelled) console.warn('Failed to load related pages:', e);
+      } finally {
+        if (!cancelled) setRelatedLoading(false);
+      }
+    };
+    fetchRelated();
+    return () => { cancelled = true; };
+  }, [activeTab, pageId, projectId, api, relatedPages]);
 
   if (loading) return (
     <div className="space-y-3">
@@ -179,6 +205,7 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
           { key: 'content',       label: 'Content' },
           { key: 'links',         label: `Links (${page.inbound_links.length + page.outbound_links.length})` },
           { key: 'relationships', label: 'Relationships' },
+          { key: 'related',       label: 'Related Pages' },
           { key: 'metadata',      label: 'Metadata' },
         ]}
         activeTab={activeTab}
@@ -212,6 +239,55 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
       {activeTab === 'relationships' && (
         <div className="pt-2 border-t border-[var(--surface-border)]">
           <WikiRelationships wikiType={wikiType} pageId={page.id} projectId={projectId} />
+        </div>
+      )}
+
+      {/* Related Pages (graph-discovered connections: neighbors + community + synthesis) */}
+      {activeTab === 'related' && (
+        <div className="pt-2 space-y-4">
+          {relatedLoading ? (
+            <p className="text-xs text-[var(--text-muted)]">Loading connected pages…</p>
+          ) : relatedPages && relatedPages.length > 0 ? (
+            <>
+              {/* Group by source */}
+              {['relationship', 'community', 'synthesis'].map((source) => {
+                const items = relatedPages.filter(p => p.source === source);
+                if (items.length === 0) return null;
+
+                const sourceLabel = {
+                  relationship: '🔗 Typed Relationships',
+                  community: '🏘️ Community Peers',
+                  synthesis: '✨ Synthesis Pages',
+                }[source as keyof typeof sourceLabel] || source;
+
+                return (
+                  <div key={source}>
+                    <p className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide mb-2">
+                      {sourceLabel}
+                    </p>
+                    <div className="space-y-1">
+                      {items.map((rel) => (
+                        <button
+                          key={`${rel.page_id}-${source}`}
+                          type="button"
+                          onClick={() => onSelectPage?.(rel.page_id)}
+                          disabled={!onSelectPage}
+                          className="w-full text-left text-xs text-[var(--accent-blue)] py-1 px-2 border-b border-[var(--surface-border)] hover:underline disabled:text-[var(--text-muted)] disabled:no-underline bg-[var(--surface-muted)] rounded"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span>{rel.page_id}</span>
+                            <span className="text-[10px] text-[var(--text-muted)] capitalize">{rel.relation_type}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            <p className="text-xs text-[var(--text-muted)]">No related pages discovered</p>
+          )}
         </div>
       )}
 

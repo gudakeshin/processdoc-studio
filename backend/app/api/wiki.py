@@ -954,16 +954,20 @@ async def get_related_wiki_pages(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Transitively related pages (typed relationship graph)."""
+    """Related pages via typed relationships, community, and synthesis (Second Brain discovery)."""
     _wiki_require_access(wiki_type, project_id, user, db, mutating=False)
     if not _PAGE_STEM_RE.match(page_id):
         raise HTTPException(status_code=400, detail="Invalid page_id")
 
+    import json
+    from app.services.storage import workspace_path
     from app.services.wiki_relationships import RelationshipGraph, get_transitive_related_pages
 
+    related_pages: list[dict[str, Any]] = []
+
+    # 1. Typed relationships (existing)
     related_ids = get_transitive_related_pages(page_id, wiki_type, project_id, max_depth=max_depth)
     graph = RelationshipGraph(wiki_type, project_id)
-    related_pages: list[dict[str, Any]] = []
     for tid in related_ids:
         if tid == page_id:
             continue
@@ -978,7 +982,55 @@ async def get_related_wiki_pages(
                 rtype = str(rel.get("relation_type", "related_to"))
                 conf = float(rel.get("confidence_score") or rel.get("confidence") or 0.5)
                 break
-        related_pages.append({"page_id": tid, "relation_type": rtype, "confidence": conf})
+        related_pages.append({"page_id": tid, "relation_type": rtype, "confidence": conf, "source": "relationship"})
+
+    # 2. Community peers (Louvain clustering)
+    try:
+        if wiki_type == "leading_practice":
+            communities_file = workspace_path("leading_practices") / "wiki" / ".meta" / "communities.json"
+        else:
+            communities_file = workspace_path(project_id) / "wiki" / ".meta" / "communities.json"
+
+        if communities_file.exists():
+            communities = json.loads(communities_file.read_text(encoding="utf-8"))
+            page_community = communities.get(page_id)
+            if page_community is not None:
+                for other_id, other_comm in communities.items():
+                    if other_comm == page_community and other_id != page_id:
+                        # Check if already in related_pages
+                        if not any(p["page_id"] == other_id for p in related_pages):
+                            related_pages.append({
+                                "page_id": other_id,
+                                "relation_type": "community_peer",
+                                "confidence": 0.7,
+                                "source": "community"
+                            })
+    except Exception:
+        pass  # Community data not available
+
+    # 3. Synthesis pages referencing this page
+    try:
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+
+        for md_file in wiki_dir.glob("synthesis_*.md"):
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                if f"[[{page_id}" in content or f"|{page_id}]" in content or page_id in content:
+                    synth_id = md_file.stem
+                    if not any(p["page_id"] == synth_id for p in related_pages):
+                        related_pages.append({
+                            "page_id": synth_id,
+                            "relation_type": "synthesis",
+                            "confidence": 0.8,
+                            "source": "synthesis"
+                        })
+            except Exception:
+                pass
+    except Exception:
+        pass  # Synthesis scanning not available
 
     return {"status": "success", "related_pages": related_pages}
 
