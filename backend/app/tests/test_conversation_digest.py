@@ -156,3 +156,47 @@ def test_build_conversation_digest_excludes_stale_sources(monkeypatch: pytest.Mo
         assert "fresh assistant turn" in d
     finally:
         session.close()
+
+
+def test_build_conversation_digest_sectioned_assembly(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "conversation_digest_sectioned_assembly_enabled", True)
+    monkeypatch.setattr(settings, "conversation_digest_tiered_compaction_enabled", False)
+
+    session = SessionLocal()
+    try:
+        uid, pid, cid = "u_digest5", "proj_digest5", "conv_digest5"
+        session.add(User(id=uid, email="digest5@test.local", hashed_password="x"))
+        session.add(Project(id=pid, name="P5", created_by=uid))
+        session.add(Conversation(id=cid, project_id=pid, user_id=uid))
+        session.add(
+            ConversationMessage(
+                conversation_id=cid,
+                role="user",
+                content="We must avoid delays and reduce turnaround time.",
+                metadata_json='{"kind":"discovery_answer","wiki_refs":["Ops baseline"]}',
+            )
+        )
+        session.add(
+            ConversationMessage(
+                conversation_id=cid,
+                role="assistant",
+                content="Known issue: prior draft failed QA due to missing evidence.",
+            )
+        )
+        session.commit()
+
+        digest, trace = build_conversation_digest_for_run_with_trace(
+            session=session,
+            project_id=pid,
+            conversation_id=cid,
+            char_cap=3000,
+            message_limit=20,
+        )
+        assert "## ObjectiveNow" in digest
+        assert "## Evidence" in digest
+        assert "## KnownFailures" in digest
+        assert "sectioned_budget_assembly" in trace.tiers_applied
+    finally:
+        session.close()
