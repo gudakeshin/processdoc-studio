@@ -233,6 +233,11 @@ def wiki_ingest_with_retry(
                 from app.services.wiki_graph import build_relationships_incremental
                 index_result = build_relationships_incremental(wiki_type, project_id)
 
+            # Auto-generate synthesis pages (emergent insights from connected knowledge)
+            synthesis_result = {}
+            if bool(getattr(settings, "wiki_synthesis_on_ingest_enabled", True)):
+                synthesis_result = _try_generate_synthesis_pages(wiki_type, project_id)
+
             # Log the operation
             log_entry_id = _append_wiki_log(
                 wiki_type, project_id, "ingest",
@@ -247,6 +252,7 @@ def wiki_ingest_with_retry(
                 "page_ids": pages_result.get("page_ids", []),
                 "corrections_made": len(pages_result.get("corrections", [])),
                 "log_entry_id": log_entry_id,
+                "synthesis_pages_created": synthesis_result.get("created", 0),
                 "performance": {
                     "changed_pages": index_result.get("changed_pages", 0),
                     "elapsed_time_seconds": index_result.get("elapsed_time_seconds", 0),
@@ -533,6 +539,28 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
     except Exception as e:
         logger.error(f"Error updating wiki pages via wiki_ingest: {e}")
         return {"created": 0, "updated": 0, "page_ids": [], "corrections": []}
+
+
+def _try_generate_synthesis_pages(wiki_type: str, project_id: str | None) -> dict:
+    """Auto-generate synthesis pages after ingest (Second Brain emergence layer).
+
+    Called after graph rebuild, non-blocking. Synthesis pages connect clusters of related
+    pages, surfacing emergent insights. Limited to 3 pages per ingest to keep light.
+
+    Returns:
+        {"status": "success|skipped|error", "created": int, "pages": list, ...}
+    """
+    try:
+        from app.services.wiki_synthesis import SynthesisEngine
+
+        engine = SynthesisEngine(wiki_type=wiki_type, project_id=project_id)
+        result = engine.create_synthesis_pages(max_pages=3)
+        if result.get("created", 0) > 0:
+            logger.info(f"Auto-generated {result['created']} synthesis pages | wiki_type={wiki_type}")
+        return result
+    except Exception as e:
+        logger.warning(f"Synthesis page generation failed (non-blocking): {e}")
+        return {"status": "skipped", "error": str(e), "created": 0}
 
 
 def _update_wiki_index(wiki_type: str, project_id: str | None) -> dict:
