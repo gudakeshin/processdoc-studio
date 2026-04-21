@@ -15,6 +15,7 @@ from app.api.formats import _load_output_types
 from app.api.runs import _recommend_output_types
 from app.core.auth import get_current_user, require_project_role
 from app.core.config import settings
+from app.core.db_checkpoints import checkpoint_scope
 from app.db.models import (
     ConsentLedger,
     Conversation,
@@ -42,7 +43,7 @@ from app.services.proposal_policy import (
     is_finance_proposal_intent,
 )
 from app.services.conversation_router import fallback_decision, route_turn
-from app.services.conversation_state import load_state, save_state, stamp_router
+from app.services.conversation_state import ConversationState, load_state, save_state, stamp_router
 from app.services.retrieval import TieredContextEngine
 from app.services.run_worker import append_run_event
 from app.services.storage import ensure_workspace, workspace_path
@@ -2204,50 +2205,59 @@ def post_project_conversation_message(
         raise HTTPException(status_code=400, detail="content must not be empty")
     conv = _get_or_create_conversation(db, pid=pid, user_id=user.id, user=user)
 
-    user_msg = ConversationMessage(
-        conversation_id=conv.id,
-        role="user",
-        content=content[:6000],
-        metadata_json="{}",
-    )
-    db.add(user_msg)
-    db.flush()
-
-    # Fast-path routing only for obvious greetings/acknowledgments.
-    prior_messages = _serialize_messages(db, conv.id)
-    prior_plan_meta = _latest_assistant_plan_metadata(prior_messages)
-    state = load_state(conv)
-    summary_updated = _update_conversation_summary(conv, state, prior_messages)
-
-    # Fast-paths only apply to fresh conversations with no established context.
-    # Once an assistant has responded or state has advanced, short messages like
-    # "ok", "yes", or "thanks" must go through the full LLM path so context is preserved.
-    has_prior_context = (
-        any(m.get("role") == "assistant" for m in prior_messages)
-        or state.state not in {"new", "exploring"}
-    )
-
-    if _is_vague_instruction(content) and not has_prior_context:
-        state.state = "exploring"
-        stamp_router(state, intent="greeting", confidence=1.0, rationale="vague_instruction_fast_path")
-        save_state(conv, state)
-        db.flush()
-        return _persist_clarification_message(db, conv, content)
-
-    if _is_acknowledgment(content) and not has_prior_context:
-        # Preserve current state — do not reset to "exploring"
-        stamp_router(state, intent="ack", confidence=1.0, rationale="acknowledgment_fast_path")
-        save_state(conv, state)
-        db.flush()
-        context_bundle = _load_project_context_bundle(db, pid, content)
-        return _persist_acknowledgment_response(
-            db,
-            conv,
-            content,
-            prior_messages,
-            slots=state.slots,
-            project_context=str(context_bundle.get("text") or ""),
+    with checkpoint_scope(
+        db,
+        "post_project_conversation_message",
+        metadata={"project_id": pid, "conversation_id": conv.id, "user_id": user.id},
+    ) as cp:
+        cp.mark("user_message_received")
+        user_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="user",
+            content=content[:6000],
+            metadata_json="{}",
         )
+        db.add(user_msg)
+        db.flush()
+        cp.mark("user_message_flushed")
+
+        # Fast-path routing only for obvious greetings/acknowledgments.
+        prior_messages = _serialize_messages(db, conv.id)
+        prior_plan_meta = _latest_assistant_plan_metadata(prior_messages)
+        state = load_state(conv)
+        summary_updated = _update_conversation_summary(conv, state, prior_messages)
+
+        # Fast-paths only apply to fresh conversations with no established context.
+        # Once an assistant has responded or state has advanced, short messages like
+        # "ok", "yes", or "thanks" must go through the full LLM path so context is preserved.
+        has_prior_context = (
+            any(m.get("role") == "assistant" for m in prior_messages)
+            or state.state not in {"new", "exploring"}
+        )
+
+        if _is_vague_instruction(content) and not has_prior_context:
+            state.state = "exploring"
+            stamp_router(state, intent="greeting", confidence=1.0, rationale="vague_instruction_fast_path")
+            save_state(conv, state)
+            db.flush()
+            cp.mark("fast_path_clarification_flushed")
+            return _persist_clarification_message(db, conv, content)
+
+        if _is_acknowledgment(content) and not has_prior_context:
+            # Preserve current state — do not reset to "exploring"
+            stamp_router(state, intent="ack", confidence=1.0, rationale="acknowledgment_fast_path")
+            save_state(conv, state)
+            db.flush()
+            cp.mark("fast_path_ack_flushed")
+            context_bundle = _load_project_context_bundle(db, pid, content)
+            return _persist_acknowledgment_response(
+                db,
+                conv,
+                content,
+                prior_messages,
+                slots=state.slots,
+                project_context=str(context_bundle.get("text") or ""),
+            )
 
     available_output_types = [
         item for item in _load_output_types() if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
@@ -2512,40 +2522,48 @@ def post_project_conversation_message(
             history_summary=state.history_summary,
         )
 
-    state.state = "ready_to_plan"
-    state.pending_questions = []
-    state.deliverable = {
-        "template_ids": template_ids,
-        "representations": output_type_representations,
-        "content_skill_hint": content_skill_hint,
-    }
-    stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
-    save_state(conv, state)
-    db.flush()
+    with checkpoint_scope(
+        db,
+        "post_project_conversation_message.plan_commit",
+        metadata={"project_id": pid, "conversation_id": conv.id},
+    ) as cp_plan:
+        state.state = "ready_to_plan"
+        state.pending_questions = []
+        state.deliverable = {
+            "template_ids": template_ids,
+            "representations": output_type_representations,
+            "content_skill_hint": content_skill_hint,
+        }
+        stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
+        save_state(conv, state)
+        db.flush()
+        cp_plan.mark("state_ready_to_plan_flushed")
 
-    content_skill_targets = _derive_content_skill_targets(
-        instruction=combined_instruction,
-        template_ids=template_ids,
-        prior_plan_meta=prior_plan_meta if isinstance(prior_plan_meta, dict) else None,
-        llm_skill_hint=content_skill_hint,
-    )
-    regeneration_directive = _build_regeneration_directive(content)
-    response = _persist_assistant_plan_message(
-        db=db,
-        conv=conv,
-        content=content,
-        instruction=combined_instruction,
-        template_ids=template_ids,
-        custom_output_types=custom_output_types,
-        output_type_representations=output_type_representations,
-        rationale=rationale,
-        content_skill_targets=content_skill_targets,
-        regeneration_directive=regeneration_directive,
-        discovery=merged_discovery,
-    )
-    state.state = "plan_proposed"
-    save_state(conv, state)
-    db.commit()
+        content_skill_targets = _derive_content_skill_targets(
+            instruction=combined_instruction,
+            template_ids=template_ids,
+            prior_plan_meta=prior_plan_meta if isinstance(prior_plan_meta, dict) else None,
+            llm_skill_hint=content_skill_hint,
+        )
+        regeneration_directive = _build_regeneration_directive(content)
+        response = _persist_assistant_plan_message(
+            db=db,
+            conv=conv,
+            content=content,
+            instruction=combined_instruction,
+            template_ids=template_ids,
+            custom_output_types=custom_output_types,
+            output_type_representations=output_type_representations,
+            rationale=rationale,
+            content_skill_targets=content_skill_targets,
+            regeneration_directive=regeneration_directive,
+            discovery=merged_discovery,
+        )
+        state.state = "plan_proposed"
+        save_state(conv, state)
+        cp_plan.mark("assistant_plan_pre_commit")
+        db.commit()
+        cp_plan.mark("assistant_plan_committed")
     response["memory_quick_add"] = {
         "memory_page_path": "/memory",
         "batch_api_relative": f"/api/memory/{pid}/batch",
