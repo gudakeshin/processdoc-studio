@@ -35,6 +35,7 @@ from app.schemas.common import ProjectSummary
 from app.services.proposal_policy import (
     derive_proposal_skill_targets,
     generate_deck_outline_preview,
+    generate_document_outline_preview,
     has_proposal_intent,
     is_finance_proposal_intent,
 )
@@ -573,7 +574,33 @@ def _extract_discovery_answers_fast(user_message: str) -> dict:
     return _normalize_discovery(out)
 
 
+_WIKI_REF_PATTERN = re.compile(r"\[Wiki:\s*([^\]\n]+?)\]")
+
+
+def _extract_wiki_titles(excerpt: str) -> list[str]:
+    """Pull out unique wiki page titles referenced in a planner excerpt."""
+    if not excerpt:
+        return []
+    seen: list[str] = []
+    for match in _WIKI_REF_PATTERN.finditer(excerpt):
+        title = match.group(1).strip()
+        if title and title not in seen:
+            seen.append(title)
+    return seen[:12]
+
+
 def _load_project_context_snapshot(db: Session, project_id: str, instruction: str) -> str:
+    snap = _load_project_context_bundle(db, project_id, instruction)
+    return snap["text"]
+
+
+def _load_project_context_bundle(db: Session, project_id: str, instruction: str) -> dict:
+    """Load the project context snapshot plus the list of wiki pages it cited.
+
+    Returns {"text": str, "wiki_refs": list[str]} — the text is what already
+    powered the router, and wiki_refs exposes the titles of wiki pages that
+    actually landed in the excerpt so the UI can surface "grounded in:" citations.
+    """
     engine = TieredContextEngine()
     excerpt = engine.planner_excerpt(project_id, instruction, char_cap=6000)
     profile_row = db.scalar(select(ProjectMemoryProfile).where(ProjectMemoryProfile.project_id == project_id))
@@ -585,12 +612,13 @@ def _load_project_context_snapshot(db: Session, project_id: str, instruction: st
                 profile_text = json.dumps(parsed)[:2500]
         except Exception:
             profile_text = ""
-    combined_parts = []
+    combined_parts: list[str] = []
     if profile_text:
         combined_parts.append(f"[ProjectMemoryProfile]\n{profile_text}")
     if excerpt:
         combined_parts.append(excerpt)
-    return "\n\n".join(combined_parts)[:9000]
+    text = "\n\n".join(combined_parts)[:9000]
+    return {"text": text, "wiki_refs": _extract_wiki_titles(excerpt)}
 
 
 def _contains_deliverable_signal(text: str) -> bool:
@@ -1051,34 +1079,74 @@ def _build_decision_prompts(
         prompts.append(
             {
                 "id": "narrative_arc",
-                "label": "Narrative arc",
+                "label": "Story arc",
+                "description": "How should the narrative unfold for this audience?",
                 "mode": "single_select",
                 "required": True,
+                "allow_custom": True,
+                "custom_placeholder": "Or describe your own storyline in 1–2 sentences…",
                 "options": [
-                    {"value": "scqa", "label": "SCQA"},
-                    {"value": "pyramid", "label": "Pyramid"},
-                    {"value": "case_led", "label": "Case-led"},
-                    {"value": "compare", "label": "Compare options"},
+                    {
+                        "value": "scqa",
+                        "label": "Situation → Complication → Question → Answer",
+                        "description": "Classic consulting arc. Frame today's state, the problem, the key question, then the recommendation.",
+                    },
+                    {
+                        "value": "pyramid",
+                        "label": "Recommendation-first (Pyramid)",
+                        "description": "Lead with the answer, then back it up with supporting evidence. Best for senior, time-poor audiences.",
+                    },
+                    {
+                        "value": "case_led",
+                        "label": "Case-led story",
+                        "description": "Anchor the narrative around a client case or success story and draw lessons for this client.",
+                    },
+                    {
+                        "value": "compare",
+                        "label": "Compare options",
+                        "description": "Walk through 2–3 alternatives side-by-side, then land on a recommended option.",
+                    },
                 ],
                 "selected_values": narrative_selected[:1],
             }
         )
         if not narrative_selected:
             unresolved.append("narrative_arc")
-            open_questions.append("Choose the storyline structure (SCQA, Pyramid, Case-led, or Compare).")
+            open_questions.append(
+                "Pick a story arc — or type your own — so Sheldon knows how to unfold the narrative."
+            )
 
         audience_selected = current_answers.get("audience_role", [])
         prompts.append(
             {
                 "id": "audience_role",
                 "label": "Primary audience",
+                "description": "Who will be reading this first? Sheldon tailors depth and tone to them.",
                 "mode": "single_select",
                 "required": True,
+                "allow_custom": True,
+                "custom_placeholder": "Or describe the audience (e.g. COO + transformation office)",
                 "options": [
-                    {"value": "cfo", "label": "CFO / Finance leadership"},
-                    {"value": "board", "label": "Board / ExCo"},
-                    {"value": "buying_committee", "label": "Buying committee"},
-                    {"value": "mixed", "label": "Mixed stakeholders"},
+                    {
+                        "value": "cfo",
+                        "label": "CFO / Finance leadership",
+                        "description": "Finance-led buyer: case for value, risk, and payback.",
+                    },
+                    {
+                        "value": "board",
+                        "label": "Board / ExCo",
+                        "description": "Top-of-house: strategic narrative, 5-year arc, board-ready summaries.",
+                    },
+                    {
+                        "value": "buying_committee",
+                        "label": "Buying committee",
+                        "description": "Mixed procurement / sponsor / IT committee evaluating vendors.",
+                    },
+                    {
+                        "value": "mixed",
+                        "label": "Mixed stakeholders",
+                        "description": "Broad audience — Sheldon will balance depth across functions.",
+                    },
                 ],
                 "selected_values": audience_selected[:1],
             }
@@ -1091,14 +1159,17 @@ def _build_decision_prompts(
         prompts.append(
             {
                 "id": "slide_length_budget",
-                "label": "Slide budget",
+                "label": "Deck length",
+                "description": "How long should the first draft be? You can still edit slides later.",
                 "mode": "single_select",
                 "required": True,
+                "allow_custom": True,
+                "custom_placeholder": "Or type a specific slide count (e.g. 18)",
                 "options": [
-                    {"value": "8", "label": "8 slides"},
-                    {"value": "10", "label": "10 slides"},
-                    {"value": "12", "label": "12 slides"},
-                    {"value": "15", "label": "15 slides"},
+                    {"value": "8", "label": "8 slides (tight, exec summary style)"},
+                    {"value": "10", "label": "10 slides (balanced, default)"},
+                    {"value": "12", "label": "12 slides (room for detail + case study)"},
+                    {"value": "15", "label": "15 slides (full narrative + appendix)"},
                 ],
                 "selected_values": length_selected[:1],
             }
@@ -1112,12 +1183,26 @@ def _build_decision_prompts(
             {
                 "id": "tone",
                 "label": "Narrative tone",
+                "description": "Pick the voice Sheldon should write in.",
                 "mode": "single_select",
                 "required": True,
+                "allow_custom": False,
                 "options": [
-                    {"value": "formal", "label": "Formal"},
-                    {"value": "consultative", "label": "Consultative"},
-                    {"value": "punchy", "label": "Punchy"},
+                    {
+                        "value": "formal",
+                        "label": "Formal",
+                        "description": "Measured, reserved, full sentences. Board-room appropriate.",
+                    },
+                    {
+                        "value": "consultative",
+                        "label": "Consultative",
+                        "description": "Structured and advisory — balanced between authority and dialogue.",
+                    },
+                    {
+                        "value": "punchy",
+                        "label": "Punchy",
+                        "description": "Short, direct, impact-first — fewer words, sharper verbs.",
+                    },
                 ],
                 "selected_values": tone_selected[:1],
             }
@@ -1425,19 +1510,46 @@ def _persist_assistant_plan_message(
     if settings.proposal_discovery_enabled and (proposal_targets & _PROPOSAL_DISCOVERY_OUTPUT_TYPES):
         ready_for_confirmation = ready_for_confirmation and _has_sufficient_discovery(discovery)
     display_open_questions = open_questions + soft_hints
-    # ── Deck outline preview (lightweight Claude call for PPTX proposals) ──
+
+    # ── Wiki-grounded project context (shared across outline generators) ──
+    context_bundle: dict = {"text": "", "wiki_refs": []}
+    try:
+        context_bundle = _load_project_context_bundle(db, conv.project_id, instruction)
+    except Exception:
+        context_bundle = {"text": "", "wiki_refs": []}
+    project_context_text: str = context_bundle.get("text") or ""
+    wiki_context_refs: list[str] = list(context_bundle.get("wiki_refs") or [])
+
+    template_set = {str(t).strip().lower() for t in template_ids}
+
+    # ── Deck outline preview (PPTX proposals) ──
     deck_outline_preview: dict | None = None
     pptx_skill = (content_skill_targets or {}).get("pptx", "")
-    if "pptx" in {str(t).strip().lower() for t in template_ids} and pptx_skill:
+    if "pptx" in template_set and pptx_skill:
         try:
             deck_outline_preview = generate_deck_outline_preview(
                 instruction=instruction,
                 output_type="pptx",
                 skill_id=pptx_skill or None,
                 discovery=discovery,
+                project_context=project_context_text or None,
             )
         except Exception:
             deck_outline_preview = None
+
+    # ── Document outline preview (DOCX proposals) ──
+    document_outline_preview: dict | None = None
+    docx_skill = (content_skill_targets or {}).get("docx", "")
+    if "docx" in template_set and docx_skill:
+        try:
+            document_outline_preview = generate_document_outline_preview(
+                instruction=instruction,
+                skill_id=docx_skill or None,
+                discovery=discovery,
+                project_context=project_context_text or None,
+            )
+        except Exception:
+            document_outline_preview = None
 
     plan_hash = _build_plan_hash(
         instruction=instruction,
@@ -1470,28 +1582,17 @@ def _persist_assistant_plan_message(
 
         strategy_md = "\n\n" + format_strategy_dossier_markdown(strategy_dossier)
 
-    # Use personality-infused plan for display, with technical details below
-    assistant_content = (
-        f"{plan_with_personality}\n\n"
-        f"**Technical Details:**\n"
-        f"Template outputs: {', '.join(template_ids) if template_ids else 'none'}\n"
-        f"Custom outputs: {', '.join(custom_output_types) if custom_output_types else 'none'}\n"
-        f"Proposed representations: {json.dumps(output_type_representations)}\n"
-        + (
-            "\n**Open questions:**\n- " + "\n- ".join(display_open_questions)
-            if display_open_questions
-            else "\n✓ No open questions. Confirm plan to continue to execution."
-        )
-        + strategy_md
+    # Assistant message body: conversational plan + concise CTA. We no longer
+    # list open_questions inline (the Plan Decisions panel is the single source
+    # of truth) and we no longer spell out the technical template ids here —
+    # the UI already renders those structurally from metadata.
+    cta = (
+        "\n\n✓ Plan is ready — review the decisions panel on the right, then confirm to start execution."
+        if ready_for_confirmation
+        else "\n\n→ Open decisions are waiting on the right. Pick from the dropdowns or type your own answer, then I'll refresh the plan."
     )
-    # Append deck outline preview to assistant content if available
-    if isinstance(deck_outline_preview, dict) and deck_outline_preview.get("slides"):
-        outline_lines = []
-        for i, sl in enumerate(deck_outline_preview["slides"], 1):
-            if isinstance(sl, dict):
-                outline_lines.append(f"  {i}. [{sl.get('slide_type', 'bullets')}] {sl.get('title', '')} — {sl.get('purpose', '')}")
-        if outline_lines:
-            assistant_content += "\n\nProposed deck outline:\n" + "\n".join(outline_lines)
+    assistant_content = plan_with_personality + cta + strategy_md
+
     metadata_obj = {
         "template_output_types": template_ids,
         "custom_output_types": custom_output_types,
@@ -1516,6 +1617,8 @@ def _persist_assistant_plan_message(
         "plan_hash": plan_hash,
         "strategy_dossier": strategy_dossier,
         "deck_outline_preview": deck_outline_preview,
+        "document_outline_preview": document_outline_preview,
+        "wiki_context_refs": wiki_context_refs,
     }
     assistant_msg = ConversationMessage(
         conversation_id=conv.id,
@@ -1549,6 +1652,8 @@ def _persist_assistant_plan_message(
         "requires_confirmation": True,
         "plan_hash": plan_hash,
         "deck_outline_preview": deck_outline_preview,
+        "document_outline_preview": document_outline_preview,
+        "wiki_context_refs": wiki_context_refs,
         "messages": _serialize_messages(db, conv.id),
     }
 
@@ -2357,6 +2462,15 @@ def confirm_project_conversation_plan(
                 "strategy_dossier": dossier,
                 "selected_strategy": selected_strategy,
                 "discovery": _normalize_discovery(plan_meta.get("discovery")),
+                "deck_outline_preview": plan_meta.get("deck_outline_preview")
+                if isinstance(plan_meta.get("deck_outline_preview"), dict)
+                else None,
+                "document_outline_preview": plan_meta.get("document_outline_preview")
+                if isinstance(plan_meta.get("document_outline_preview"), dict)
+                else None,
+                "wiki_context_refs": plan_meta.get("wiki_context_refs")
+                if isinstance(plan_meta.get("wiki_context_refs"), list)
+                else [],
             }
         ),
     )
@@ -2376,6 +2490,9 @@ def confirm_project_conversation_plan(
         else {},
         "regeneration_directive": str(plan_meta.get("regeneration_directive") or ""),
         "discovery": _normalize_discovery(plan_meta.get("discovery")),
+        "deck_outline_preview": plan_meta.get("deck_outline_preview"),
+        "document_outline_preview": plan_meta.get("document_outline_preview"),
+        "wiki_context_refs": plan_meta.get("wiki_context_refs") or [],
     }
 
 

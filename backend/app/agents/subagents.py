@@ -128,6 +128,42 @@ def run_process_extraction(state: ProcessDocState) -> ProcessDocState:
     raw = state.get("user_intent_original") or state.get("raw_text") or ""
     ctx = state.get("assembled_context") or ""
 
+    # When the plan carries discovery (client, outcome, audience, themes), prepend
+    # that brief to the raw intent so the extractor names the process after the
+    # client's reality rather than the user's conversational chat line (e.g.
+    # "Help create the proposal please").
+    discovery = state.get("proposal_discovery") if isinstance(state.get("proposal_discovery"), dict) else None
+    if discovery:
+        brief_lines: list[str] = []
+        client = discovery.get("client") if isinstance(discovery.get("client"), dict) else {}
+        outcome = discovery.get("outcome") if isinstance(discovery.get("outcome"), dict) else {}
+        themes = discovery.get("win_themes") if isinstance(discovery.get("win_themes"), list) else []
+        if client:
+            name = str(client.get("name") or "").strip()
+            industry = str(client.get("industry") or "").strip()
+            if name:
+                brief_lines.append(
+                    f"Client: {name}" + (f" ({industry})" if industry else "")
+                )
+        if outcome:
+            primary = str(outcome.get("primary") or "").strip()
+            decision = str(outcome.get("decision") or "").strip()
+            if primary:
+                brief_lines.append(f"Desired outcome: {primary}")
+            if decision:
+                brief_lines.append(f"Decision to drive: {decision}")
+        if themes:
+            theme_text = ", ".join(str(t).strip() for t in themes if str(t).strip())[:400]
+            if theme_text:
+                brief_lines.append(f"Win themes: {theme_text}")
+        if brief_lines:
+            raw = (
+                "Engagement brief (use this for process_name + metadata):\n- "
+                + "\n- ".join(brief_lines)
+                + "\n\nUser instruction:\n"
+                + str(raw)
+            )
+
     if is_claude_enabled():
         system = (
             "You are a process extraction engine. "
@@ -2182,6 +2218,27 @@ def _pptx_deterministic_slides(pm: ProcessModel) -> list[dict[str, Any]]:
     ]
 
 
+_OUTLINE_CONFLICT_MARKER = "Presentation title (use exactly):"
+
+
+def _strip_title_override(user_core: str) -> str:
+    """Remove the default "Presentation title (use exactly)" line from user_core.
+
+    When we drive generation from the approved deck outline, the outline's
+    first-slide title IS the presentation title; leaving the old override in
+    place creates a conflicting instruction that lets the model hallucinate
+    the user's raw chat message back onto the title slide.
+    """
+    if _OUTLINE_CONFLICT_MARKER not in user_core:
+        return user_core
+    cleaned_lines: list[str] = []
+    for line in user_core.splitlines():
+        if _OUTLINE_CONFLICT_MARKER in line:
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
 def _generate_slides_batched(
     ctx: AgentContext,
     *,
@@ -2192,6 +2249,7 @@ def _generate_slides_batched(
     outline: list[dict],
     temperature: float = 0.3,
     max_rounds: int | None = None,
+    presentation_title: str | None = None,
 ) -> list[dict] | None:
     """
     Generate slides in batches of 4-5, guided by the deck outline preview.
@@ -2204,30 +2262,55 @@ def _generate_slides_batched(
     all_slides: list[dict] = []
     n_total = len(outline)
 
+    # Drop the default "Presentation title (use exactly): ..." line — the
+    # outline's first-slide title is the canonical title in this path.
+    user_core_outline = _strip_title_override(user_core)
+    canonical_title = (presentation_title or "").strip()
+    if canonical_title:
+        user_core_outline = (
+            f"Presentation title (use exactly): \"{canonical_title}\"\n"
+            + user_core_outline
+        )
+
     for batch_start in range(0, n_total, batch_size):
         batch_end = min(batch_start + batch_size, n_total)
         batch_outline = outline[batch_start:batch_end]
 
-        # Build the batch-specific prompt
         outline_desc = "\n".join(
             f"  {batch_start + i + 1}. [{s.get('slide_type', 'bullets')}] {s.get('title', '')} — {s.get('purpose', '')}"
             for i, s in enumerate(batch_outline)
         )
         batch_instruction = (
             f"Generate slides {batch_start + 1}–{batch_end} of {n_total} for this deck.\n"
-            f"Follow this outline for these slides:\n{outline_desc}\n\n"
+            f"Follow this outline for these slides (titles and slide_types are authoritative):\n"
+            f"{outline_desc}\n\n"
             "Return ONLY valid JSON: {\"slides\": [...]}\n"
-            "Each slide must match the outline entry's title and slide_type.\n"
+            "Each slide MUST use the outline entry's title verbatim and its slide_type. "
+            "Expand the outline purpose into concrete, client-specific content "
+            "(use discovery inputs, process model, and any wiki references provided). "
+            "Do NOT copy the user's raw chat instruction onto any slide — "
+            "if you are unsure of a title, use the outline title exactly as given.\n"
         )
+        if batch_start == 0 and canonical_title:
+            batch_instruction += (
+                f"\nThe first slide MUST be slide_type=\"title\" with title=\"{canonical_title}\". "
+                "Populate the subtitle/badges from the discovery inputs and process model — never "
+                "from the raw user instruction.\n"
+            )
         if all_slides:
-            # Provide prior slides as context for continuity
             prior_summary = json.dumps(
                 [{"title": s.get("title"), "slide_type": s.get("slide_type")} for s in all_slides],
                 ensure_ascii=False,
             )
             batch_instruction += f"\nPrior slides already generated (maintain continuity):\n{prior_summary}\n"
 
-        batch_user = batch_instruction + "\n" + user_core + appendix + f"{process_model_json_block(pm)}"
+        batch_user = (
+            batch_instruction
+            + "\n"
+            + user_core_outline
+            + appendix
+            + f"{process_model_json_block(pm)}"
+        )
 
         raw_json = _run_subagent_tool_loop_text(
             ctx, agent_id="pptx", system=system, user=batch_user,
@@ -2263,29 +2346,192 @@ def _generate_slides_batched(
     return all_slides if all_slides else None
 
 
-def _resolve_presentation_title(pm: dict, state: dict) -> str:
+_CHAT_MARKERS = ("assistant:", "user:", "👋", "💬", "🎯", "🚀", "qa remediation", "guardrail")
+_CONVERSATIONAL_PREFIXES = (
+    "help ",
+    "help me ",
+    "can you ",
+    "could you ",
+    "please ",
+    "pls ",
+    "i want ",
+    "i need ",
+    "i'd like ",
+    "we want ",
+    "we need ",
+    "let's ",
+    "lets ",
+    "hey ",
+    "hi ",
+    "hello ",
+)
+_CONVERSATIONAL_VERBS = (
+    "help create",
+    "help me create",
+    "help build",
+    "help draft",
+    "create a ",
+    "build a ",
+    "draft a ",
+    "write a ",
+    "make a ",
+    "generate a ",
+    "prepare a ",
+    "put together",
+)
+
+
+def _looks_like_chat_line(text: str) -> bool:
+    """Return True when the given string looks like a conversational command,
+    not a deck-worthy title.
+
+    Catches cases like "Help create the proposal please", "can you build a deck",
+    "hi, I need a slide on finance ops", etc. — titles that happen to satisfy
+    the length check but should never appear verbatim on a title slide.
+    """
+    if not text:
+        return True
+    t = text.strip().lower()
+    if not t:
+        return True
+    if any(m in t for m in _CHAT_MARKERS):
+        return True
+    if t.endswith("?"):
+        return True
+    if any(t.startswith(p) for p in _CONVERSATIONAL_PREFIXES):
+        return True
+    if any(phrase in t for phrase in _CONVERSATIONAL_VERBS):
+        return True
+    # Catch conversational openers even when punctuation follows
+    # (e.g. "Hi, I need a proposal", "Hey! Build me a deck").
+    first_token = t.split(maxsplit=1)[0].rstrip(",.!?;:") if t.split() else ""
+    if first_token in {"hi", "hey", "hello", "yo", "pls", "please", "help"}:
+        return True
+    # First-person imperatives are almost always chat, not a title.
+    if first_token in {"i", "we", "i'd", "id"}:
+        return True
+    # Words like "please", "thanks" anywhere are strong chat signals.
+    for chatty_word in (" please", " thanks", " thank you"):
+        if chatty_word in t:
+            return True
+    return False
+
+
+def _normalise_industry(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    # Drop redundant "industry"/"sector" suffixes.
+    for tail in (" industry", " sector"):
+        if s.lower().endswith(tail):
+            s = s[: -len(tail)].rstrip()
+    return s
+
+
+def _title_from_discovery(discovery: dict | None) -> str:
+    """Build a client-specific deck title from discovery inputs when possible."""
+    if not isinstance(discovery, dict):
+        return ""
+    client = discovery.get("client") if isinstance(discovery.get("client"), dict) else {}
+    client_name = str(client.get("name") or "").strip()
+    if not client_name:
+        return ""
+    industry = _normalise_industry(str(client.get("industry") or ""))
+    outcome = discovery.get("outcome") if isinstance(discovery.get("outcome"), dict) else {}
+    outcome_primary = str(outcome.get("primary") or "").strip()
+    audience = str(discovery.get("audience") or "").strip().lower()
+
+    audience_label = {
+        "cfo": "CFO",
+        "board": "Board",
+        "buying_committee": "Buying Committee",
+        "mixed": "",
+    }.get(audience, "")
+
+    # Prefer the outcome phrasing when it's specific, otherwise fall back
+    # to a lightweight "{Client} transformation proposal" pattern.
+    headline = ""
+    if outcome_primary and not _looks_like_chat_line(outcome_primary):
+        headline = outcome_primary
+    if not headline:
+        headline = f"{client_name} transformation proposal"
+
+    # Compose — keep it within 90 chars.
+    if audience_label and audience_label.lower() not in headline.lower():
+        title = f"{client_name} — {headline} ({audience_label} briefing)"
+    else:
+        title = f"{client_name} — {headline}" if client_name.lower() not in headline.lower() else headline
+
+    # Light capitalisation for readability.
+    if title.islower():
+        title = title.title()
+    return title[:118]
+
+
+def _title_from_outline(deck_outline: dict | None) -> str:
+    """Return the outline's title slide title if it looks plausible."""
+    if not isinstance(deck_outline, dict):
+        return ""
+    slides = deck_outline.get("slides")
+    if not isinstance(slides, list) or not slides:
+        return ""
+    first = slides[0]
+    if not isinstance(first, dict):
+        return ""
+    title = str(first.get("title") or "").strip()
+    if not title:
+        return ""
+    if _looks_like_chat_line(title):
+        return ""
+    if not (5 <= len(title) <= 120):
+        return ""
+    return title
+
+
+def _resolve_presentation_title(
+    pm: dict,
+    state: dict,
+    *,
+    discovery: dict | None = None,
+    deck_outline: dict | None = None,
+) -> str:
     """
     Return the best available presentation title.
 
-    Validates pm["process_name"] and falls back gracefully:
-    1. Use pm["process_name"] if it looks like a real title (not a chat message or annotation).
-    2. Else: use first meaningful line from user_intent_original.
-    3. Final fallback: "Process Overview".
-
-    Rules are domain-agnostic — no hardcoded domain keywords.
+    Priority order:
+      1. Approved deck-outline preview's first slide title (user confirmed it).
+      2. A discovery-derived title such as "Varroc — Finance Transformation
+         Proposal (CFO briefing)" when we know the client.
+      3. ``pm["process_name"]`` if it looks like a real title.
+      4. First meaningful line from ``user_intent_original`` ONLY when it does
+         not look conversational (e.g. "Help create the proposal please").
+      5. Final fallback: "Executive Briefing".
     """
-    _CHAT_MARKERS = ("assistant:", "user:", "👋", "💬", "🎯", "🚀", "qa remediation", "guardrail")
+    outline_title = _title_from_outline(deck_outline)
+    if outline_title:
+        return outline_title
+
+    discovery_title = _title_from_discovery(discovery)
+    if discovery_title:
+        return discovery_title
+
     name = (pm.get("process_name") or "").strip()
     name_lower = name.lower()
-    if name and 5 <= len(name) <= 120 and not any(m in name_lower for m in _CHAT_MARKERS):
+    if (
+        name
+        and 5 <= len(name) <= 120
+        and not any(m in name_lower for m in _CHAT_MARKERS)
+        and not _looks_like_chat_line(name)
+    ):
         return name
-    # Fall back to user intent
+
     intent = (state.get("user_intent_original") or "").strip()
     if intent:
         first_line = intent.splitlines()[0].strip()
-        if 5 <= len(first_line) <= 120:
+        if 5 <= len(first_line) <= 120 and not _looks_like_chat_line(first_line):
             return first_line
-    return "Process Overview"
+
+    return "Executive Briefing"
 
 
 def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
@@ -2406,7 +2652,13 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 "Each card needs stat, label, description. Use [TBC] only if truly unquantifiable.\n"
             )
 
-        presentation_title = _resolve_presentation_title(pm, {"user_intent_original": ctx.user_intent_original})
+        deck_outline_for_title = (ctx.plan_payload or {}).get("deck_outline_preview") if isinstance(ctx.plan_payload, dict) else None
+        presentation_title = _resolve_presentation_title(
+            pm,
+            {"user_intent_original": ctx.user_intent_original},
+            discovery=plan_discovery if isinstance(plan_discovery, dict) else None,
+            deck_outline=deck_outline_for_title if isinstance(deck_outline_for_title, dict) else None,
+        )
 
         # ── Skill-aware slide sequence ──────────────────────────────────────
         # If the primary skill defines a slide_sequence (e.g., proposal skills
@@ -2515,14 +2767,44 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             client = plan_discovery.get("client") if isinstance(plan_discovery.get("client"), dict) else {}
             outcome = plan_discovery.get("outcome") if isinstance(plan_discovery.get("outcome"), dict) else {}
             themes = plan_discovery.get("win_themes") if isinstance(plan_discovery.get("win_themes"), list) else []
+            audience = str(plan_discovery.get("audience") or "").strip()
+            tone = str(plan_discovery.get("tone") or "").strip()
+            narrative_arc = str(plan_discovery.get("narrative_arc") or "").strip()
             if client:
-                discovery_lines.append(f"Client context: {client.get('name', '')} ({client.get('industry', '')})")
+                discovery_lines.append(
+                    f"Client context: {client.get('name', '')} ({client.get('industry', '')})"
+                )
             if outcome:
-                discovery_lines.append(f"Desired outcome: {outcome.get('primary', '')}; decision: {outcome.get('decision', '')}")
+                discovery_lines.append(
+                    f"Desired outcome: {outcome.get('primary', '')}; decision: {outcome.get('decision', '')}"
+                )
+            if audience:
+                discovery_lines.append(f"Primary audience: {audience}")
+            if narrative_arc:
+                discovery_lines.append(f"Narrative arc: {narrative_arc}")
+            if tone:
+                discovery_lines.append(f"Tone: {tone}")
             if themes:
-                discovery_lines.append("Win themes: " + ", ".join(str(x) for x in themes[:3]))
+                discovery_lines.append("Win themes: " + ", ".join(str(x) for x in themes[:5]))
             if discovery_lines:
-                appendix = appendix + "\n\nDiscovery inputs:\n- " + "\n- ".join(discovery_lines)
+                appendix = (
+                    appendix
+                    + "\n\n## Discovery inputs (ground every slide in this client's reality)\n- "
+                    + "\n- ".join(discovery_lines)
+                    + "\nNEVER use generic placeholders like \"the client\" or \"this process\" — "
+                    + "refer to the client by name and speak to the primary audience directly."
+                )
+        wiki_refs_list = (ctx.plan_payload or {}).get("wiki_context_refs") if isinstance(ctx.plan_payload, dict) else None
+        if isinstance(wiki_refs_list, list) and wiki_refs_list:
+            clean_refs = [str(r).strip() for r in wiki_refs_list if str(r).strip()]
+            if clean_refs:
+                appendix = (
+                    appendix
+                    + "\n\n## Grounded in project wiki pages\n- "
+                    + "\n- ".join(clean_refs[:10])
+                    + "\nWhen a slide draws on one of these sources, phrase content consistent with it "
+                    + "and do not invent metrics that contradict the wiki."
+                )
         user = user_core + appendix + f"{process_model_json_block(pm)}"
         visual_feedback: list[dict] = (ctx.plan_payload or {}).get("pptx_visual_feedback") or []
         if visual_feedback and isinstance(visual_feedback, list):
@@ -2554,14 +2836,18 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 "PRIOR_DECK:\n"
                 + json.dumps(prior_slides, ensure_ascii=False)
             )
-        # ── Batched generation (when deck outline is available & not in repair mode) ──
+        # ── Batched generation (when the user approved a deck outline) ──
+        # We lower the threshold to 3 slides so any reasonable approved outline
+        # drives generation — the old 6-slide cutoff meant short proposal decks
+        # fell back to the default "Process Overview" mandate and ignored the
+        # user's confirmed storyline.
         batched_slides: list[dict] | None = None
         deck_outline_raw = (ctx.plan_payload or {}).get("deck_outline_preview")
         if (
             not repair_mode
             and isinstance(deck_outline_raw, dict)
             and isinstance(deck_outline_raw.get("slides"), list)
-            and len(deck_outline_raw["slides"]) >= 6
+            and len(deck_outline_raw["slides"]) >= 3
         ):
             batched_slides = _generate_slides_batched(
                 ctx,
@@ -2572,6 +2858,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 outline=deck_outline_raw["slides"],
                 temperature=sb.temperature,
                 max_rounds=sb.max_rounds,
+                presentation_title=presentation_title,
             )
 
         if batched_slides:

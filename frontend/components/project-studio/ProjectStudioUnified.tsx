@@ -204,12 +204,23 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
     }
   }
 
-  async function submitDecisionAnswers(answers: Record<string, string[]>) {
+  async function submitDecisionAnswers(
+    answers: Record<string, string[] | { selected_values?: string[]; free_text?: string }>
+  ) {
     if (!conversationId || decisionBusy) return;
     setDecisionBusy(true);
     setError(null);
     try {
-      const payload = Object.entries(answers).map(([prompt_id, selected_values]) => ({ prompt_id, selected_values }));
+      const payload = Object.entries(answers).map(([prompt_id, entry]) => {
+        if (Array.isArray(entry)) {
+          return { prompt_id, selected_values: entry };
+        }
+        return {
+          prompt_id,
+          selected_values: entry?.selected_values ?? [],
+          free_text: entry?.free_text && entry.free_text.trim() ? entry.free_text.trim() : undefined,
+        };
+      });
       const res = await api(`/api/projects/${encodeURIComponent(pid)}/conversation/decisions`, {
         method: "POST",
         body: JSON.stringify({

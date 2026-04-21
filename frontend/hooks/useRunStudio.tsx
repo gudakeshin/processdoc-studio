@@ -40,10 +40,13 @@ export type ChatMessage = {
     decision_prompts?: Array<{
       id: string;
       label: string;
+      description?: string;
       mode: "single_select" | "multi_select";
       required?: boolean;
       min_select?: number;
-      options: Array<{ value: string; label: string }>;
+      allow_custom?: boolean;
+      custom_placeholder?: string;
+      options: Array<{ value: string; label: string; description?: string }>;
       selected_values?: string[];
     }>;
     unresolved_prompt_ids?: string[];
@@ -61,6 +64,17 @@ export type ChatMessage = {
       slides?: Array<{ title?: string; slide_type?: string; purpose?: string }>;
       rationale?: string;
     };
+    document_outline_preview?: {
+      sections?: Array<{
+        heading?: string;
+        purpose?: string;
+        key_points?: string[];
+        evidence_pointer?: string;
+      }>;
+      rationale?: string;
+      target_pages?: number;
+    };
+    wiki_context_refs?: string[];
     kind?: string;
     run_id?: string;
     status?: string;
@@ -569,15 +583,23 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     }
   }
 
-  async function submitDecisionAnswers(answers: Record<string, string[]>) {
+  async function submitDecisionAnswers(
+    answers: Record<string, string[] | { selected_values?: string[]; free_text?: string }>
+  ) {
     if (!pid || !conversationId || decisionBusy) return;
     setDecisionBusy(true);
     setArtifactsError(null);
     try {
-      const formatted = Object.entries(answers).map(([prompt_id, selected_values]) => ({
-        prompt_id,
-        selected_values,
-      }));
+      const formatted = Object.entries(answers).map(([prompt_id, entry]) => {
+        if (Array.isArray(entry)) {
+          return { prompt_id, selected_values: entry };
+        }
+        return {
+          prompt_id,
+          selected_values: entry?.selected_values ?? [],
+          free_text: entry?.free_text && entry.free_text.trim() ? entry.free_text.trim() : undefined,
+        };
+      });
       const res = await api(`/api/projects/${encodeURIComponent(pid)}/conversation/decisions`, {
         method: "POST",
         body: JSON.stringify({

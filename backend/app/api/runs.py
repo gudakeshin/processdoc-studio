@@ -312,6 +312,8 @@ def _load_confirmed_plan(
             "strategy_dossier": metadata.get("strategy_dossier") if isinstance(metadata.get("strategy_dossier"), dict) else None,
             "selected_strategy": metadata.get("selected_strategy") if isinstance(metadata.get("selected_strategy"), dict) else None,
             "deck_outline_preview": metadata.get("deck_outline_preview") if isinstance(metadata.get("deck_outline_preview"), dict) else None,
+            "document_outline_preview": metadata.get("document_outline_preview") if isinstance(metadata.get("document_outline_preview"), dict) else None,
+            "wiki_context_refs": metadata.get("wiki_context_refs") if isinstance(metadata.get("wiki_context_refs"), list) else [],
         }
     raise HTTPException(
         status_code=409,
@@ -844,6 +846,12 @@ def start_run(
     deck_outline = confirmed_plan.get("deck_outline_preview")
     if isinstance(deck_outline, dict) and deck_outline.get("slides"):
         plan["deck_outline_preview"] = deck_outline
+    document_outline = confirmed_plan.get("document_outline_preview")
+    if isinstance(document_outline, dict) and document_outline.get("sections"):
+        plan["document_outline_preview"] = document_outline
+    wiki_refs = confirmed_plan.get("wiki_context_refs")
+    if isinstance(wiki_refs, list) and wiki_refs:
+        plan["wiki_context_refs"] = [str(r).strip() for r in wiki_refs if str(r).strip()][:20]
     if body.conversation_id and str(body.conversation_id).strip():
         plan["conversation_id"] = str(body.conversation_id).strip()
     if body.plan_hash and str(body.plan_hash).strip():

@@ -9,12 +9,16 @@ import { CoordinatorWikiContext } from "@/components/wiki/CoordinatorWikiContext
 type DecisionPrompt = {
   id: string;
   label: string;
+  description?: string;
   mode: "single_select" | "multi_select";
   required?: boolean;
   min_select?: number;
-  options: Array<{ value: string; label: string }>;
+  allow_custom?: boolean;
+  custom_placeholder?: string;
+  options: Array<{ value: string; label: string; description?: string }>;
   selected_values?: string[];
 };
+type DecisionAnswerValue = { selected_values?: string[]; free_text?: string };
 type ThinkingTraceItem = {
   id: string;
   text: string;
@@ -191,7 +195,9 @@ export function ZoneAInstruction({
   openQuestions: string[];
   decisionPrompts: DecisionPrompt[];
   unresolvedPromptIds: string[];
-  onSubmitDecisions: (answers: Record<string, string[]>) => Promise<void>;
+  onSubmitDecisions: (
+    answers: Record<string, string[] | DecisionAnswerValue>
+  ) => Promise<void>;
   onUpdateOutline?: (slides: Array<{ title: string; slide_type: string; purpose?: string }>) => Promise<void>;
   decisionBusy: boolean;
   thinkingStatements?: string[];
@@ -222,7 +228,13 @@ export function ZoneAInstruction({
   const outlineSlides = Array.isArray(latestAssistantMeta?.deck_outline_preview?.slides)
     ? latestAssistantMeta?.deck_outline_preview?.slides
     : [];
+  const documentOutline = latestAssistantMeta?.document_outline_preview;
+  const documentSections = Array.isArray(documentOutline?.sections) ? documentOutline?.sections : [];
+  const wikiContextRefs = Array.isArray(latestAssistantMeta?.wiki_context_refs)
+    ? latestAssistantMeta?.wiki_context_refs?.filter((x) => typeof x === "string" && x.trim())
+    : [];
   const [decisionDraft, setDecisionDraft] = useState<Record<string, string[]>>({});
+  const [decisionCustom, setDecisionCustom] = useState<Record<string, string>>({});
   const [outlineDraft, setOutlineDraft] = useState<Array<{ title: string; slide_type: string; purpose?: string }>>([]);
   const [outlineDirty, setOutlineDirty] = useState(false);
 
@@ -324,7 +336,9 @@ export function ZoneAInstruction({
           </div>
         ) : null}
 
-        {openQuestions.length > 0 ? (
+        {openQuestions.length > 0 && !showGuidedDecisions ? (
+          // Only show this inline bubble when the structured Plan Decisions panel
+          // is hidden — otherwise the panel is the single source of truth.
           <div className="flex items-end justify-start gap-2">
             <AssistantAvatar />
             <div className="max-w-[82%] rounded-lg rounded-bl-sm border border-[var(--surface-border)] bg-[var(--surface-muted)] px-3 py-2">
@@ -413,8 +427,31 @@ export function ZoneAInstruction({
         </div>
       )}
 
-      {showGuidedDecisions && (decisionPrompts.length > 0 || discovery || outlineDraft.length > 0) ? (
+      {showGuidedDecisions &&
+      (decisionPrompts.length > 0 ||
+        discovery ||
+        outlineDraft.length > 0 ||
+        (documentSections && documentSections.length > 0) ||
+        (wikiContextRefs && wikiContextRefs.length > 0)) ? (
         <div className="border-t border-[var(--surface-border)] px-4 py-3 space-y-3">
+          {wikiContextRefs && wikiContextRefs.length > 0 ? (
+            <div className="rounded border border-[var(--surface-border)] bg-[var(--info-light)] px-2 py-1.5">
+              <p className="text-2xs font-semibold text-[var(--text-default)]">
+                Grounded in your wiki
+              </p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {wikiContextRefs.map((ref, idx) => (
+                  <span
+                    key={`wiki-ref-${idx}`}
+                    className="rounded-full border border-[var(--surface-border)] bg-white px-2 py-0.5 text-2xs text-[var(--text-muted)]"
+                  >
+                    {ref}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {discovery ? (
             <div className="rounded border border-[var(--surface-border)] bg-[var(--surface-muted)] p-2">
               <p className="text-2xs font-semibold text-[var(--text-default)]">Discovery</p>
@@ -430,23 +467,79 @@ export function ZoneAInstruction({
           {decisionPrompts.length > 0 ? (
             <div className="rounded border border-[var(--surface-border)] p-2">
               <p className="text-2xs font-semibold text-[var(--text-default)]">Plan Decisions</p>
-              <div className="mt-2 space-y-2">
+              <p className="mt-0.5 text-2xs text-[var(--text-muted)]">
+                Pick the option that fits — or, where shown, type your own answer in the text field.
+              </p>
+              <div className="mt-2 space-y-3">
                 {decisionPrompts.map((prompt) => {
                   const selected = decisionDraft[prompt.id] ?? prompt.selected_values ?? [];
+                  const selectedValue = selected[0] ?? "";
+                  const selectedOption = prompt.options.find((opt) => opt.value === selectedValue);
+                  const customValue = decisionCustom[prompt.id] ?? "";
+                  const isUnresolved = unresolvedPromptIds.includes(prompt.id);
                   return (
-                    <label key={prompt.id} className="block text-2xs text-[var(--text-muted)]">
-                      <span className="mb-1 block">{prompt.label}</span>
+                    <div
+                      key={prompt.id}
+                      className={`rounded border px-2 py-2 ${
+                        isUnresolved
+                          ? "border-[var(--accent-blue)] bg-[var(--info-light)]"
+                          : "border-[var(--surface-border)] bg-white"
+                      }`}
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p className="text-2xs font-semibold text-[var(--text-default)]">
+                          {prompt.label}
+                          {prompt.required ? (
+                            <span className="ml-1 text-[var(--accent-blue)]">*</span>
+                          ) : null}
+                        </p>
+                        {isUnresolved ? (
+                          <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--accent-blue)]">
+                            Needs your input
+                          </span>
+                        ) : null}
+                      </div>
+                      {prompt.description ? (
+                        <p className="mt-0.5 text-2xs text-[var(--text-muted)]">{prompt.description}</p>
+                      ) : null}
                       <select
-                        className="w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-xs text-[var(--text-default)]"
-                        value={selected[0] ?? ""}
-                        onChange={(e) => setDecisionDraft((prev) => ({ ...prev, [prompt.id]: [e.target.value] }))}
+                        className="mt-1.5 w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-xs text-[var(--text-default)]"
+                        value={selectedValue}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setDecisionDraft((prev) => ({ ...prev, [prompt.id]: next ? [next] : [] }));
+                          if (next) {
+                            setDecisionCustom((prev) => ({ ...prev, [prompt.id]: "" }));
+                          }
+                        }}
                       >
-                        <option value="">Select...</option>
+                        <option value="">Select…</option>
                         {prompt.options.map((opt) => (
                           <option key={opt.value} value={opt.value}>{opt.label}</option>
                         ))}
                       </select>
-                    </label>
+                      {selectedOption?.description ? (
+                        <p className="mt-1 text-2xs italic text-[var(--text-muted)]">
+                          {selectedOption.description}
+                        </p>
+                      ) : null}
+                      {prompt.allow_custom ? (
+                        <div className="mt-1.5">
+                          <input
+                            type="text"
+                            value={customValue}
+                            placeholder={prompt.custom_placeholder || "Or type your own answer…"}
+                            className="w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-2xs text-[var(--text-default)]"
+                            onChange={(e) => {
+                              setDecisionCustom((prev) => ({ ...prev, [prompt.id]: e.target.value }));
+                              if (e.target.value.trim()) {
+                                setDecisionDraft((prev) => ({ ...prev, [prompt.id]: [] }));
+                              }
+                            }}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>
@@ -457,12 +550,64 @@ export function ZoneAInstruction({
                 <Button
                   type="button"
                   disabled={decisionBusy}
-                  onClick={() => void onSubmitDecisions(decisionDraft)}
+                  onClick={() => {
+                    const payload: Record<string, DecisionAnswerValue> = {};
+                    for (const prompt of decisionPrompts) {
+                      const values = decisionDraft[prompt.id] ?? prompt.selected_values ?? [];
+                      const custom = (decisionCustom[prompt.id] || "").trim();
+                      if (values.length === 0 && !custom) continue;
+                      payload[prompt.id] = {
+                        selected_values: values,
+                        free_text: custom || undefined,
+                      };
+                    }
+                    void onSubmitDecisions(payload);
+                  }}
                   className="px-2 py-1 text-2xs"
                 >
                   {decisionBusy ? "Saving..." : "Save decisions"}
                 </Button>
               </div>
+            </div>
+          ) : null}
+
+          {documentSections && documentSections.length > 0 ? (
+            <div className="rounded border border-[var(--surface-border)] bg-white p-2">
+              <p className="text-2xs font-semibold text-[var(--text-default)]">
+                Proposed document storyline
+                {documentOutline?.target_pages ? (
+                  <span className="ml-1 text-2xs font-normal text-[var(--text-muted)]">
+                    (~{documentOutline.target_pages} pages)
+                  </span>
+                ) : null}
+              </p>
+              {documentOutline?.rationale ? (
+                <p className="mt-0.5 text-2xs italic text-[var(--text-muted)]">{documentOutline.rationale}</p>
+              ) : null}
+              <ol className="mt-1.5 list-decimal space-y-1.5 pl-4 text-2xs text-[var(--text-muted)]">
+                {documentSections.map((section, idx) => (
+                  <li key={`doc-section-${idx}`}>
+                    <span className="font-semibold text-[var(--text-default)]">
+                      {section?.heading || `Section ${idx + 1}`}
+                    </span>
+                    {section?.purpose ? (
+                      <span className="block italic">{section.purpose}</span>
+                    ) : null}
+                    {Array.isArray(section?.key_points) && section.key_points.length > 0 ? (
+                      <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                        {section.key_points.map((kp, kpi) => (
+                          <li key={`doc-section-${idx}-kp-${kpi}`}>{kp}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {section?.evidence_pointer ? (
+                      <span className="mt-0.5 block text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                        Evidence: {section.evidence_pointer}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
             </div>
           ) : null}
 
