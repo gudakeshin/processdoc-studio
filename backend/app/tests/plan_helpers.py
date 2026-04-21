@@ -4,7 +4,10 @@ from fastapi.testclient import TestClient
 
 DEFAULT_PLAN_USER_MESSAGE = (
     "Build a detailed narrative proposal report for the executive steering committee "
-    "including timeline scope and deck outline for delivery."
+    "including timeline scope and deck outline for delivery. "
+    "Client is Acme Corp. Industry is manufacturing. Primary audience is CFO. "
+    "Key win themes are cost reduction, process automation, risk mitigation. "
+    "Transformation problem is modernising the finance operating model."
 )
 
 

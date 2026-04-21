@@ -56,12 +56,13 @@ def test_pptx_agent_injects_metrics_into_prompt() -> None:
     ctx.enrichment.risk_profile = risk_profile
     ctx.enrichment.value_drivers = ["Driver1", "Driver2"]
 
-    # Mock the Claude API
-    with patch("app.agents.subagents.is_claude_enabled") as mock_enabled:
+    # Mock the Claude API. Also short-circuit the tool-loop path so the test
+    # exercises the single-shot claude_generate_json fallback.
+    with patch("app.agents.subagents.is_claude_enabled") as mock_enabled, \
+         patch("app.agents.subagents._run_subagent_tool_loop_text", return_value=None):
         mock_enabled.return_value = True
 
         with patch("app.agents.subagents.claude_generate_json") as mock_claude:
-            # Mock Claude response with populated stat_cards
             mock_claude.return_value = {
                 "slides": [
                     {"slide_type": "title", "title": "P2P"},
@@ -77,10 +78,8 @@ def test_pptx_agent_injects_metrics_into_prompt() -> None:
                 ]
             }
 
-            # Run PPTX agent
             result = run_pptx_agent(ctx)
 
-            # Verify Claude was called with metrics in the prompt
             assert mock_claude.called, "Claude API should be called"
             call_args = mock_claude.call_args
             user_prompt = call_args[1].get("user") if call_args else ""
@@ -293,11 +292,11 @@ def test_pptx_agent_generates_populated_deck() -> None:
     ctx.enrichment.risk_profile = None
     ctx.enrichment.value_drivers = []
 
-    with patch("app.agents.subagents.is_claude_enabled") as mock_enabled:
+    with patch("app.agents.subagents.is_claude_enabled") as mock_enabled, \
+         patch("app.agents.subagents._run_subagent_tool_loop_text", return_value=None):
         mock_enabled.return_value = True
 
         with patch("app.agents.subagents.claude_generate_json") as mock_claude:
-            # Return a properly populated deck
             mock_claude.return_value = {
                 "slides": [
                     {"slide_type": "title", "title": "Procure-to-Pay", "subtitle": "Process Overview"},
@@ -378,11 +377,11 @@ def test_metrics_injection_prevents_empty_slides() -> None:
     ctx.run_id = "test"
     ctx.skill_card = {}  # Add required attribute
 
-    with patch("app.agents.subagents.is_claude_enabled") as mock_enabled:
+    with patch("app.agents.subagents.is_claude_enabled") as mock_enabled, \
+         patch("app.agents.subagents._run_subagent_tool_loop_text", return_value=None):
         mock_enabled.return_value = True
 
         with patch("app.agents.subagents.claude_generate_json") as mock_claude:
-            # Return populated deck
             mock_claude.return_value = {
                 "slides": [
                     {"slide_type": "title", "title": "Test"},

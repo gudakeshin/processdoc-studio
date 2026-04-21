@@ -221,7 +221,14 @@ def test_redo_proposal_plan_persists_content_skill_targets_into_run_plan() -> No
 
     msg = client.post(
         f"/api/projects/{project_id}/conversation/messages",
-        json={"content": "Draft a finance transformation proposal and pitch deck for CFO review."},
+        json={
+            "content": (
+                "Draft a finance transformation proposal and pitch deck for CFO review. "
+                "Client is Acme Corp. Industry is manufacturing. Primary audience is CFO. "
+                "Key win themes are cost reduction, process automation, risk mitigation. "
+                "Transformation problem is modernising the finance operating model."
+            )
+        },
         headers=headers,
     )
     assert msg.status_code == 200
@@ -294,7 +301,14 @@ def test_update_run_plan_preserves_existing_content_skill_targets() -> None:
 
     msg = client.post(
         f"/api/projects/{project_id}/conversation/messages",
-        json={"content": "Create a finance transformation proposal for CFO and controllership leaders."},
+        json={
+            "content": (
+                "Create a finance transformation proposal for CFO and controllership leaders. "
+                "Client is Acme Corp. Industry is manufacturing. Primary audience is CFO. "
+                "Key win themes are cost reduction, process automation, risk mitigation. "
+                "Transformation problem is modernising the finance operating model."
+            )
+        },
         headers=headers,
     )
     assert msg.status_code == 200

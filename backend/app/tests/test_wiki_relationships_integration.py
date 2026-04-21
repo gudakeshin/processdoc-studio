@@ -51,7 +51,10 @@ def test_relationships_generated_from_three_ingested_docs(tmp_path, monkeypatch)
     assert result["total_relationships"] > 0
 
     rel_file = wiki_dir / ".meta" / "relationships.json"
-    rels = json.loads(rel_file.read_text(encoding="utf-8")).get("relationships", [])
+    raw = json.loads(rel_file.read_text(encoding="utf-8"))
+    # Support both legacy flat shape and schema-versioned envelope {schema_version, data}.
+    payload = raw.get("data") if isinstance(raw.get("data"), dict) and "schema_version" in raw else raw
+    rels = payload.get("relationships", [])
     assert len(rels) > 0
 
     inbound_outbound: dict[str, dict[str, int]] = {}

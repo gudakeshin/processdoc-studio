@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import uuid
 from datetime import datetime, timedelta
@@ -37,6 +38,9 @@ from app.services.proposal_policy import (
     has_proposal_intent,
     is_finance_proposal_intent,
 )
+from app.services.conversation_router import fallback_decision, route_turn
+from app.services.conversation_state import load_state, save_state, stamp_router
+from app.services.retrieval import TieredContextEngine
 from app.services.run_worker import append_run_event
 from app.services.storage import ensure_workspace, workspace_path
 
@@ -273,6 +277,79 @@ def _is_proposal_instruction(content: str, template_ids: list[str]) -> bool:
     return bool(is_finance_proposal_intent(lowered) or has_proposal_intent(lowered) or "rfp" in lowered.lower())
 
 
+def _has_proposal_slot_signal(slots: dict | None) -> bool:
+    """Return True when captured discovery slots look like proposal context.
+
+    Two of {client.name, audience, win_themes} being present is treated as
+    strong evidence the user is in a proposal discovery, even without the
+    word "proposal" / "create" in the latest message.
+    """
+    if not isinstance(slots, dict):
+        return False
+    present = 0
+    client = slots.get("client") if isinstance(slots.get("client"), dict) else {}
+    if str(client.get("name") or "").strip():
+        present += 1
+    if str(slots.get("audience") or "").strip():
+        present += 1
+    themes = slots.get("win_themes") if isinstance(slots.get("win_themes"), list) else []
+    if themes:
+        present += 1
+    outcome = slots.get("outcome") if isinstance(slots.get("outcome"), dict) else {}
+    if str(outcome.get("primary") or "").strip():
+        present += 1
+    return present >= 2
+
+
+def _grounded_conversational_fallback(*, slots: dict | None, missing_slots: list[str] | None) -> str:
+    """Deterministic slot-aware reply used only when the LLM call fails.
+
+    Avoids the old generic 'Great topic!' template by referencing captured facts
+    and asking only for the missing pieces.
+    """
+    slots = slots or {}
+    missing_slots = [s for s in (missing_slots or []) if s]
+    known_parts: list[str] = []
+    client = slots.get("client") if isinstance(slots.get("client"), dict) else {}
+    name = str(client.get("name") or "").strip()
+    if name:
+        known_parts.append(f"client **{name}**")
+    audience = str(slots.get("audience") or "").strip()
+    if audience:
+        known_parts.append(f"audience **{audience}**")
+    themes = slots.get("win_themes") if isinstance(slots.get("win_themes"), list) else []
+    if themes:
+        known_parts.append("win themes: " + ", ".join(str(t) for t in themes))
+    outcome = slots.get("outcome") if isinstance(slots.get("outcome"), dict) else {}
+    primary_outcome = str(outcome.get("primary") or "").strip()
+    if primary_outcome:
+        known_parts.append(f"outcome: {primary_outcome}")
+
+    if known_parts and not missing_slots:
+        return (
+            "Got it — I have "
+            + "; ".join(known_parts)
+            + ". Do you want this as a PPTX deck, a DOCX document, or both? I can draft a plan as soon as you pick."
+        )
+    if known_parts and missing_slots:
+        friendly = {
+            "client": "the client name",
+            "audience": "the primary audience",
+            "win_themes": "1–3 win themes we want to land",
+            "outcome": "the headline outcome/problem we're solving",
+        }
+        asks = [friendly.get(s, s) for s in missing_slots]
+        return (
+            "Captured "
+            + "; ".join(known_parts)
+            + ". To move on I still need " + ", ".join(asks) + "."
+        )
+    return (
+        "Tell me the client, the primary audience, and 1–3 win themes you want to land. "
+        "Once I have those I'll sketch the deliverable structure."
+    )
+
+
 def _normalize_discovery(raw: object) -> dict:
     if not isinstance(raw, dict):
         return {}
@@ -355,7 +432,14 @@ def _has_sufficient_discovery(discovery: object) -> bool:
     return bool(str(client.get("name") or "").strip() and str(outcome.get("primary") or "").strip() and themes)
 
 
-def _propose_discovery_questions(db: Session, conv: Conversation, instruction: str, prior_messages: list[dict]) -> dict:
+def _propose_discovery_questions(
+    db: Session,
+    conv: Conversation,
+    instruction: str,
+    prior_messages: list[dict],
+    *,
+    missing_slots: list[str] | None = None,
+) -> dict:
     from app.services.claude import claude_generate_json
 
     prior_context = "\n".join(
@@ -363,24 +447,36 @@ def _propose_discovery_questions(db: Session, conv: Conversation, instruction: s
         for m in prior_messages[-8:]
         if str(m.get("content") or "").strip()
     )
+    slot_questions = {
+        "client": "Who is the client (name + industry), and what transformation problem are we solving?",
+        "outcome": "Who is the primary audience, and what decision should this proposal help them make?",
+        "win_themes": "What 2-3 win themes or proof points must we emphasize?",
+    }
+    normalized_missing = [s for s in (missing_slots or []) if s in slot_questions]
     questions: list[str] = []
-    try:
-        payload = claude_generate_json(
-            system=(
-                "Generate exactly 3 concise discovery questions for a consulting proposal kickoff. "
-                "Questions must cover: (1) client/company + industry context, "
-                "(2) desired audience outcome/decision, (3) top differentiators or proof points. "
-                "Return JSON: {\"questions\": [\"...\", \"...\", \"...\"]}."
-            ),
-            user=f"Instruction:\n{instruction}\n\nRecent context:\n{prior_context}",
-            temperature=0.2,
-            max_tokens=300,
-        )
-        raw_q = payload.get("questions") if isinstance(payload, dict) else None
-        if isinstance(raw_q, list):
-            questions = [str(q).strip() for q in raw_q if str(q).strip()][:3]
-    except Exception:
-        questions = []
+    if normalized_missing:
+        questions = [slot_questions[s] for s in normalized_missing]
+    if normalized_missing:
+        # Skip LLM when we already know exactly what's missing.
+        pass
+    else:
+        try:
+            payload = claude_generate_json(
+                system=(
+                    "Generate exactly 3 concise discovery questions for a consulting proposal kickoff. "
+                    "Questions must cover: (1) client/company + industry context, "
+                    "(2) desired audience outcome/decision, (3) top differentiators or proof points. "
+                    "Return JSON: {\"questions\": [\"...\", \"...\", \"...\"]}."
+                ),
+                user=f"Instruction:\n{instruction}\n\nRecent context:\n{prior_context}",
+                temperature=0.2,
+                max_tokens=300,
+            )
+            raw_q = payload.get("questions") if isinstance(payload, dict) else None
+            if isinstance(raw_q, list):
+                questions = [str(q).strip() for q in raw_q if str(q).strip()][:3]
+        except Exception:
+            questions = []
     if len(questions) < 3:
         questions = [
             "Who is the client (name + industry), and what transformation problem are we solving?",
@@ -429,72 +525,161 @@ def _extract_discovery_answers(user_message: str, prior_messages: list[dict]) ->
         return {}
 
 
-def _persist_conversational_response(
-    db: Session, conv: Conversation, user_message: str, prior_messages: list[dict]
-) -> dict:
-    """Generate a natural, colleague-like conversational response.
+def _extract_discovery_answers_fast(user_message: str) -> dict:
+    """Best-effort deterministic extraction for common discovery answer phrasings."""
+    text = str(user_message or "").strip()
+    lowered = text.lower()
+    out: dict[str, object] = {}
 
-    Instead of jumping to plan generation, engage in genuine dialogue:
-    ask probing questions, suggest approaches, share insights, build understanding.
+    client_match = re.search(r"\bclient\s+is\s+([^\-.,\n]+)", text, re.IGNORECASE)
+    if client_match:
+        client_name = client_match.group(1).strip()
+        if client_name:
+            out["client"] = {"name": client_name}
+
+    industry_match = re.search(r"\bindustry\s*(?:is|:)\s*([^.\n]+)", text, re.IGNORECASE)
+    if industry_match:
+        industry = industry_match.group(1).strip()
+        cur = out.get("client") if isinstance(out.get("client"), dict) else {}
+        out["client"] = {**cur, "industry": industry}
+
+    audience_match = re.search(
+        r"\b(?:primary\s+audience|audience)\s*(?:is|:)\s*([^.\n]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if audience_match:
+        out["audience"] = audience_match.group(1).strip().lower()
+
+    theme_matches = re.findall(r"\b(?:key\s+)?win\s+theme(?:s)?\s*(?:is|are|:)\s*([^.\n]+)", text, re.IGNORECASE)
+    if theme_matches:
+        themes: list[str] = []
+        for m in theme_matches:
+            parts = [p.strip(" -") for p in re.split(r",| and ", m) if p.strip()]
+            themes.extend(parts)
+        if themes:
+            out["win_themes"] = themes[:3]
+
+    outcome_match = re.search(
+        r"\btransformation\s+problem\s*(?:is|:)\s*([^.\n]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if outcome_match:
+        out["outcome"] = {"primary": outcome_match.group(1).strip()}
+    elif "driving transformation" in lowered:
+        out["outcome"] = {"primary": "Drive transformation across processes"}
+
+    return _normalize_discovery(out)
+
+
+def _load_project_context_snapshot(db: Session, project_id: str, instruction: str) -> str:
+    engine = TieredContextEngine()
+    excerpt = engine.planner_excerpt(project_id, instruction, char_cap=6000)
+    profile_row = db.scalar(select(ProjectMemoryProfile).where(ProjectMemoryProfile.project_id == project_id))
+    profile_text = ""
+    if profile_row and profile_row.summary_json:
+        try:
+            parsed = json.loads(profile_row.summary_json)
+            if isinstance(parsed, dict):
+                profile_text = json.dumps(parsed)[:2500]
+        except Exception:
+            profile_text = ""
+    combined_parts = []
+    if profile_text:
+        combined_parts.append(f"[ProjectMemoryProfile]\n{profile_text}")
+    if excerpt:
+        combined_parts.append(excerpt)
+    return "\n\n".join(combined_parts)[:9000]
+
+
+def _contains_deliverable_signal(text: str) -> bool:
+    lowered = (text or "").lower()
+    signals = [
+        "proposal",
+        "deck",
+        "presentation",
+        "report",
+        "financial model",
+        "sop",
+        "process map",
+        "raci",
+        "docx",
+        "pptx",
+        "xlsx",
+    ]
+    return any(sig in lowered for sig in signals)
+
+
+def _persist_conversational_response(
+    db: Session,
+    conv: Conversation,
+    user_message: str,
+    prior_messages: list[dict],
+    *,
+    slots: dict | None = None,
+    project_context: str | None = None,
+    missing_slots: list[str] | None = None,
+) -> dict:
+    """Generate a natural, colleague-like conversational response grounded in captured context.
+
+    The LLM prompt always receives currently known slots and project context (wiki/memory)
+    so responses reference actual facts (e.g. client name, audience, win themes) rather than
+    asking for information the user has already supplied.
     """
     from app.services.claude import claude_generate
 
-    # Build conversation context from recent messages
     recent_context = "\n".join(
         f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:600]}"
         for m in prior_messages[-8:]
         if str(m.get("content") or "").strip()
     )
+    slots = slots or {}
+    missing_slots = [s for s in (missing_slots or []) if s]
+    project_context = (project_context or "").strip()
 
-    system_prompt = """You are Sheldon, an energetic and insightful creative partner in a collaborative studio.
-You're having a natural back-and-forth conversation with your teammate about their project.
+    known_bits: list[str] = []
+    client = slots.get("client") if isinstance(slots.get("client"), dict) else {}
+    if str(client.get("name") or "").strip():
+        known_bits.append(f"- Client: {client.get('name')}" + (f" ({client.get('industry')})" if client.get("industry") else ""))
+    outcome = slots.get("outcome") if isinstance(slots.get("outcome"), dict) else {}
+    if str(outcome.get("primary") or "").strip():
+        known_bits.append(f"- Outcome/Problem: {outcome.get('primary')}")
+    if slots.get("audience"):
+        known_bits.append(f"- Audience: {slots.get('audience')}")
+    themes = slots.get("win_themes") if isinstance(slots.get("win_themes"), list) else []
+    if themes:
+        known_bits.append(f"- Win themes: {', '.join(str(t) for t in themes)}")
+    known_block = "\n".join(known_bits) if known_bits else "(none captured yet)"
+    missing_block = ", ".join(missing_slots) if missing_slots else "(none — all required inputs captured)"
 
-Your role is to be a THOUGHTFUL COLLEAGUE — not a vending machine that produces plans on demand.
-
-CONVERSATION RULES:
-1. Ask probing questions to understand what they REALLY need — don't assume.
-2. If they share context about a project, engage with it: ask about audience, goals, constraints.
-3. If they ask "what approach" or "what options" — suggest 2-3 concrete approaches with brief trade-offs.
-4. If they mention a topic/domain — share a relevant insight or angle they might not have considered.
-5. Build understanding incrementally across messages — you're NOT in a rush to generate anything.
-6. Keep responses concise (3-5 sentences) unless they ask for detail.
-7. Use Sheldon's personality: energetic, strategic, supportive, occasionally witty.
-8. Use occasional emojis (1-2 per message max) — don't overdo it.
-
-CRITICAL: Do NOT say "Plan Ready" or offer to generate deliverables unless the user explicitly asks you to create/build/generate something.
-
-When the user seems ready to commit, you can say something like:
-"Sounds like we're aligned! When you're ready, just say the word and I'll put together a plan for [specific deliverable]."
-
-Your capabilities (for context, so you can discuss them naturally):
-- Proposals (PPT, Word)
-- Financial models (Excel)
-- Process maps and flowcharts
-- SOPs and documentation
-- Reports and analysis
-- RACI matrices"""
-
-    user_prompt = f"""Conversation so far:
-{recent_context}
-
-Latest message from user: {user_message}
-
-Respond naturally as a colleague. Do NOT generate a plan or say "Plan Ready"."""
+    system_prompt = (
+        "You are Sheldon, a consulting copilot. Respond as a thoughtful colleague, NOT a vending machine.\n"
+        "You MUST ground every response in the captured context below. Do NOT ask the user for information "
+        "that is already present. When context contains client, audience, outcome, or win themes, "
+        "acknowledge them explicitly and move the conversation forward.\n"
+        "If missing_slots is non-empty, ask ONLY for those. If missing_slots is empty, confirm readiness "
+        "and offer to create a specific deliverable (e.g. propose PPTX vs DOCX) — but do NOT say 'Plan Ready'.\n"
+        "Keep replies concise (2-4 sentences). Use at most 1 emoji. Never return the generic 'Great topic!' template."
+    )
+    user_prompt = (
+        f"Captured context (known_slots):\n{known_block}\n\n"
+        f"Missing slots: {missing_block}\n\n"
+        f"Project context excerpt (wiki/memory):\n{project_context[:4000] or '(none)'}\n\n"
+        f"Conversation so far:\n{recent_context}\n\n"
+        f"Latest user message:\n{user_message}\n\n"
+        "Write the reply now."
+    )
 
     try:
         response_text = claude_generate(
             system=system_prompt,
             user=user_prompt,
-            temperature=0.7,
-            max_tokens=400
+            temperature=0.4,
+            max_tokens=400,
         ).strip()
     except Exception:
-        response_text = (
-            "Great topic! Let me think about this with you. "
-            "Can you tell me a bit more about the context? "
-            "Who's the audience, and what's the main goal? "
-            "That'll help me suggest the right approach. 🎯"
-        )
+        response_text = _grounded_conversational_fallback(slots=slots, missing_slots=missing_slots)
 
     msg = ConversationMessage(
         conversation_id=conv.id,
@@ -1602,41 +1787,28 @@ def post_project_conversation_message(
     db.add(user_msg)
     db.flush()
 
-    # ── Layer 1: Greetings & vague messages ────────────────────────────
-    if _is_vague_instruction(content):
-        return _persist_clarification_message(db, conv, content)
-
-    # Load conversation context (needed by all subsequent layers)
+    # Fast-path routing only for obvious greetings/acknowledgments.
     prior_messages = _serialize_messages(db, conv.id)
     prior_plan_meta = _latest_assistant_plan_metadata(prior_messages)
+    state = load_state(conv)
 
-    # ── Layer 2: Simple acknowledgments ("sounds good", "makes sense") ─
+    if _is_vague_instruction(content):
+        state.state = "exploring"
+        stamp_router(state, intent="greeting", confidence=1.0, rationale="vague_instruction_fast_path")
+        save_state(conv, state)
+        db.flush()
+        return _persist_clarification_message(db, conv, content)
+
     if _is_acknowledgment(content):
+        state.state = "exploring"
+        stamp_router(state, intent="ack", confidence=1.0, rationale="acknowledgment_fast_path")
+        save_state(conv, state)
+        db.flush()
         return _persist_acknowledgment_response(db, conv, content, prior_messages)
 
-    # ── Layer 3: Contextual follow-ups about recent findings/issues ────
-    if _is_contextual_followup(content, prior_messages):
-        recent_context = "\n".join(
-            f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:500]}"
-            for m in prior_messages[-4:]
-            if str(m.get("content") or "").strip()
-        )
-        return _persist_contextual_response(db, conv, content, recent_context)
-
-    # ── Layer 4: Intent classification — COMMIT vs CONVERSATION ────────
-    # Only proceed to plan generation if user clearly wants to build something.
-    # Otherwise, engage in natural dialogue like a colleague would.
-    if not _is_commit_intent(content):
-        # User is exploring, discussing, brainstorming, or asking questions.
-        # Engage conversationally — don't jump to "Plan Ready".
-        return _persist_conversational_response(db, conv, content, prior_messages)
-
-    # ── Layer 5: COMMIT path — user explicitly wants to build something ─
-    # From here on, we know the user wants a specific deliverable created.
     available_output_types = [
         item for item in _load_output_types() if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
     ]
-
     history_prompt = "\n".join(
         f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
         for m in prior_messages[-12:]
@@ -1644,74 +1816,218 @@ def post_project_conversation_message(
     )
     base_instruction = str((prior_plan_meta or {}).get("instruction") or "").strip()
     if _is_redo_followup(content) and base_instruction:
-        # Prior plan found in this conversation — append the follow-up
         combined_instruction = f"{base_instruction}\n\nUser follow-up: {content}".strip()
     elif _is_redo_followup(content) and not base_instruction:
-        # No prior plan in this conversation — attempt cross-session recovery
         recovered = _find_prior_plan_instruction(db, pid, exclude_conv_id=conv.id)
         if recovered:
             combined_instruction = f"{recovered}\n\nUser follow-up: {content}".strip()
         else:
-            # Nothing found anywhere — ask for context rather than generating blindly
+            state.state = "exploring"
+            stamp_router(state, intent="clarify", confidence=0.5, rationale="redo_without_context")
+            save_state(conv, state)
+            db.flush()
             return _persist_clarification_message(db, conv, content)
     else:
         combined_instruction = f"{history_prompt}\nuser: {content}".strip()
 
-    # Get deliverable recommendations from LLM
-    try:
-        template_ids, custom_output_types, output_type_representations, rationale, content_skill_hint = _recommend_output_types(
-            combined_instruction, available_output_types
+    # Extract discovery answers on every turn (rule-based + LLM), then pass merged slots
+    # into router so we avoid re-asking already supplied inputs.
+    extracted_fast = _extract_discovery_answers_fast(content)
+    extracted_llm = _extract_discovery_answers(content, prior_messages)
+    premerged_slots = _merge_discovery(state.slots, extracted_fast)
+    premerged_slots = _merge_discovery(premerged_slots, extracted_llm)
+    if extracted_fast or extracted_llm:
+        user_msg.metadata_json = json.dumps(
+            {
+                "kind": "discovery_answer",
+                "captured": True,
+                "discovery": premerged_slots,
+                "sources": {
+                    "fast": bool(extracted_fast),
+                    "llm": bool(extracted_llm),
+                },
+            }
         )
-    except Exception:
-        template_ids, custom_output_types, output_type_representations, rationale, content_skill_hint = [], [], {}, "Unable to process", None
+        db.flush()
+    state.slots = premerged_slots
 
-    # If no deliverables recommended even on a commit intent, try one more pass before out-of-scope.
-    # If the user's message contains explicit format or deliverable keywords, construct the
-    # output types directly rather than declaring the request unsupported.
-    if not template_ids and content.strip():
-        _quick_format_map: dict[str, list[str]] = {
-            "pptx": ["pptx", "ppt", "powerpoint", "slides", "slide deck", "presentation deck"],
-            "docx": ["docx", "word document", "word doc"],
-            "xlsx": ["excel", "spreadsheet", "xlsx"],
-        }
-        _allowed_ids = {item.get("output_type_id") for item in available_output_types if isinstance(item, dict)}
-        _lowered_content = content.lower()
-        emergency_types = [
-            ot for ot, phrases in _quick_format_map.items()
-            if any(p in _lowered_content for p in phrases) and ot in _allowed_ids
+    project_context = _load_project_context_snapshot(db, pid, combined_instruction)
+    decision = route_turn(
+        user_message=content,
+        conv_state=state.state,
+        conv_slots=premerged_slots,
+        recent_messages=prior_messages,
+        project_context=project_context,
+        available_output_types=available_output_types,
+    )
+
+    merged_discovery = _merge_discovery(premerged_slots, decision.extracted_slots)
+    if decision.extracted_slots and not (extracted_fast or extracted_llm):
+        user_msg.metadata_json = json.dumps({"kind": "discovery_answer", "discovery": merged_discovery, "captured": True})
+        db.flush()
+    state.slots = merged_discovery
+
+    deliverable = state.deliverable if isinstance(state.deliverable, dict) else {}
+    template_ids = [str(x).strip() for x in decision.output_types if str(x).strip()]
+    if not template_ids:
+        template_ids = [
+            str(x).strip()
+            for x in (deliverable.get("template_ids") if isinstance(deliverable.get("template_ids"), list) else [])
+            if str(x).strip()
         ]
-        if emergency_types:
-            template_ids = emergency_types
-            output_type_representations = {t: t for t in emergency_types}
-        else:
-            out_of_scope_response = _persist_out_of_scope_message(db, conv, content)
-            return out_of_scope_response
+    output_type_representations = (
+        decision.representations if isinstance(decision.representations, dict) else {}
+    ) or (
+        deliverable.get("representations") if isinstance(deliverable.get("representations"), dict) else {}
+    )
+    # Fallback to keyword-based recommender when the LLM router produced no
+    # output types. Preserves graceful degradation when Claude is unavailable
+    # and keeps the existing conftest stub point intact.
+    fallback_custom_output_types: list[str] = []
+    if not template_ids:
+        try:
+            rec_ids, rec_custom, rec_reps, rec_rationale, rec_hint = _recommend_output_types(
+                combined_instruction, available_output_types
+            )
+        except Exception:
+            rec_ids, rec_custom, rec_reps, rec_rationale, rec_hint = ([], [], {}, "", None)
+        rec_ids = [str(x).strip() for x in (rec_ids or []) if str(x).strip()]
+        if rec_ids:
+            template_ids = rec_ids
+            if not output_type_representations and isinstance(rec_reps, dict):
+                output_type_representations = rec_reps
+            if not decision.rationale and rec_rationale:
+                decision.rationale = str(rec_rationale)
+            if rec_hint and not decision.content_skill_hint and isinstance(rec_hint, dict):
+                decision.content_skill_hint = rec_hint
+            fallback_custom_output_types = [str(x).strip() for x in (rec_custom or []) if str(x).strip()]
+    content_skill_hint = (
+        decision.content_skill_hint
+        if isinstance(decision.content_skill_hint, dict)
+        else (deliverable.get("content_skill_hint") if isinstance(deliverable.get("content_skill_hint"), dict) else None)
+    )
+    custom_output_types: list[str] = list(fallback_custom_output_types)
+    rationale = decision.rationale or "Recommended by conversation router."
 
-    discovery: dict = {}
-    if isinstance(prior_plan_meta, dict):
-        discovery = _merge_discovery(discovery, prior_plan_meta.get("discovery"))
-    for m in reversed(prior_messages):
-        md = m.get("metadata")
-        if isinstance(md, dict) and md.get("discovery"):
-            discovery = _merge_discovery(discovery, md.get("discovery"))
-            break
-    if settings.proposal_discovery_enabled and _is_proposal_instruction(content, template_ids):
-        last_assistant = next((m for m in reversed(prior_messages) if m.get("role") == "assistant"), None)
-        last_kind = (
-            str((last_assistant.get("metadata") or {}).get("kind") or "").strip()
-            if isinstance(last_assistant, dict)
-            else ""
+    recent_text = "\n".join(str(m.get("content") or "") for m in prior_messages[-8:])
+    if decision.intent == "out_of_scope":
+        if decision.confidence >= 0.8 and not _contains_deliverable_signal(recent_text):
+            state.state = "exploring"
+            state.pending_questions = []
+            stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
+            save_state(conv, state)
+            db.flush()
+            return _persist_out_of_scope_message(db, conv, content)
+        decision = fallback_decision(
+            state=state.state,
+            slots=state.slots,
+            reason="out_of_scope_low_conf_or_deliverable_detected",
         )
-        if not _has_sufficient_discovery(discovery):
-            if last_kind == "discovery_questions":
-                extracted = _extract_discovery_answers(content, prior_messages)
-                discovery = _merge_discovery(discovery, extracted)
-                user_msg.metadata_json = json.dumps(
-                    {"discovery": discovery, "kind": "discovery_answer", "captured": bool(extracted)}
+
+    proposal_detected = (
+        _is_proposal_instruction(combined_instruction, template_ids)
+        or _has_proposal_slot_signal(merged_discovery)
+    )
+    if settings.proposal_discovery_enabled and proposal_detected:
+        missing_slots = list(dict.fromkeys(
+            decision.missing_slots
+            or [
+                s
+                for s, ok in (
+                    ("client", bool(str((merged_discovery.get("client") or {}).get("name") if isinstance(merged_discovery.get("client"), dict) else ""))),
+                    ("outcome", bool(str((merged_discovery.get("outcome") or {}).get("primary") if isinstance(merged_discovery.get("outcome"), dict) else ""))),
+                    ("win_themes", bool(merged_discovery.get("win_themes"))),
                 )
-                db.flush()
-            if not _has_sufficient_discovery(discovery):
-                return _propose_discovery_questions(db, conv, combined_instruction, prior_messages)
+                if not ok
+            ]
+        ))
+        if missing_slots:
+            state.state = "discovery"
+            state.pending_questions = missing_slots
+            state.deliverable = {
+                "template_ids": template_ids,
+                "representations": output_type_representations,
+                "content_skill_hint": content_skill_hint,
+            }
+            stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
+            save_state(conv, state)
+            db.flush()
+            return _propose_discovery_questions(
+                db,
+                conv,
+                combined_instruction,
+                prior_messages,
+                missing_slots=missing_slots,
+            )
+        # Slots captured but output format not resolved yet — ask the user to pick
+        # (PPTX vs DOCX) instead of falling back to generic conversation.
+        if not template_ids:
+            state.state = "ready_to_plan"
+            state.pending_questions = ["output_format"]
+            state.deliverable = {
+                "template_ids": [],
+                "representations": output_type_representations,
+                "content_skill_hint": content_skill_hint,
+            }
+            stamp_router(
+                state,
+                intent=decision.intent,
+                confidence=max(decision.confidence, 0.6),
+                rationale="proposal_slots_complete_awaiting_format",
+            )
+            save_state(conv, state)
+            db.flush()
+            return _persist_conversational_response(
+                db,
+                conv,
+                content,
+                prior_messages,
+                slots=merged_discovery,
+                project_context=project_context,
+                missing_slots=["output_format"],
+            )
+
+    if decision.intent in {"smalltalk", "clarify", "greeting", "ack"} and not template_ids:
+        state.state = "exploring"
+        state.pending_questions = []
+        stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
+        save_state(conv, state)
+        db.flush()
+        return _persist_conversational_response(
+            db,
+            conv,
+            content,
+            prior_messages,
+            slots=merged_discovery,
+            project_context=project_context,
+            missing_slots=list(decision.missing_slots or []),
+        )
+
+    if not template_ids:
+        state.state = "exploring"
+        stamp_router(state, intent="clarify", confidence=0.3, rationale="no_template_ids")
+        save_state(conv, state)
+        db.flush()
+        return _persist_conversational_response(
+            db,
+            conv,
+            content,
+            prior_messages,
+            slots=merged_discovery,
+            project_context=project_context,
+            missing_slots=list(decision.missing_slots or []),
+        )
+
+    state.state = "ready_to_plan"
+    state.pending_questions = []
+    state.deliverable = {
+        "template_ids": template_ids,
+        "representations": output_type_representations,
+        "content_skill_hint": content_skill_hint,
+    }
+    stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
+    save_state(conv, state)
+    db.flush()
 
     content_skill_targets = _derive_content_skill_targets(
         instruction=combined_instruction,
@@ -1731,8 +2047,11 @@ def post_project_conversation_message(
         rationale=rationale,
         content_skill_targets=content_skill_targets,
         regeneration_directive=regeneration_directive,
-        discovery=discovery,
+        discovery=merged_discovery,
     )
+    state.state = "plan_proposed"
+    save_state(conv, state)
+    db.commit()
     response["memory_quick_add"] = {
         "memory_page_path": "/memory",
         "batch_api_relative": f"/api/memory/{pid}/batch",
