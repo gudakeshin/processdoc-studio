@@ -34,7 +34,7 @@ from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEv
 from app.db.session import SessionLocal
 from app.schemas.coordinator_run import CoordinatorRunInput
 from app.schemas.run_payloads import GuardrailReportDoc, QaReportDoc
-from app.services.conversation_digest import build_conversation_digest_for_run
+from app.services.conversation_digest import build_conversation_digest_for_run_with_trace
 from app.services.hooks import hook_execution_exists, record_hook_execution, run_hooks_sync, sync_disabled_hooks_from_db
 from app.services.langfuse_tracing import langfuse_event, langfuse_span
 from app.services.observability import increment, observe_latency, record_run_trace, set_gauge
@@ -1209,8 +1209,9 @@ def _execute_run_job(
             if isinstance(_raw_cid, str) and _raw_cid.strip():
                 conv_id = _raw_cid.strip()
             digest = ""
+            digest_trace_payload: dict[str, Any] | None = None
             if conv_id:
-                digest = build_conversation_digest_for_run(
+                digest, digest_trace = build_conversation_digest_for_run_with_trace(
                     session=session,
                     project_id=project_id,
                     conversation_id=conv_id,
@@ -1219,6 +1220,21 @@ def _execute_run_job(
                 )
                 if digest:
                     increment("conversation_digest_built_total")
+                if digest_trace.tiers_applied:
+                    increment("conversation_digest_tiered_compaction_total")
+                digest_trace_payload = {
+                    "conversation_id": conv_id,
+                    "char_cap": int(settings.conversation_digest_max_chars),
+                    "message_limit": int(settings.conversation_digest_message_limit),
+                    "trace": digest_trace.to_dict(),
+                }
+                append_run_event(session, run_id, "context_trace", {"conversation_digest": digest_trace_payload})
+                record_run_trace(
+                    "conversation_digest_trace",
+                    project_id=project_id,
+                    run_id=run_id,
+                    extra={"tiers_applied": list(digest_trace.tiers_applied), "final_char_count": digest_trace.final_char_count},
+                )
             inp = CoordinatorRunInput(
                 raw_text=run.instruction or "",
                 user_instruction=run.instruction or "",

@@ -41,6 +41,7 @@ _PROMETHEUS_COUNTER_HELP: dict[str, str] = {
     "deliverable_quality_fail_total": "Deliverable quality loops that ended below threshold after max rounds.",
     "deliverable_quality_rounds_total": "Individual deliverable quality critique rounds executed.",
     "conversation_digest_built_total": "Runs where a non-empty HITL conversation digest was built for coordinator/workers.",
+    "conversation_digest_tiered_compaction_total": "Runs where tiered conversation digest compaction was applied.",
     "planner_excerpt_chars_total": "Sum of character lengths of planner retrieval excerpts attached to coordinator planning.",
     "narrative_thinking_used_total": "Narrative subagent calls that used extended thinking (when flag enabled).",
 }

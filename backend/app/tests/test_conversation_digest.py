@@ -4,6 +4,7 @@ import pytest
 
 from app.db.models import Conversation, ConversationMessage, Project, User
 from app.db.session import SessionLocal, init_db
+from app.services.compaction_trace import CompactionTrace
 from app.services.conversation_digest import (
     build_conversation_digest_for_run,
     build_conversation_digest_for_run_with_trace,
@@ -107,3 +108,12 @@ def test_build_conversation_digest_tiered_compaction_trace(monkeypatch: pytest.M
         assert trace.tiers_applied
     finally:
         session.close()
+
+
+def test_compaction_trace_to_dict_ratio() -> None:
+    trace = CompactionTrace(original_char_count=200, final_char_count=80)
+    trace.add_tier("tier1_micro_compact")
+    trace.drop_source("conversation_segments", "msg-1")
+    payload = trace.to_dict()
+    assert payload["compression_ratio"] == 0.4
+    assert payload["tiers_applied"] == ["tier1_micro_compact"]
