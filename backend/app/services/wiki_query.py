@@ -65,6 +65,107 @@ def _get_wiki_index(wiki_type: str, project_id: str | None) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Graph expansion — surface related pages via relationships + communities
+# ---------------------------------------------------------------------------
+
+def _expand_search_with_graph(primary_pages: list, wiki_type: str, project_id: str | None, index: dict | None) -> list:
+    """Expand primary search results with related pages from relationships and communities.
+
+    Takes top BM25/embedding results and adds:
+    - 1-hop neighbors from relationships.json (parent/example/implements)
+    - Community peers from communities.json
+
+    Returns up to 12 enriched pages (primary + related).
+    """
+    if not primary_pages or not index:
+        return primary_pages
+
+    try:
+        from app.services.storage import workspace_path
+        import json
+
+        if wiki_type == "leading_practice":
+            meta_dir = workspace_path("leading_practices") / "wiki" / ".meta"
+        else:
+            meta_dir = workspace_path(project_id) / "wiki" / ".meta"
+
+        # Load relationships and communities if available
+        relationships = {}
+        communities = {}
+
+        rels_file = meta_dir / "relationships.json"
+        if rels_file.exists():
+            try:
+                rels_data = json.loads(rels_file.read_text())
+                # Index relationships by source_id for O(1) lookup
+                for rel in (rels_data if isinstance(rels_data, list) else []):
+                    src = rel.get("source_id")
+                    if src:
+                        if src not in relationships:
+                            relationships[src] = []
+                        relationships[src].append(rel)
+            except Exception as e:
+                _LOG.warning(f"Failed to load relationships: {e}")
+
+        comm_file = meta_dir / "communities.json"
+        if comm_file.exists():
+            try:
+                comm_data = json.loads(comm_file.read_text())
+                # Index communities by page_id for O(1) lookup
+                for page_id, comm_id in (comm_data.items() if isinstance(comm_data, dict) else []):
+                    communities[page_id] = comm_id
+            except Exception as e:
+                _LOG.warning(f"Failed to load communities: {e}")
+
+        # Collect primary page IDs
+        primary_ids = set()
+        for p in primary_pages:
+            page_id = p.get("page_id") or p.get("title", "").lower().replace(" ", "_")
+            primary_ids.add(page_id)
+
+        # Expand with related pages
+        related_ids = set()
+
+        # 1. Add neighbors from relationships (prefer higher-confidence types)
+        for page_id in primary_ids:
+            if page_id in relationships:
+                for rel in relationships[page_id]:
+                    target = rel.get("target_id")
+                    rel_type = rel.get("relation_type", "")
+                    # Prefer semantically strong relationships
+                    if target and rel_type in ("parent_of", "example_of", "implements", "refines"):
+                        related_ids.add(target)
+
+        # 2. Add community peers
+        primary_community = None
+        for page_id in primary_ids:
+            if page_id in communities:
+                primary_community = communities[page_id]
+                break
+
+        if primary_community is not None:
+            for page_id, comm_id in communities.items():
+                if comm_id == primary_community and page_id not in primary_ids:
+                    related_ids.add(page_id)
+
+        # Remove duplicates and fetch related page objects from index
+        all_pages_map = {(p.get("page_id") or p.get("title", "").lower().replace(" ", "_")): p for p in (index.get("pages") or [])}
+
+        result = primary_pages.copy()
+        for related_id in related_ids:
+            if related_id in all_pages_map and related_id not in primary_ids:
+                result.append(all_pages_map[related_id])
+                if len(result) >= 12:
+                    break
+
+        return result
+
+    except Exception as e:
+        _LOG.warning(f"Graph expansion failed, returning primary results only: {e}")
+        return primary_pages
+
+
+# ---------------------------------------------------------------------------
 # BM25 + embedding rerank search
 # ---------------------------------------------------------------------------
 
@@ -92,7 +193,7 @@ def _rerank_with_embeddings(question: str, candidates: list) -> list:
 
 
 def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id) -> list:
-    """BM25 search over wiki index, with embedding rerank for top candidates."""
+    """BM25 search over wiki index, with embedding rerank and graph expansion for related pages."""
     pages = (index or {}).get("pages", [])
     if not pages:
         return []
@@ -121,7 +222,12 @@ def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id) -
 
     if not candidates:
         return []
-    return _rerank_with_embeddings(question, candidates)
+
+    # Embedding rerank to top 5
+    primary_results = _rerank_with_embeddings(question, candidates)
+
+    # Expand with related pages from graph (relationships + communities)
+    return _expand_search_with_graph(primary_results, wiki_type, project_id, index)
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +235,11 @@ def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id) -
 # ---------------------------------------------------------------------------
 
 def _synthesize_answer(question: str, pages: list, wiki_type: str = "", project_id=None) -> str:
-    """Synthesize an answer from relevant wiki pages using Claude."""
+    """Synthesize an answer from relevant wiki pages using Claude.
+
+    Pages are ordered: primary matches (top 5 from embedding rerank) then related pages
+    (discovered via graph). The LLM is told which are which so it can weight them.
+    """
     from app.services.claude import claude_generate, is_claude_enabled
 
     if not pages:
@@ -149,16 +259,30 @@ def _synthesize_answer(question: str, pages: list, wiki_type: str = "", project_
             parts.append(f"**{page.get('title', 'Unknown')}**\n{page.get('content', '')[:300]}")
         return "\n\n".join(parts)
 
-    context = "\n\n".join(
-        f"### {p.get('title', 'Unknown')}\n{p.get('content', '')[:800]}"
-        for p in pages[:5]
-    )
+    # Annotate primary (top 5) vs related (6+) pages
+    context_parts = []
+    for i, p in enumerate(pages[:5]):
+        context_parts.append(
+            f"### {p.get('title', 'Unknown')} [PRIMARY]\n{p.get('content', '')[:800]}"
+        )
+
+    if len(pages) > 5:
+        context_parts.append("\n**Related pages from knowledge graph:**\n")
+        for p in pages[5:12]:
+            context_parts.append(
+                f"### {p.get('title', 'Unknown')} [RELATED]\n{p.get('content', '')[:500]}"
+            )
+
+    context = "\n\n".join(context_parts)
 
     return claude_generate(
         system=(
             schema_prefix
             + "You are a knowledgeable assistant answering questions from a curated wiki. "
-            "Use only the provided wiki pages to answer. Be concise and direct. "
+            "Primary pages are direct matches to the query. Related pages are connected via the knowledge graph "
+            "(relationships, communities) and may provide context or alternative perspectives.\n"
+            "Prioritize primary pages but incorporate related pages if they add depth. "
+            "Be concise and direct. "
             "Cite the page titles inline using wiki-link syntax, e.g. [[Page Title]] or [[page_id|Page Title]]. "
             "If the pages don't contain relevant information, say so clearly."
         ),

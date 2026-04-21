@@ -11,6 +11,7 @@ Verifies that the agent behaves like a colleague, not a plan-generating machine:
 import pytest
 
 from app.api.projects import (
+    _extract_discovery_answers_fast,
     _merge_discovery,
     _required_discovery_missing_slots,
     _has_sufficient_discovery,
@@ -314,3 +315,11 @@ class TestProposalDiscoveryHelpers:
             "outcome": {"primary": ""},
         }
         assert _required_discovery_missing_slots(payload) == ["outcome"]
+
+    def test_fast_extractor_maps_should_help_decide_phrase_to_outcome(self) -> None:
+        payload = _extract_discovery_answers_fast(
+            "The proposal should help them decide the agentic interventions required in PTP process."
+        )
+        outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+        assert "agentic interventions required in PTP process" in str(outcome.get("decision") or "")
+        assert str(outcome.get("primary") or "").startswith("Support decision-making on")

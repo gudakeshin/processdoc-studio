@@ -359,18 +359,24 @@ def _normalize_discovery(raw: object) -> dict:
         return {}
     out: dict[str, object] = {}
     client = raw.get("client")
+    if isinstance(client, str) and client.strip():
+        client = {"name": client.strip()}
     if isinstance(client, dict):
         name = str(client.get("name") or "").strip()
         industry = str(client.get("industry") or "").strip()
         if name or industry:
             out["client"] = {"name": name, "industry": industry}
     outcome = raw.get("outcome")
+    if isinstance(outcome, str) and outcome.strip():
+        outcome = {"primary": outcome.strip()}
     if isinstance(outcome, dict):
         primary = str(outcome.get("primary") or "").strip()
         decision = str(outcome.get("decision") or "").strip()
         if primary or decision:
             out["outcome"] = {"primary": primary, "decision": decision}
     themes = raw.get("win_themes")
+    if isinstance(themes, str) and themes.strip():
+        themes = [t.strip() for t in re.split(r"[,;]|\band\b", themes) if t.strip()]
     if isinstance(themes, list):
         vals = [str(x).strip() for x in themes if str(x).strip()]
         if vals:
@@ -571,6 +577,7 @@ def _propose_discovery_questions(
     missing_slots: list[str] | None = None,
     wiki_context: str | None = None,
     wiki_prefilled_slots: list[str] | None = None,
+    conv_slots: dict | None = None,
 ) -> dict:
     from app.services.claude import claude_generate_json
 
@@ -586,22 +593,34 @@ def _propose_discovery_questions(
     }
     wiki_prefilled = {str(x).strip() for x in (wiki_prefilled_slots or []) if str(x).strip()}
     normalized_missing = [s for s in (missing_slots or []) if s in slot_questions and s not in wiki_prefilled]
+
+    known_slots = {k: v for k, v in (conv_slots or {}).items() if v and str(v).strip()}
+    known_context = (
+        "Already captured — do NOT ask about these:\n"
+        + "\n".join(f"- {k}: {v}" for k, v in known_slots.items())
+        if known_slots else ""
+    )
+
     questions: list[str] = []
     if normalized_missing:
         questions = [slot_questions[s] for s in normalized_missing]
-    if normalized_missing and wiki_context:
+    if normalized_missing:
         try:
             payload = claude_generate_json(
                 system=(
                     "Generate concise discovery questions for a consulting proposal kickoff. "
-                    "Use wiki context as hints and phrase questions as confirmation when possible. "
-                    "Ask ONLY for listed missing_slots. Return JSON: {\"questions\": [\"...\", ...]}."
+                    + (known_context + "\n" if known_context else "")
+                    + (
+                        "Use wiki context as hints and phrase questions as confirmation when possible. "
+                        if wiki_context else ""
+                    )
+                    + "Ask ONLY for listed missing_slots. Return JSON: {\"questions\": [\"...\", ...]}."
                 ),
                 user=(
                     f"Instruction:\n{instruction}\n\n"
                     f"Missing slots: {normalized_missing}\n\n"
                     f"Recent context:\n{prior_context}\n\n"
-                    f"Wiki context excerpt:\n{str(wiki_context)[:2500]}"
+                    + (f"Wiki context excerpt:\n{str(wiki_context)[:2500]}" if wiki_context else "")
                 ),
                 temperature=0.2,
                 max_tokens=300,
@@ -611,34 +630,9 @@ def _propose_discovery_questions(
                 questions = [str(q).strip() for q in raw_q if str(q).strip()][: max(1, len(normalized_missing))]
         except Exception:
             questions = []
-    elif not normalized_missing:
-        try:
-            payload = claude_generate_json(
-                system=(
-                    "Generate exactly 3 concise discovery questions for a consulting proposal kickoff. "
-                    "Questions must cover: (1) client/company + industry context, "
-                    "(2) desired audience outcome/decision, (3) top differentiators or proof points. "
-                    "Return JSON: {\"questions\": [\"...\", \"...\", \"...\"]}."
-                ),
-                user=f"Instruction:\n{instruction}\n\nRecent context:\n{prior_context}",
-                temperature=0.2,
-                max_tokens=300,
-            )
-            raw_q = payload.get("questions") if isinstance(payload, dict) else None
-            if isinstance(raw_q, list):
-                questions = [str(q).strip() for q in raw_q if str(q).strip()][:3]
-        except Exception:
-            questions = []
-    if len(questions) < 3:
-        fallback = [
-            "Who is the client (name + industry), and what transformation problem are we solving?",
-            "Who is the primary audience, and what decision should this proposal help them make?",
-            "What 2-3 win themes or proof points must we emphasize?",
-        ]
-        if normalized_missing:
-            questions = [slot_questions[s] for s in normalized_missing]
-        else:
-            questions = fallback
+    if len(questions) < len(normalized_missing or []) or (not normalized_missing and not questions):
+        still_missing = [s for s in slot_questions if s not in known_slots]
+        questions = [slot_questions[s] for s in still_missing] if still_missing else list(slot_questions.values())
     message = "Before I draft the proposal plan, I need 3 quick inputs:\n- " + "\n- ".join(questions)
     msg = ConversationMessage(
         conversation_id=conv.id,
@@ -670,7 +664,12 @@ def _extract_discovery_answers(user_message: str, prior_messages: list[dict]) ->
         payload = claude_generate_json(
             system=(
                 "Extract proposal discovery details from a user's response. "
-                "Return JSON only with keys: client{name,industry}, outcome{primary,decision}, win_themes[array max 3]."
+                "Return JSON with this exact structure (omit fields with no evidence): "
+                '{"client": {"name": "...", "industry": "..."}, '
+                '"outcome": {"primary": "...", "decision": "..."}, '
+                '"win_themes": ["...", "..."], "audience": "..."}. '
+                "client.name = company name. outcome.primary = the problem/goal being solved. "
+                "win_themes = key differentiators or proof points. Never return empty strings."
             ),
             user=f"Recent chat context:\n{context}\n\nLatest user response:\n{user_message}",
             temperature=0.1,
@@ -2422,6 +2421,7 @@ def post_project_conversation_message(
                 missing_slots=missing_slots,
                 wiki_context=project_context if settings.wiki_aware_discovery_enabled else None,
                 wiki_prefilled_slots=wiki_prefilled_slots,
+                conv_slots=merged_discovery,
             )
         # Slots captured but output format not resolved yet — ask the user to pick
         # (PPTX vs DOCX) instead of falling back to generic conversation.
