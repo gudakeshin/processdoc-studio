@@ -675,6 +675,72 @@ def _weave_backlinks(wiki_dir: Any, new_page_ids: list, new_page_titles: dict) -
     return woven
 
 
+def _weave_entity_backlinks(wiki_dir: Any, entities: list) -> int:
+    """
+    Scan wiki pages for mentions of extracted entities and link them.
+
+    Entities are turned into hub nodes: all mentions across the wiki get linked
+    to their entity pages, creating a knowledge graph where entities connect related pages.
+
+    Args:
+        wiki_dir: Path to wiki directory
+        entities: List of dicts with keys: name (entity name), page_id (entity page id)
+
+    Returns:
+        Number of pages modified
+    """
+    if not entities:
+        return 0
+
+    # Build map of entity names → page_ids, filter out short/common terms
+    entity_map = {}
+    for entity in entities:
+        name = (entity.get("name") or "").strip()
+        page_id = entity.get("page_id", "").strip()
+        if name and page_id and len(name) > 2:  # Skip very short terms
+            entity_map[name] = page_id
+
+    if not entity_map:
+        return 0
+
+    woven = 0
+    try:
+        for md_file in sorted(Path(wiki_dir).glob("*.md")):
+            if md_file.name in ("index.md", "log.md", "WIKI_SCHEMA.md"):
+                continue
+            try:
+                text = md_file.read_text(encoding="utf-8")
+                changed = False
+
+                for entity_name, page_id in entity_map.items():
+                    if md_file.stem == page_id:
+                        continue  # skip self-links
+
+                    wiki_link = f"[[{page_id}|{entity_name}]]"
+                    if wiki_link in text:
+                        continue  # already linked
+
+                    # Match bare entity name (case-insensitive) not already inside [[ ]]
+                    # For multi-word entities, use looser word boundaries
+                    pattern = rf"(?<!\[\[)(?<!\|)(?<!\w){re.escape(entity_name)}(?!\w)(?!\]\])"
+                    if re.search(pattern, text, re.IGNORECASE):
+                        # Replace only first occurrence per entity per page
+                        text = re.sub(pattern, wiki_link, text, count=1, flags=re.IGNORECASE)
+                        changed = True
+
+                if changed:
+                    md_file.write_text(text, encoding="utf-8")
+                    woven += 1
+
+            except Exception:  # noqa: S112 — best-effort, non-fatal
+                continue
+
+    except Exception as e:
+        _LOG.warning(f"Entity backlink weaving failed: {e}")
+
+    return woven
+
+
 # ---------------------------------------------------------------------------
 # Compounding entity page update
 # ---------------------------------------------------------------------------
@@ -963,6 +1029,19 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                     new_titles[pid] = pid
         woven = _weave_backlinks(wiki_dir, page_ids, new_titles)
         _LOG.info(f"Backlinks woven into {woven} pages")
+
+        # Weave entity backlinks: link all mentions of extracted entities
+        # This turns entities into hub nodes connecting related pages
+        entity_links = []
+        for entity in entities[:3]:
+            ename = (entity.get("name") or "").strip()
+            if ename:
+                eid = re.sub(r"[^a-z0-9_]", "", ename.lower().replace(" ", "_"))[:50]
+                entity_links.append({"name": ename, "page_id": eid})
+
+        if entity_links:
+            entity_woven = _weave_entity_backlinks(wiki_dir, entity_links)
+            _LOG.info(f"Entity backlinks woven into {entity_woven} pages")
 
         from app.services.wiki_graph import _build_and_persist_relationships
         _build_and_persist_relationships(wiki_type, project_id)
