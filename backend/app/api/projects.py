@@ -2200,6 +2200,11 @@ def post_project_conversation_decisions(
         values = [str(v).strip() for v in (ans.selected_values or []) if str(v).strip()]
         if ans.free_text and ans.free_text.strip():
             values.append(ans.free_text.strip())
+        if not values:
+            # Skip empty entries so a user who clicked "Save" without choosing
+            # anything gets a structured 400 below instead of silently replacing
+            # their prior answer with an empty list.
+            continue
         answers_map[key] = values[:5]
     if not answers_map:
         raise HTTPException(
@@ -2239,12 +2244,33 @@ def post_project_conversation_decisions(
         enriched_instruction = (
             f"{assistant_instruction}\n\nUser-confirmed decisions:\n- " + "\n- ".join(decision_lines)
         )
-    available_output_types = [
-        item for item in _load_output_types() if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
+    # Reuse the previously approved plan's output routing. Saving decisions
+    # should never re-run the LLM recommender — that path is expensive, slow,
+    # and can fail on transient Claude errors (rate limits, network blips,
+    # JSON parse issues), surfacing to the user as
+    # "Failed to apply decision updates" even though the user's selections
+    # were valid. The template ids / representations were already committed
+    # by the plan that generated these decision prompts, so we keep them and
+    # only refresh the rationale + decision metadata.
+    prior_template_ids_raw = plan_meta.get("template_output_types")
+    template_ids = [
+        str(t).strip()
+        for t in (prior_template_ids_raw if isinstance(prior_template_ids_raw, list) else [])
+        if str(t).strip()
     ]
-    template_ids, custom_output_types, output_type_representations, rationale, _skill_hint = _recommend_output_types(
-        enriched_instruction, available_output_types
-    )
+    prior_custom_raw = plan_meta.get("custom_output_types")
+    custom_output_types = [
+        str(t).strip()
+        for t in (prior_custom_raw if isinstance(prior_custom_raw, list) else [])
+        if str(t).strip()
+    ]
+    prior_reps = plan_meta.get("output_type_representations")
+    output_type_representations = {
+        str(k).strip(): str(v).strip()
+        for k, v in (prior_reps if isinstance(prior_reps, dict) else {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+    rationale = str(plan_meta.get("rationale") or "Plan refreshed with your latest decisions.")
 
     user_msg = ConversationMessage(
         conversation_id=conv.id,
