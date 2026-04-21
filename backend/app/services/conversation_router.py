@@ -86,6 +86,7 @@ def route_turn(
     project_context: str,
     available_output_types: list[dict[str, Any]],
     history_summary: str = "",
+    memory_profile: dict[str, Any] | None = None,
 ) -> RouterDecision:
     catalog = [
         {
@@ -120,6 +121,7 @@ def route_turn(
         f"{summary_prefix}"
         f"Current state: {conv_state}\n\n"
         f"Current slots: {conv_slots}\n\n"
+        f"Aggregated user memory profile: {memory_profile if isinstance(memory_profile, dict) else {}}\n\n"
         f"Recent messages: {recent_messages[-8:]}\n\n"
         f"Project context (wiki/memory excerpt):\n{project_context[:12000]}\n\n"
         f"Available output type catalog: {catalog}\n\n"

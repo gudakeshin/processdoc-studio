@@ -44,6 +44,11 @@ from app.services.proposal_policy import (
 )
 from app.services.conversation_router import fallback_decision, route_turn
 from app.services.conversation_state import ConversationState, load_state, save_state, stamp_router
+from app.services.memory_event_service import (
+    get_aggregated_profile,
+    record_discovery_answer,
+    record_routing_decision,
+)
 from app.services.retrieval import TieredContextEngine
 from app.services.run_worker import append_run_event
 from app.services.storage import ensure_workspace, workspace_path
@@ -2318,6 +2323,16 @@ def post_project_conversation_message(
         )
         db.flush()
     state.slots = premerged_slots
+    for slot_key in ("client", "outcome", "win_themes", "audience"):
+        val = premerged_slots.get(slot_key)
+        if val is not None and str(val).strip() not in {"", "[]", "{}"}:
+            record_discovery_answer(
+                db,
+                project_id=pid,
+                user_id=user.id,
+                slot_key=slot_key,
+                value=val,
+            )
     if summary_updated:
         save_state(conv, state)
         db.flush()
@@ -2326,6 +2341,7 @@ def post_project_conversation_message(
     project_context = str(context_bundle.get("text") or "")
     context_wiki_refs = context_bundle.get("wiki_refs") if isinstance(context_bundle.get("wiki_refs"), list) else []
     resolved_wiki_refs = list(dict.fromkeys([*wiki_source_refs, *[str(x).strip() for x in context_wiki_refs if str(x).strip()]]))
+    memory_profile = get_aggregated_profile(db, project_id=pid, user_id=user.id)
     decision = route_turn(
         user_message=content,
         conv_state=state.state,
@@ -2334,6 +2350,15 @@ def post_project_conversation_message(
         project_context=project_context,
         available_output_types=available_output_types,
         history_summary=state.history_summary,
+        memory_profile=memory_profile,
+    )
+    record_routing_decision(
+        db,
+        project_id=pid,
+        user_id=user.id,
+        decision_type=decision.intent,
+        confidence=decision.confidence,
+        outcome=decision.rationale or "router_decision",
     )
 
     merged_discovery = _merge_discovery(premerged_slots, decision.extracted_slots)
