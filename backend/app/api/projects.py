@@ -454,7 +454,8 @@ def _has_sufficient_discovery(discovery: object) -> bool:
     client = data.get("client") if isinstance(data.get("client"), dict) else {}
     outcome = data.get("outcome") if isinstance(data.get("outcome"), dict) else {}
     themes = data.get("win_themes") if isinstance(data.get("win_themes"), list) else []
-    return bool(str(client.get("name") or "").strip() and str(outcome.get("primary") or "").strip() and themes)
+    has_outcome = bool(str(outcome.get("primary") or "").strip() or str(outcome.get("decision") or "").strip())
+    return bool(str(client.get("name") or "").strip() and has_outcome and themes)
 
 
 def _required_discovery_missing_slots(discovery: object) -> list[str]:
@@ -466,7 +467,7 @@ def _required_discovery_missing_slots(discovery: object) -> list[str]:
     missing: list[str] = []
     if not str(client.get("name") or "").strip():
         missing.append("client")
-    if not str(outcome.get("primary") or "").strip():
+    if not (str(outcome.get("primary") or "").strip() or str(outcome.get("decision") or "").strip()):
         missing.append("outcome")
     if not [str(x).strip() for x in themes if str(x).strip()]:
         missing.append("win_themes")
@@ -739,6 +740,19 @@ def _extract_discovery_answers_fast(user_message: str) -> dict:
         )
         if decision_match:
             decision = decision_match.group(1).strip(" :,-")
+            if decision:
+                out["outcome"] = {
+                    "primary": f"Support decision-making on {decision}",
+                    "decision": decision,
+                }
+    if "outcome" not in out:
+        decision_is_match = re.search(
+            r"\bdecision\s*(?:is|:)\s*([^.\n]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if decision_is_match:
+            decision = decision_is_match.group(1).strip(" :,-")
             if decision:
                 out["outcome"] = {
                     "primary": f"Support decision-making on {decision}",
