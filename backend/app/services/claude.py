@@ -179,7 +179,6 @@ def claude_generate(
         )
         if cache_system:
             kwargs["system"] = _build_cached_system(system)
-            kwargs["betas"] = ["prompt-caching-2024-07-31"]
         else:
             kwargs["system"] = system
         msg = client.messages.create(**kwargs)
@@ -226,7 +225,6 @@ def claude_generate_with_thinking(
             system=_build_cached_system(system),
             messages=[{"role": "user", "content": user}],
             thinking={"type": "enabled", "budget_tokens": budget},
-            betas=["prompt-caching-2024-07-31"],
             timeout=max(1, float(settings.anthropic_timeout_sec)),
         )
     except Exception:

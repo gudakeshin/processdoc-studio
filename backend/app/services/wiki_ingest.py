@@ -916,7 +916,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                         f"Source title: {source_title}\n"
                         f"Source URL/path: {source_url}\n\n"
                         f"Content:\n{content_preview}\n\n"
-                        f"Existing wiki pages: {all_titles}"
+                        f"Existing wiki pages: {existing_titles}"
                     ),
                     max_tokens=1500,
                 )
