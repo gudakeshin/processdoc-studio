@@ -1827,6 +1827,12 @@ def _persist_assistant_plan_message(
     _lb = discovery.get("length_budget")
     if not decision_answers.get("slide_length_budget") and isinstance(_lb, dict) and _lb.get("pptx"):
         _backfill["slide_length_budget"] = [str(_lb["pptx"])]
+    # For non-PPTX deliverables (docx/pdf) there are no "slides"; default to 10
+    # pages so this prompt never blocks readiness when PPTX isn't in the output set.
+    if not decision_answers.get("slide_length_budget") and "slide_length_budget" not in _backfill:
+        _has_pptx = "pptx" in {str(t).strip().lower() for t in (template_ids or [])}
+        if not _has_pptx:
+            _backfill["slide_length_budget"] = ["10"]
     # Infer primary_deliverable from instruction keywords when not yet answered.
     if not decision_answers.get("primary_deliverable"):
         _instr_lower = (content or "").lower()
@@ -1871,11 +1877,10 @@ def _persist_assistant_plan_message(
             }
             if strat_prompt["options"]:
                 decision_prompts = [strat_prompt] + decision_prompts
-                if not decision_answers.get("execution_strategy"):
-                    unresolved_prompt_ids = ["execution_strategy"] + unresolved_prompt_ids
-                    open_questions = [
-                        "Select one of the proposed execution approaches (see Approaches below).",
-                    ] + open_questions
+                # execution_strategy is advisory: shown in the panel so the user can
+                # pick an approach, but it must NOT block ready_for_confirmation.
+                # The user's preferred approach is already captured in the conversation
+                # rationale/instruction, and is not required for generation.
     # When decision prompts are disabled, proposal discovery can still gate readiness.
     ready_for_confirmation = True if not settings.instruction_decision_prompts_enabled else len(unresolved_prompt_ids) == 0
     proposal_targets = {str(x).strip().lower() for x in (template_ids or []) if str(x).strip()}
@@ -2317,7 +2322,10 @@ def post_project_conversation_message(
             save_state(conv, state)
             db.flush()
             cp.mark("fast_path_ack_flushed")
-            context_bundle = _load_project_context_bundle(db, pid, content)
+            try:
+                context_bundle = _load_project_context_bundle(db, pid, content)
+            except Exception:
+                context_bundle = {"text": "", "wiki_refs": []}
             return _persist_acknowledgment_response(
                 db,
                 conv,
@@ -2400,7 +2408,10 @@ def post_project_conversation_message(
         save_state(conv, state)
         db.flush()
 
-    context_bundle = _load_project_context_bundle(db, pid, combined_instruction)
+    try:
+        context_bundle = _load_project_context_bundle(db, pid, combined_instruction)
+    except Exception:
+        context_bundle = {"text": "", "wiki_refs": []}
     project_context = str(context_bundle.get("text") or "")
     context_wiki_refs = context_bundle.get("wiki_refs") if isinstance(context_bundle.get("wiki_refs"), list) else []
     resolved_wiki_refs = list(dict.fromkeys([*wiki_source_refs, *[str(x).strip() for x in context_wiki_refs if str(x).strip()]]))
