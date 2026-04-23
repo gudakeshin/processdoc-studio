@@ -1996,7 +1996,7 @@ async def get_wiki_stats(
                         stale_pages += 1
 
                     if last_ingest is None or mtime > last_ingest:
-                        last_ingest = mtime.isoformat()
+                        last_ingest = mtime
 
                 except Exception as e:
                     logger.warning(f"Failed to parse wiki page {md_file.name}: {e}")
@@ -2028,7 +2028,7 @@ async def get_wiki_stats(
             "total_pages": total_pages,
             "by_category": by_category,
             "by_confidence": by_confidence,
-            "last_ingest": last_ingest,
+            "last_ingest": last_ingest.isoformat() if last_ingest is not None else None,
             "pages_this_week": pages_this_week,
             "health": {
                 "severity": "low" if stale_pages < 3 else "medium" if stale_pages < 10 else "high",
