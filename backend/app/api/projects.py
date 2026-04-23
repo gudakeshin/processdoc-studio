@@ -524,6 +524,8 @@ def _extract_discovery_answers_from_wiki(
         wiki_pages = []
     wiki_excerpt: list[str] = []
     for page in wiki_pages:
+        if not isinstance(page, dict):
+            continue
         title = str(page.get("title") or page.get("page_id") or "").strip()
         if title:
             wiki_refs.append(title)
@@ -533,6 +535,8 @@ def _extract_discovery_answers_from_wiki(
     doc_chunks = _top_parsed_doc_chunks_for_query(project_id, query, max_chunks=2)
     doc_excerpt = []
     for chunk in doc_chunks:
+        if not isinstance(chunk, dict):
+            continue
         source = str(chunk.get("source") or chunk.get("title") or "parsed_doc").strip()
         text = str(chunk.get("text") or "").strip()
         if text:
