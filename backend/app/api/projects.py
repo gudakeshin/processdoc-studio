@@ -1190,6 +1190,9 @@ class UpdateProjectSettingsRequest(BaseModel):
     qa_threshold: float | None = None
     max_qa_loops: int | None = None
     hard_gate_enabled: bool | None = None
+    web_search_provider: str | None = None
+    tavily_enabled: bool | None = None
+    tavily_api_key: str | None = None
 
 
 class ConversationMessageRequest(BaseModel):
@@ -1810,6 +1813,34 @@ def _persist_assistant_plan_message(
                 pass
         discovery = _merge_discovery(discovery, mapped)
 
+    # Backfill decision_answers from discovery for any fields not yet explicitly
+    # answered. Discovery accumulates slot values from the whole conversation
+    # (slot extraction, wiki enrichment, prior decisions) so anything already
+    # identified there should count as resolved without re-asking the user.
+    _backfill: dict[str, list[str]] = {}
+    if not decision_answers.get("audience_role") and discovery.get("audience"):
+        _backfill["audience_role"] = [str(discovery["audience"])]
+    if not decision_answers.get("tone") and discovery.get("tone"):
+        _backfill["tone"] = [str(discovery["tone"])]
+    if not decision_answers.get("narrative_arc") and discovery.get("narrative_arc"):
+        _backfill["narrative_arc"] = [str(discovery["narrative_arc"])]
+    _lb = discovery.get("length_budget")
+    if not decision_answers.get("slide_length_budget") and isinstance(_lb, dict) and _lb.get("pptx"):
+        _backfill["slide_length_budget"] = [str(_lb["pptx"])]
+    # Infer primary_deliverable from instruction keywords when not yet answered.
+    if not decision_answers.get("primary_deliverable"):
+        _instr_lower = (content or "").lower()
+        if "proposal" in _instr_lower:
+            _backfill["primary_deliverable"] = ["proposal"]
+        elif "report" in _instr_lower:
+            _backfill["primary_deliverable"] = ["report"]
+        elif "sop" in _instr_lower or "standard operating" in _instr_lower:
+            _backfill["primary_deliverable"] = ["sop"]
+        elif "deck" in _instr_lower or "presentation" in _instr_lower or "slides" in _instr_lower:
+            _backfill["primary_deliverable"] = ["deck"]
+    if _backfill:
+        decision_answers = {**decision_answers, **_backfill}
+
     decision_prompts, unresolved_prompt_ids, open_questions, soft_hints = _build_decision_prompts(
         content=content,
         template_ids=template_ids,
@@ -2156,14 +2187,18 @@ def get_project_settings(
     if not membership:
         raise HTTPException(status_code=403, detail="Insufficient project permissions")
     settings_path = workspace_path(pid) / "settings.json"
+    response = {"project_id": pid, "qa_threshold": 0.8, "max_qa_loops": 2, "hard_gate_enabled": True}
     if settings_path.exists():
         try:
             data = json.loads(settings_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                return {"project_id": pid, **data}
+                response.update(data)
         except Exception:  # noqa: S110 — best-effort, non-fatal
             pass
-    return {"project_id": pid, "qa_threshold": 0.8, "max_qa_loops": 2, "hard_gate_enabled": True}
+    if response.get("tavily_api_key"):
+        response["tavily_configured"] = True
+        del response["tavily_api_key"]
+    return response
 
 
 @router.put("/{pid}/settings")
@@ -2196,8 +2231,22 @@ def update_project_settings(
         current["max_qa_loops"] = max(1, min(5, int(body.max_qa_loops)))
     if body.hard_gate_enabled is not None:
         current["hard_gate_enabled"] = bool(body.hard_gate_enabled)
+    if body.web_search_provider is not None:
+        provider = body.web_search_provider.strip().lower() if body.web_search_provider else ""
+        if provider in {"brave", "google", "tavily", ""}:
+            current["web_search_provider"] = provider if provider else None
+        else:
+            raise HTTPException(status_code=400, detail="Invalid web_search_provider")
+    if body.tavily_enabled is not None:
+        current["tavily_enabled"] = bool(body.tavily_enabled)
+    if body.tavily_api_key is not None:
+        current["tavily_api_key"] = body.tavily_api_key.strip() if body.tavily_api_key else ""
     settings_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
-    return {"project_id": pid, **current}
+    response = {"project_id": pid}
+    response.update({k: v for k, v in current.items() if k != "tavily_api_key"})
+    if current.get("tavily_api_key"):
+        response["tavily_configured"] = True
+    return response
 
 
 @router.get("/{pid}/conversation")
@@ -2585,6 +2634,7 @@ def post_project_conversation_message(
             llm_skill_hint=content_skill_hint,
         )
         regeneration_directive = _build_regeneration_directive(content)
+        prior_decision_answers = _sanitize_decision_answers(prior_plan_meta.get("decision_answers")) if isinstance(prior_plan_meta, dict) else {}
         response = _persist_assistant_plan_message(
             db=db,
             conv=conv,
@@ -2594,6 +2644,7 @@ def post_project_conversation_message(
             custom_output_types=custom_output_types,
             output_type_representations=output_type_representations,
             rationale=rationale,
+            decision_answers=prior_decision_answers,
             content_skill_targets=content_skill_targets,
             regeneration_directive=regeneration_directive,
             discovery=merged_discovery,
