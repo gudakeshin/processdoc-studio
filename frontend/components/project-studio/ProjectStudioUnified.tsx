@@ -137,6 +137,52 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
     router.replace(`/projects/${pid}?${query.toString()}`);
   }, [activeRunId, pid, router]);
 
+  const activeOpenQuestions = useMemo(
+    () => activeRunId ? studio.openQuestions : openQuestions,
+    [activeRunId, studio.openQuestions, openQuestions]
+  );
+
+  // Use latest messages: if user has sent messages (chatMessages updated), use those
+  // Otherwise use studio messages which includes greeting on mount
+  const activeMessages = useMemo(
+    () => chatMessages.length > 0 ? chatMessages : studio.instructionChatMessages,
+    [chatMessages, studio.instructionChatMessages]
+  );
+
+  const agreedDecisions = useMemo(() => {
+    const msgs = activeMessages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === "assistant" && m.metadata?.kind === "structure_summary" && Array.isArray(m.metadata.slides)) {
+        return m.metadata.slides as Array<{ slide_num: number; title: string; key_message?: string; slide_type?: string; agreed?: boolean }>;
+      }
+    }
+    return msgs
+      .filter((m) => m.role === "assistant" && m.metadata?.kind === "slide_proposal" && m.metadata.slide?.agreed)
+      .map((m) => m.metadata!.slide as { slide_num: number; title: string; key_message?: string; slide_type?: string; agreed?: boolean });
+  }, [activeMessages]);
+
+  const activeChatBusy = useMemo(
+    () => activeRunId ? studio.chatBusy : chatBusy,
+    [activeRunId, studio.chatBusy, chatBusy]
+  );
+
+  // Prefer studio conversation ID if available (from initial greeting load)
+  const activeConversationId = useMemo(
+    () => studio.conversationId || conversationId,
+    [studio.conversationId, conversationId]
+  );
+
+  const activeDecisionPrompts = useMemo(
+    () => activeRunId ? studio.decisionPrompts : decisionPrompts,
+    [activeRunId, studio.decisionPrompts, decisionPrompts]
+  );
+
+  const activeUnresolvedPromptIds = useMemo(
+    () => activeRunId ? studio.unresolvedPromptIds : unresolvedPromptIds,
+    [activeRunId, studio.unresolvedPromptIds, unresolvedPromptIds]
+  );
+
   async function sendMessage() {
     const msg = chatInput.trim();
     if (chatBusy || !msg) return;
@@ -336,29 +382,6 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
   if (!hydrated || !ready || !token) {
     return <main style={{ padding: 24 }}><p>Redirecting…</p></main>;
   }
-
-  const activeOpenQuestions = activeRunId ? studio.openQuestions : openQuestions;
-  // Use latest messages: if user has sent messages (chatMessages updated), use those
-  // Otherwise use studio messages which includes greeting on mount
-  const activeMessages = chatMessages.length > 0 ? chatMessages : studio.instructionChatMessages;
-
-  const agreedDecisions = useMemo(() => {
-    const msgs = activeMessages;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if (m.role === "assistant" && m.metadata?.kind === "structure_summary" && Array.isArray(m.metadata.slides)) {
-        return m.metadata.slides as Array<{ slide_num: number; title: string; key_message?: string; slide_type?: string; agreed?: boolean }>;
-      }
-    }
-    return msgs
-      .filter((m) => m.role === "assistant" && m.metadata?.kind === "slide_proposal" && m.metadata.slide?.agreed)
-      .map((m) => m.metadata!.slide as { slide_num: number; title: string; key_message?: string; slide_type?: string; agreed?: boolean });
-  }, [activeMessages]);
-  const activeChatBusy = activeRunId ? studio.chatBusy : chatBusy;
-  // Prefer studio conversation ID if available (from initial greeting load)
-  const activeConversationId = studio.conversationId || conversationId;
-  const activeDecisionPrompts = activeRunId ? studio.decisionPrompts : decisionPrompts;
-  const activeUnresolvedPromptIds = activeRunId ? studio.unresolvedPromptIds : unresolvedPromptIds;
 
   return (
     <main className="project-studio-compact space-y-3">
