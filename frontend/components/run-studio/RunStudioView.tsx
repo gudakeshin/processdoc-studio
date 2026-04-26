@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { memo } from "react";
+import { memo, useMemo } from "react";
 
 import { ZoneAInstruction } from "@/components/run-studio/ZoneAInstruction";
 import { ZoneCLiveMonitor } from "@/components/run-studio/ZoneCLiveMonitor";
@@ -62,6 +62,25 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
     hooksPanel,
     permissionPanel,
   } = props;
+
+  // Collect agreed slide decisions from collaborative building messages.
+  const agreedDecisions = useMemo(() => {
+    const all: Array<{ slide_num: number; title: string; key_message?: string; slide_type?: string; agreed?: boolean }> = [];
+    // First check for a structure_summary message (has all agreed slides).
+    for (let i = instructionChatMessages.length - 1; i >= 0; i--) {
+      const m = instructionChatMessages[i];
+      if (m.role === "assistant" && m.metadata?.kind === "structure_summary" && Array.isArray(m.metadata.slides)) {
+        return m.metadata.slides as typeof all;
+      }
+    }
+    // Fall back to accumulating individual slide_proposal messages.
+    for (const m of instructionChatMessages) {
+      if (m.role === "assistant" && m.metadata?.kind === "slide_proposal" && m.metadata.slide?.agreed) {
+        all.push(m.metadata.slide as typeof all[number]);
+      }
+    }
+    return all;
+  }, [instructionChatMessages]);
 
   return (
     <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -194,6 +213,9 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
         onTaskAction={applyTaskAction}
         hooksPanel={hooksPanel}
         permissionPanel={permissionPanel}
+        projectId={pid}
+        runId={rid}
+        agreedDecisions={agreedDecisions}
       />
     </div>
   );

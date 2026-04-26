@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -11,7 +11,9 @@ from app.db.base import Base
 DATABASE_URL = settings.database_url
 
 if DATABASE_URL.startswith("sqlite"):
-    _sqlite_args = {"check_same_thread": False}
+    # SQLite can briefly lock on concurrent writes (API + background workers).
+    # Increase busy timeout so transient contention does not fail requests.
+    _sqlite_args = {"check_same_thread": False, "timeout": 30}
     if ":memory:" in DATABASE_URL:
         engine = create_engine(
             DATABASE_URL,
@@ -21,6 +23,17 @@ if DATABASE_URL.startswith("sqlite"):
         )
     else:
         engine = create_engine(DATABASE_URL, future=True, connect_args=_sqlite_args)
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]
+        # Improve concurrent read/write behavior for local-dev SQLite.
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.execute("PRAGMA busy_timeout=30000;")
+        finally:
+            cursor.close()
 else:
     engine = create_engine(
         DATABASE_URL,

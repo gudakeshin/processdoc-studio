@@ -4,7 +4,7 @@ import { extractApiErrorMessage, parseResponseBodyLoose } from "./api-error";
  * Central fetch: timeout + limited retries for idempotent (GET/HEAD) requests.
  */
 
-const DEFAULT_TIMEOUT_MS = 25_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

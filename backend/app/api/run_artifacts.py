@@ -256,6 +256,38 @@ def get_run_artifacts(
     )
 
 
+CANVAS_ARTIFACT_FILES: dict[str, str] = {
+    "narrative_md": "narrative.md",
+    "sop_markdown": "sop.md",
+    "raci_markdown": "raci.md",
+    "process_map_mermaid": "process_map.mmd",
+}
+
+
+class CanvasSaveRequest(BaseModel):
+    artifact_key: str
+    content: str
+
+
+@router.patch("/{project_id}/{run_id}/canvas")
+def save_canvas_artifact(
+    project_id: str,
+    run_id: str,
+    body: CanvasSaveRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    if body.artifact_key not in CANVAS_ARTIFACT_FILES:
+        raise HTTPException(status_code=400, detail=f"Unknown artifact key: {body.artifact_key}")
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    (run_dir / CANVAS_ARTIFACT_FILES[body.artifact_key]).write_text(body.content, encoding="utf-8")
+    return {"ok": True, "artifact_key": body.artifact_key}
+
+
 @router.get("/{project_id}/{run_id}/handoff_bundle")
 def get_run_handoff_bundle(
     project_id: str,

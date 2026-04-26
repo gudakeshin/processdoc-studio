@@ -54,6 +54,156 @@ function UserAvatarBubble() {
 }
 
 // ---------------------------------------------------------------------------
+// Collaborative building: arc proposal, slide proposal, structure summary
+// ---------------------------------------------------------------------------
+type ArcItem = {
+  arc_key: string;
+  name: string;
+  structure: string;
+  reasoning: string;
+  lp_evidence?: string;
+  is_recommended?: boolean;
+};
+
+function ArcProposalCard({
+  arcs,
+  onSelect,
+}: {
+  arcs: ArcItem[];
+  onSelect: (arcKey: string) => void;
+}) {
+  return (
+    <div className="mt-2 space-y-2">
+      {arcs.map((arc) => (
+        <div
+          key={arc.arc_key}
+          className={`rounded-lg border p-3 ${
+            arc.is_recommended
+              ? "border-[var(--primary-600)] bg-[var(--primary-50)]"
+              : "border-[var(--surface-border)] bg-white"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-xs font-semibold text-[var(--text-default)]">
+                {arc.name}
+                {arc.is_recommended && (
+                  <span className="ml-1.5 rounded bg-[var(--primary-600)] px-1.5 py-0.5 text-2xs font-medium text-white">
+                    Recommended
+                  </span>
+                )}
+              </p>
+              <p className="mt-0.5 text-2xs text-[var(--text-muted)]">{arc.reasoning}</p>
+              {arc.lp_evidence && (
+                <p className="mt-1 text-2xs italic text-[var(--text-subtle)]">
+                  LP: {arc.lp_evidence.slice(0, 100)}…
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => onSelect(arc.arc_key)}
+              className="shrink-0 rounded bg-[var(--primary-800)] px-2.5 py-1 text-2xs font-medium text-white hover:bg-[var(--primary-700)]"
+            >
+              Use this
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type SlideItem = {
+  slide_num: number;
+  title: string;
+  slide_type: string;
+  slide_type_label?: string;
+  key_message: string;
+  evidence_source?: string;
+  sheldon_view?: string;
+};
+
+function SlideProposalCard({
+  slide,
+  onAgree,
+  onModify,
+}: {
+  slide: SlideItem;
+  onAgree: () => void;
+  onModify: () => void;
+}) {
+  return (
+    <div className="mt-2 rounded-lg border border-[var(--surface-border)] bg-white p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="rounded bg-[var(--primary-100)] px-2 py-0.5 text-2xs font-semibold text-[var(--primary-800)]">
+          Slide {slide.slide_num}
+        </span>
+        <span className="text-2xs text-[var(--text-muted)]">{slide.slide_type_label || slide.slide_type}</span>
+      </div>
+      <p className="text-xs font-semibold text-[var(--text-default)]">{slide.title}</p>
+      <p className="mt-0.5 text-2xs text-[var(--text-muted)]">
+        <span className="font-medium">Key message:</span> {slide.key_message}
+      </p>
+      {slide.evidence_source && (
+        <p className="mt-0.5 text-2xs text-[var(--text-muted)]">
+          <span className="font-medium">Evidence:</span> {slide.evidence_source}
+        </p>
+      )}
+      {slide.sheldon_view && (
+        <p className="mt-0.5 text-2xs italic text-[var(--text-subtle)]">{slide.sheldon_view}</p>
+      )}
+      <div className="mt-2 flex gap-2">
+        <button
+          onClick={onAgree}
+          className="rounded bg-[var(--primary-800)] px-3 py-1 text-2xs font-medium text-white hover:bg-[var(--primary-700)]"
+        >
+          ✓ Agree
+        </button>
+        <button
+          onClick={onModify}
+          className="rounded border border-[var(--surface-border)] px-3 py-1 text-2xs font-medium text-[var(--text-default)] hover:bg-[var(--surface-muted)]"
+        >
+          ✏ Modify
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StructureSummaryCard({
+  slides,
+  onBuild,
+}: {
+  slides: Array<{ slide_num: number; title: string; key_message?: string }>;
+  onBuild: () => void;
+}) {
+  return (
+    <div className="mt-2 rounded-lg border border-[var(--primary-300)] bg-[var(--primary-50)] p-3">
+      <p className="mb-2 text-xs font-semibold text-[var(--primary-900)]">Agreed deck structure</p>
+      <ol className="space-y-0.5">
+        {slides.map((s) => (
+          <li key={s.slide_num} className="flex items-start gap-1.5 text-2xs text-[var(--text-muted)]">
+            <span className="mt-0.5 h-4 w-4 shrink-0 rounded-full bg-[var(--primary-600)] text-center text-2xs font-bold leading-4 text-white">
+              {s.slide_num}
+            </span>
+            <span>
+              <span className="font-medium text-[var(--text-default)]">{s.title}</span>
+              {s.key_message ? ` — ${s.key_message}` : ""}
+            </span>
+          </li>
+        ))}
+      </ol>
+      <button
+        onClick={onBuild}
+        className="mt-3 w-full rounded bg-[var(--primary-800)] py-1.5 text-xs font-semibold text-white hover:bg-[var(--primary-700)]"
+      >
+        Build the deck
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Inline markdown → React nodes (no external deps)
 // Handles: headings, bold, italic, inline code, bullet lists, line breaks
 // Only applied to assistant messages — user messages stay plain text.
@@ -306,7 +456,42 @@ export function ZoneAInstruction({
                 }`}
               >
                 {m.role === "assistant" ? (
-                  <div className="space-y-0.5">{renderMarkdown(m.content)}</div>
+                  <div className="space-y-0.5">
+                    {renderMarkdown(m.content)}
+                    {/* Arc proposal card */}
+                    {m.metadata?.kind === "arc_proposal" && Array.isArray(m.metadata.arcs) && (
+                      <ArcProposalCard
+                        arcs={m.metadata.arcs as ArcItem[]}
+                        onSelect={(arcKey) => {
+                          setChatInput(`I'd like to go with ${arcKey}`);
+                          void onSendChat();
+                        }}
+                      />
+                    )}
+                    {/* Slide proposal card */}
+                    {m.metadata?.kind === "slide_proposal" && m.metadata.slide && (
+                      <SlideProposalCard
+                        slide={m.metadata.slide as SlideItem}
+                        onAgree={() => {
+                          setChatInput("Agree");
+                          void onSendChat();
+                        }}
+                        onModify={() => {
+                          setChatInput(`Modify slide ${m.metadata?.slide?.slide_num}: `);
+                        }}
+                      />
+                    )}
+                    {/* Structure summary / build card */}
+                    {m.metadata?.kind === "structure_summary" && Array.isArray(m.metadata.slides) && (
+                      <StructureSummaryCard
+                        slides={m.metadata.slides as Array<{ slide_num: number; title: string; key_message?: string }>}
+                        onBuild={() => {
+                          setChatInput("Build it");
+                          void onSendChat();
+                        }}
+                      />
+                    )}
+                  </div>
                 ) : (
                   <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-white [overflow-wrap:anywhere]">
                     {m.content}

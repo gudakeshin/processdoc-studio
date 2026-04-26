@@ -78,6 +78,34 @@ export type ChatMessage = {
     kind?: string;
     run_id?: string;
     status?: string;
+    // Collaborative building (Phase 2)
+    arcs?: Array<{
+      arc_key: string;
+      name: string;
+      structure: string;
+      reasoning: string;
+      lp_evidence?: string;
+      is_recommended?: boolean;
+    }>;
+    recommendation?: string;
+    slide?: {
+      slide_num: number;
+      title: string;
+      slide_type: string;
+      slide_type_label?: string;
+      key_message: string;
+      evidence_source?: string;
+      sheldon_view?: string;
+      agreed?: boolean;
+    };
+    arc_agreed?: string;
+    slides?: Array<{
+      slide_num: number;
+      title: string;
+      key_message?: string;
+      agreed?: boolean;
+    }>;
+    ready_to_build?: boolean;
   };
 };
 

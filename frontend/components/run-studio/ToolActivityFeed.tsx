@@ -6,6 +6,7 @@ import { AgentStatusGraph } from "@/components/run-studio/AgentStatusGraph";
 import { TodoChecklist } from "@/components/run-studio/TodoChecklist";
 import { Button } from "@/components/ui/Button";
 import { DeckCanvas, DeckTabPanel } from "@/components/deck-canvas";
+import { DocumentCanvas, DOCUMENT_CANVAS_ENABLED } from "@/components/run-studio/DocumentCanvas";
 import { useTodoChecklistState } from "@/hooks/useTodoChecklistState";
 import {
   toolCallsFromAgentRoundPayload,
@@ -327,6 +328,9 @@ export function ToolActivityFeed({
   showAgentGraph = true,
   hooksPanel,
   permissionPanel,
+  projectId,
+  runId,
+  agreedDecisions,
 }: {
   events: string[];
   parsedEvents?: ParsedRunEvent[];
@@ -335,6 +339,8 @@ export function ToolActivityFeed({
   pollMode: boolean;
   streamError: string | null;
   showAgentGraph?: boolean;
+  projectId?: string;
+  runId?: string;
   /** Render slot for download buttons — passed from the parent with full artifact access */
   downloadsContent?: React.ReactNode;
   onTaskAction?: (taskId: string, action: "retry" | "skip" | "approve") => void;
@@ -351,8 +357,16 @@ export function ToolActivityFeed({
     result: any | null;
     onSimulate: () => void;
   };
+  /** Slide decisions agreed during collaborative building */
+  agreedDecisions?: Array<{
+    slide_num: number;
+    title: string;
+    key_message?: string;
+    slide_type?: string;
+    agreed?: boolean;
+  }>;
 }) {
-  const [activeTab, setActiveTab] = useState<"activity" | "artifacts" | "deck" | "context" | "governance">(
+  const [activeTab, setActiveTab] = useState<"activity" | "artifacts" | "deck" | "context" | "governance" | "canvas" | "decisions">(
     "activity"
   );
   const [disableReason, setDisableReason] = useState("");
@@ -390,6 +404,11 @@ export function ToolActivityFeed({
   );
 
   const hasArtifactDownloads = readyDownloads.length > 0 || Boolean(downloadsContent);
+  const hasCanvasContent =
+    DOCUMENT_CANVAS_ENABLED &&
+    ["narrative_md", "sop_markdown", "raci_markdown", "process_map_mermaid"].some(
+      (k) => typeof artifacts?.[k] === "string" && (artifacts[k] as string).length > 0
+    );
   const pptxSlides = useMemo(
     () => (Array.isArray(artifacts?.pptx_slides) ? artifacts.pptx_slides : []),
     [artifacts?.pptx_slides]
@@ -556,7 +575,9 @@ export function ToolActivityFeed({
         role="tablist"
         aria-label="Activity panel sections"
       >
-        {(["activity", "artifacts", "deck", "context", "governance"] as const).map((tab) => (
+        {(["activity", "artifacts", "canvas", "deck", "context", "decisions", "governance"] as const).filter(
+          (tab) => tab !== "canvas" || DOCUMENT_CANVAS_ENABLED
+        ).map((tab) => (
           <button
             key={tab}
             type="button"
@@ -578,9 +599,19 @@ export function ToolActivityFeed({
                 {readyDownloads.length > 0 ? readyDownloads.length : "•"}
               </span>
             )}
+            {tab === "canvas" && hasCanvasContent && (
+              <span className="inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[var(--primary-900)] px-1 text-2xs leading-none text-white">
+                •
+              </span>
+            )}
             {tab === "deck" && pptxSlides.length > 0 && (
               <span className="inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[var(--info)] px-1 text-2xs leading-none text-white">
                 {pptxSlides.length}
+              </span>
+            )}
+            {tab === "decisions" && agreedDecisions && agreedDecisions.length > 0 && (
+              <span className="inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-[var(--primary-600)] px-1 text-2xs leading-none text-white">
+                {agreedDecisions.length}
               </span>
             )}
           </button>
@@ -766,6 +797,17 @@ export function ToolActivityFeed({
           </div>
         )}
 
+        {/* Canvas */}
+        {activeTab === "canvas" && DOCUMENT_CANVAS_ENABLED && (
+          <div className="-m-3 flex h-full min-h-[400px] flex-col">
+            <DocumentCanvas
+              artifacts={artifacts}
+              projectId={projectId ?? ""}
+              runId={runId ?? ""}
+            />
+          </div>
+        )}
+
         {/* Deck */}
         {activeTab === "deck" && (
           <div className="h-full min-h-0">
@@ -922,6 +964,49 @@ export function ToolActivityFeed({
                 <p className="text-2xs text-[var(--text-muted)]">No hooks loaded yet.</p>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Decisions — agreed collaborative slide structure */}
+        {activeTab === "decisions" && (
+          <div className="space-y-2">
+            {agreedDecisions && agreedDecisions.length > 0 ? (
+              <>
+                <p className="text-2xs font-medium text-[var(--text-muted)]">
+                  {agreedDecisions.length} slide{agreedDecisions.length !== 1 ? "s" : ""} agreed
+                </p>
+                <ol className="space-y-1.5">
+                  {agreedDecisions.map((d) => (
+                    <li
+                      key={d.slide_num}
+                      className="flex items-start gap-2 rounded border border-[var(--surface-border)] bg-white p-2"
+                    >
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--primary-600)] text-2xs font-bold text-white">
+                        {d.slide_num}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-[var(--text-default)]">{d.title}</p>
+                        {d.key_message && (
+                          <p className="mt-0.5 text-2xs text-[var(--text-muted)]">{d.key_message}</p>
+                        )}
+                        {d.slide_type && (
+                          <span className="mt-0.5 inline-block rounded bg-[var(--surface-muted)] px-1 py-0.5 text-2xs text-[var(--text-subtle)]">
+                            {d.slide_type}
+                          </span>
+                        )}
+                      </div>
+                      {d.agreed && (
+                        <span className="ml-auto shrink-0 text-xs text-[var(--success)]">✓</span>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </>
+            ) : (
+              <p className="text-2xs text-[var(--text-muted)]">
+                No slides agreed yet. Start a conversation with Sheldon to build the deck structure collaboratively.
+              </p>
+            )}
           </div>
         )}
       </div>

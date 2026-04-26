@@ -21,33 +21,12 @@ import {
   useDeleteRunMutation,
   useRunsQuery,
 } from "@/hooks/useRuns";
-import { useRunStudio } from "@/hooks/useRunStudio";
+import { useRunStudio, type ChatMessage } from "@/hooks/useRunStudio";
 import { useCoworkState } from "@/hooks/useCoworkState";
 import { useRunStream } from "@/hooks/useRunStream";
 import { useAuth } from "@/lib/auth-context";
 import { extractApiErrorMessage } from "@/lib/api-error";
 
-type ChatMessage = {
-  id?: number;
-  role: "user" | "assistant";
-  content: string;
-  ts: number;
-  metadata?: {
-    open_questions?: string[];
-    ready_for_confirmation?: boolean;
-    plan_hash?: string;
-    decision_prompts?: Array<{
-      id: string;
-      label: string;
-      mode: "single_select" | "multi_select";
-      required?: boolean;
-      min_select?: number;
-      options: Array<{ value: string; label: string }>;
-      selected_values?: string[];
-    }>;
-    unresolved_prompt_ids?: string[];
-  };
-};
 
 type Props = {
   pid: string;
@@ -362,6 +341,19 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
   // Use latest messages: if user has sent messages (chatMessages updated), use those
   // Otherwise use studio messages which includes greeting on mount
   const activeMessages = chatMessages.length > 0 ? chatMessages : studio.instructionChatMessages;
+
+  const agreedDecisions = useMemo(() => {
+    const msgs = activeMessages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === "assistant" && m.metadata?.kind === "structure_summary" && Array.isArray(m.metadata.slides)) {
+        return m.metadata.slides as Array<{ slide_num: number; title: string; key_message?: string; slide_type?: string; agreed?: boolean }>;
+      }
+    }
+    return msgs
+      .filter((m) => m.role === "assistant" && m.metadata?.kind === "slide_proposal" && m.metadata.slide?.agreed)
+      .map((m) => m.metadata!.slide as { slide_num: number; title: string; key_message?: string; slide_type?: string; agreed?: boolean });
+  }, [activeMessages]);
   const activeChatBusy = activeRunId ? studio.chatBusy : chatBusy;
   // Prefer studio conversation ID if available (from initial greeting load)
   const activeConversationId = studio.conversationId || conversationId;
@@ -467,6 +459,9 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
                     slideRegenerateBusyIndex={studio.slideRegenerateBusyIndex}
                     hooksPanel={studio.hooksPanel}
                     permissionPanel={studio.permissionPanel}
+                    projectId={pid}
+                    runId={activeRunId ?? undefined}
+                    agreedDecisions={agreedDecisions}
                   />
                 </div>
               )}

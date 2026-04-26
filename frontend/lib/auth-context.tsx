@@ -62,9 +62,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     if (!res.ok) return null;
     const { data: parsed } = await parseResponseBodyLoose(res);
-    const data = (parsed && typeof parsed === "object" ? parsed : {}) as { access_token?: string };
+    const data = (parsed && typeof parsed === "object" ? parsed : {}) as { access_token?: string; refresh_token?: string };
     if (!data.access_token) return null;
     localStorage.setItem(TOKEN_KEY, data.access_token);
+    if (data.refresh_token) localStorage.setItem(REFRESH_KEY, data.refresh_token);
     setToken(data.access_token);
     return data.access_token;
   }, []);
