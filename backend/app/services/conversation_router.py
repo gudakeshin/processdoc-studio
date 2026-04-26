@@ -14,6 +14,11 @@ RouterIntent = Literal[
     "clarify",
     "refine",
     "out_of_scope",
+    # Collaborative story-building intents (Phase 2)
+    "storyline_feedback",   # User reacting to a narrative arc proposal (agree / redirect)
+    "slide_agree",          # User agrees with the current slide concept
+    "slide_modify",         # User wants to change the current slide concept
+    "structure_approve",    # User confirms the entire deck structure looks good
 ]
 
 
@@ -31,11 +36,22 @@ class RouterDecision:
     rationale: str
 
 
+_VALID_STATES = {
+    "new", "exploring", "discovery",
+    "storyline_building", "slide_negotiation", "structure_agreed",
+    "ready_to_plan", "plan_proposed", "confirming", "done",
+}
+
+_VALID_INTENTS = {
+    "greeting", "ack", "smalltalk", "commit", "discovery_answer",
+    "clarify", "refine", "out_of_scope",
+    "storyline_feedback", "slide_agree", "slide_modify", "structure_approve",
+}
+
+
 def _safe_state(raw: str) -> str:
     v = str(raw or "").strip().lower()
-    if v in {"new", "exploring", "discovery", "ready_to_plan", "plan_proposed", "confirming", "done"}:
-        return v
-    return "exploring"
+    return v if v in _VALID_STATES else "exploring"
 
 
 def _missing_slots(slots: dict[str, Any]) -> list[str]:
@@ -102,11 +118,19 @@ def route_turn(
         "Return ONLY JSON with keys:\n"
         "intent, confidence, extracted_slots, output_types, representations, content_skill_hint, "
         "next_state, missing_slots, reply_hint, rationale.\n\n"
-        "intent enum: greeting|ack|smalltalk|commit|discovery_answer|clarify|refine|out_of_scope.\n"
-        "next_state enum: new|exploring|discovery|ready_to_plan|plan_proposed|confirming|done.\n"
+        "intent enum: greeting|ack|smalltalk|commit|discovery_answer|clarify|refine|out_of_scope"
+        "|storyline_feedback|slide_agree|slide_modify|structure_approve.\n"
+        "  storyline_feedback = user reacting to a narrative arc proposal (e.g. 'I prefer SCQA', 'looks good', 'use pyramid').\n"
+        "  slide_agree = user agrees with the current proposed slide concept.\n"
+        "  slide_modify = user wants to change the current slide concept.\n"
+        "  structure_approve = user confirms the entire deck structure is approved.\n"
+        "next_state enum: new|exploring|discovery|storyline_building|slide_negotiation|structure_agreed"
+        "|ready_to_plan|plan_proposed|confirming|done.\n"
         "Only include output_types from catalog.\n"
         "If current_state is discovery or there are missing proposal slots, prefer intent=discovery_answer/commit "
         "rather than out_of_scope.\n"
+        "If current_state is storyline_building, use storyline_feedback for arc reactions.\n"
+        "If current_state is slide_negotiation, use slide_agree/slide_modify as appropriate.\n"
         "Use out_of_scope ONLY for clear unsupported asks with high certainty.\n"
         "extracted_slots JSON shape (optional fields): "
         "{client:{name,industry}, outcome:{primary,decision}, win_themes:[...], audience, narrative_arc, tone}.\n"
@@ -122,7 +146,7 @@ def route_turn(
         f"Current state: {conv_state}\n\n"
         f"Current slots: {conv_slots}\n\n"
         f"Aggregated user memory profile: {memory_profile if isinstance(memory_profile, dict) else {}}\n\n"
-        f"Recent messages: {recent_messages[-8:]}\n\n"
+        f"Recent messages: {recent_messages[-15:]}\n\n"
         f"Project context (wiki/memory excerpt):\n{project_context[:12000]}\n\n"
         f"Available output type catalog: {catalog}\n\n"
         f"Latest user message:\n{user_message}"
@@ -135,7 +159,7 @@ def route_turn(
         return fallback_decision(state=conv_state, slots=conv_slots, reason="router_invalid_payload")
 
     intent = str(payload.get("intent") or "").strip().lower()
-    if intent not in {"greeting", "ack", "smalltalk", "commit", "discovery_answer", "clarify", "refine", "out_of_scope"}:
+    if intent not in _VALID_INTENTS:
         return fallback_decision(state=conv_state, slots=conv_slots, reason="router_invalid_intent")
     confidence = float(payload.get("confidence") or 0.0)
     extracted_slots = payload.get("extracted_slots")

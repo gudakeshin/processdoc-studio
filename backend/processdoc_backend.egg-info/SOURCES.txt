@@ -29,6 +29,7 @@ app/api/wiki.py
 app/core/__init__.py
 app/core/auth.py
 app/core/config.py
+app/core/db_checkpoints.py
 app/core/deck_exporter.py
 app/core/deliverable.py
 app/core/deliverable_docx.py
@@ -69,8 +70,10 @@ app/services/budget_vs_actual.py
 app/services/cache.py
 app/services/claude.py
 app/services/claude_tools.py
+app/services/compaction_trace.py
 app/services/conflict_resolution.py
 app/services/content_enrichment.py
+app/services/context_compaction.py
 app/services/conversation_digest.py
 app/services/conversation_router.py
 app/services/conversation_state.py
@@ -93,6 +96,7 @@ app/services/langfuse_tracing.py
 app/services/leading_practices.py
 app/services/memory_consent.py
 app/services/memory_context.py
+app/services/memory_event_service.py
 app/services/model_links.py
 app/services/model_realtime.py
 app/services/observability.py
@@ -105,6 +109,7 @@ app/services/quality_contract_registry.py
 app/services/retrieval.py
 app/services/retry_policy.py
 app/services/run_budget.py
+app/services/run_event_service.py
 app/services/run_events.py
 app/services/run_tasks.py
 app/services/run_todo_snapshot.py
@@ -113,6 +118,7 @@ app/services/scenario_runner.py
 app/services/scheduled_tasks.py
 app/services/schema_inference.py
 app/services/skill_document.py
+app/services/source_freshness.py
 app/services/storage.py
 app/services/strategy_plan.py
 app/services/swarm.py
@@ -170,6 +176,7 @@ app/tests/test_coordinator_e2e_integration.py
 app/tests/test_coordinator_event_loop.py
 app/tests/test_coordinator_planning.py
 app/tests/test_coordinator_state_manager.py
+app/tests/test_db_checkpoints.py
 app/tests/test_deck_exporter.py
 app/tests/test_deliverable_quality.py
 app/tests/test_dpdp.py
@@ -194,6 +201,7 @@ app/tests/test_mcp_e2e_integration.py
 app/tests/test_mcp_protocol.py
 app/tests/test_mcp_registry.py
 app/tests/test_mcp_tool_resolution.py
+app/tests/test_memory_event_service.py
 app/tests/test_memory_upgrade.py
 app/tests/test_model_links.py
 app/tests/test_models_excel.py
@@ -215,12 +223,15 @@ app/tests/test_proposal_policy.py
 app/tests/test_proposal_pptx_pipeline.py
 app/tests/test_qa.py
 app/tests/test_quality_framework_phase2.py
+app/tests/test_run_event_service.py
 app/tests/test_run_final_approve.py
 app/tests/test_run_queue_runtime.py
 app/tests/test_run_todo_snapshot.py
+app/tests/test_run_worker_resume_events.py
 app/tests/test_scenario_runner.py
 app/tests/test_skill_document.py
 app/tests/test_skill_scripts_smoke.py
+app/tests/test_source_freshness.py
 app/tests/test_strategy_plan_resolve.py
 app/tests/test_subagents.py
 app/tests/test_swarm.py
@@ -263,3 +274,4 @@ tests/test_end_to_end_regeneration.py
 tests/test_phase2_security.py
 tests/test_token_budget_standalone.py
 tests/test_token_budgets.py
+tests/test_web_search_tavily.py

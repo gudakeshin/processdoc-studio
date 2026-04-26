@@ -14,6 +14,10 @@ _ALLOWED_STATES = {
     "new",
     "exploring",
     "discovery",
+    # Collaborative story-building states (Phase 2)
+    "storyline_building",   # Sheldon proposes narrative arc options; user agrees or redirects
+    "slide_negotiation",    # Walk through slides one at a time; each agreement stored as MemoryItem
+    "structure_agreed",     # All slides agreed; deck_outline assembled from decisions
     "ready_to_plan",
     "plan_proposed",
     "confirming",

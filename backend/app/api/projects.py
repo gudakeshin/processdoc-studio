@@ -594,7 +594,7 @@ def _propose_discovery_questions(
 
     prior_context = "\n".join(
         f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
-        for m in prior_messages[-8:]
+        for m in prior_messages[-15:]
         if str(m.get("content") or "").strip()
     )
     slot_questions = {
@@ -644,7 +644,46 @@ def _propose_discovery_questions(
     if len(questions) < len(normalized_missing or []) or (not normalized_missing and not questions):
         still_missing = [s for s in slot_questions if s not in known_slots]
         questions = [slot_questions[s] for s in still_missing] if still_missing else list(slot_questions.values())
-    message = "Before I draft the proposal plan, I need 3 quick inputs:\n- " + "\n- ".join(questions)
+
+    # Build a contextual, grounded message rather than the generic "3 quick inputs" template.
+    # Reference what's already captured so Sheldon sounds like a colleague, not a form.
+    from app.services.claude import claude_generate as _cg
+
+    known_bits: list[str] = []
+    _client = known_slots.get("client") if isinstance(known_slots.get("client"), dict) else {}
+    if str(_client.get("name") or "").strip():
+        known_bits.append(f"Client: {_client['name']}" + (f" ({_client['industry']})" if _client.get("industry") else ""))
+    _outcome = known_slots.get("outcome") if isinstance(known_slots.get("outcome"), dict) else {}
+    if str(_outcome.get("primary") or "").strip():
+        known_bits.append(f"Outcome: {_outcome['primary']}")
+    if known_slots.get("audience"):
+        known_bits.append(f"Audience: {known_slots['audience']}")
+    _themes = known_slots.get("win_themes") if isinstance(known_slots.get("win_themes"), list) else []
+    if _themes:
+        known_bits.append(f"Win themes: {', '.join(str(t) for t in _themes)}")
+    known_summary = "; ".join(known_bits) if known_bits else ""
+
+    try:
+        message = _cg(
+            system=(
+                "You are Sheldon, a consulting copilot. Be a thoughtful colleague, not a form.\n"
+                "Acknowledge what the user just shared (do NOT re-ask anything already captured).\n"
+                "Then ask ONLY the single most important missing question from the list below.\n"
+                "Keep it to 2-3 sentences. No numbered lists. One emoji max.\n"
+                + (f"Already established: {known_summary}\n" if known_summary else "")
+            ),
+            user=(
+                f"User said: {instruction}\n\n"
+                f"Still need (ask for ONE, the most important): {questions}\n\n"
+                f"Recent context:\n{prior_context}"
+            ),
+            temperature=0.4,
+            max_tokens=200,
+        ).strip()
+    except Exception:
+        q_count = len(questions)
+        lead = "One more thing" if q_count == 1 else f"{q_count} things still needed"
+        message = f"{lead}:\n- " + "\n- ".join(questions)
     msg = ConversationMessage(
         conversation_id=conv.id,
         role="assistant",
@@ -668,7 +707,7 @@ def _extract_discovery_answers(user_message: str, prior_messages: list[dict]) ->
 
     context = "\n".join(
         f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
-        for m in prior_messages[-8:]
+        for m in prior_messages[-15:]
         if str(m.get("content") or "").strip()
     )
     try:
@@ -859,7 +898,7 @@ def _persist_conversational_response(
 
     recent_context = "\n".join(
         f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:600]}"
-        for m in prior_messages[-8:]
+        for m in prior_messages[-15:]
         if str(m.get("content") or "").strip()
     )
     slots = slots or {}
@@ -999,7 +1038,7 @@ def _persist_acknowledgment_response(
 
     recent_context = "\n".join(
         f"{m.get('role', 'user').upper()}: {str(m.get('content') or '')[:400]}"
-        for m in prior_messages[-8:]
+        for m in prior_messages[-15:]
         if str(m.get("content") or "").strip()
     )
 
@@ -1858,7 +1897,10 @@ def _persist_assistant_plan_message(
         current_answers=decision_answers,
     )
     strategy_dossier: dict | None = None
-    if settings.strategy_options_planning_enabled and _instruction_may_warrant_strategy_options(instruction):
+    # Skip strategy generation if the user already selected an approach — regenerating
+    # produces new option IDs that never match the stored selection, causing an infinite loop.
+    _strategy_already_selected = bool(decision_answers.get("execution_strategy"))
+    if settings.strategy_options_planning_enabled and not _strategy_already_selected and _instruction_may_warrant_strategy_options(instruction):
         try:
             from app.services.strategy_plan import generate_strategy_options
 
@@ -2276,6 +2318,391 @@ def post_project_conversation_message(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    try:
+        return _post_project_conversation_message_impl(pid, body, user, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _LOG.exception("conversation_message_failed project=%s user=%s err=%s", pid, getattr(user, "id", "?"), exc)
+        raise HTTPException(status_code=500, detail=f"conversation_message_failed: {type(exc).__name__}: {str(exc)[:300]}")
+
+
+def _handle_collaborative_building(
+    *,
+    db,
+    conv,
+    pid: str,
+    content: str,
+    prior_messages: list[dict],
+    state,
+    merged_discovery: dict,
+    project_context: str,
+    decision,
+    template_ids: list[str],
+    output_type_representations: dict,
+    content_skill_hint,
+    custom_output_types: list[str],
+    combined_instruction: str,
+    rationale: str,
+    resolved_wiki_refs: list[str],
+    canonical_missing_slots: list[str],
+    prior_plan_meta,
+    user,
+) -> dict:
+    """Route the conversation through the collaborative story-building states.
+
+    States handled here:
+      new / exploring / discovery (all slots captured) → storyline_building
+      storyline_building → slide_negotiation
+      slide_negotiation → structure_agreed
+      structure_agreed → plan generation (same as original flow)
+    """
+    from app.services.storyline_builder import (
+        ARC_LIBRARY,
+        parse_arc_from_user_message,
+        propose_arcs,
+        save_agreed_arc,
+    )
+    from app.services.slide_negotiator import (
+        ARC_BLUEPRINTS,
+        assemble_outline_from_decisions,
+        load_agreed_slides,
+        parse_slide_feedback,
+        propose_slide,
+        save_agreed_slide,
+    )
+
+    current_state = state.state
+
+    # ── 1. Enter storyline_building when discovery is freshly complete ────────
+    if current_state not in {"storyline_building", "slide_negotiation", "structure_agreed"}:
+        # All slots captured; start the arc proposal.
+        state.state = "storyline_building"
+        state.pending_questions = []
+        state.deliverable = {
+            "template_ids": template_ids,
+            "representations": output_type_representations,
+            "content_skill_hint": content_skill_hint,
+        }
+        stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale="collaborative_building_start")
+        save_state(conv, state)
+        db.flush()
+
+        history_text = "\n".join(
+            f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
+            for m in prior_messages[-15:]
+            if str(m.get("content") or "").strip()
+        )
+        proposal = propose_arcs(
+            discovery_slots=merged_discovery,
+            project_context=project_context,
+            conversation_history=history_text,
+        )
+        msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="assistant",
+            content=proposal["message"],
+            metadata_json=json.dumps(proposal["metadata"]),
+        )
+        db.add(msg)
+        conv.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "conversation_id": conv.id,
+            "messages": _serialize_messages(db, conv.id),
+            "open_questions": [],
+            "ready_for_confirmation": False,
+            "plan_hash": None,
+            "collaborative_state": "storyline_building",
+        }
+
+    # ── 2. Handle arc agreement / redirection in storyline_building ──────────
+    if current_state == "storyline_building":
+        arc_key = parse_arc_from_user_message(content)
+        if arc_key == "__agree_with_recommendation__":
+            # Use whatever was stored in slots or default to scqa.
+            arc_key = str(state.slots.get("storyline", {}).get("arc") or "scqa").strip()
+            if arc_key not in ARC_LIBRARY:
+                arc_key = "scqa"
+
+        if arc_key and arc_key in ARC_LIBRARY:
+            # User agreed on this arc — save and move to slide_negotiation.
+            save_agreed_arc(db, project_id=pid, arc_key=arc_key, arc_rationale=f"user selected {arc_key}")
+            state.slots["storyline"] = {"arc": arc_key, "agreed": True}
+            # Determine total slides from blueprint.
+            blueprint = ARC_BLUEPRINTS.get(arc_key, ARC_BLUEPRINTS["scqa"])
+            total_slides = len(blueprint)
+            state.slots["current_slide_index"] = 0
+            state.slots["total_slides"] = total_slides
+            state.slots["slide_decisions"] = []
+            state.state = "slide_negotiation"
+            stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=f"arc_agreed_{arc_key}")
+            save_state(conv, state)
+            db.flush()
+
+            # Confirm arc choice and propose slide 1.
+            slide_result = propose_slide(
+                slide_index=0,
+                total_slides=total_slides,
+                arc_key=arc_key,
+                discovery_slots=merged_discovery,
+                project_context=project_context,
+                prior_slide_decisions=[],
+            )
+            arc_def = ARC_LIBRARY[arc_key]
+            message = (
+                f"Locked in — **{arc_def['name']}** it is.\n\n"
+                f"Now let's build the slides together. I'll propose one at a time and we'll agree on each before moving on.\n\n"
+                + slide_result["message"]
+            )
+            msg = ConversationMessage(
+                conversation_id=conv.id,
+                role="assistant",
+                content=message,
+                metadata_json=json.dumps({
+                    "kind": "slide_proposal",
+                    "arc_agreed": arc_key,
+                    "slide": slide_result["slide"],
+                }),
+            )
+            db.add(msg)
+            conv.updated_at = datetime.utcnow()
+            db.commit()
+            return {
+                "conversation_id": conv.id,
+                "messages": _serialize_messages(db, conv.id),
+                "open_questions": [],
+                "ready_for_confirmation": False,
+                "plan_hash": None,
+                "collaborative_state": "slide_negotiation",
+            }
+
+        # User gave feedback on the arc but didn't select one — re-engage conversationally.
+        stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale="storyline_feedback")
+        save_state(conv, state)
+        db.flush()
+        return _persist_conversational_response(
+            db,
+            conv,
+            content,
+            prior_messages,
+            slots=merged_discovery,
+            project_context=project_context,
+            missing_slots=[],
+            wiki_refs=resolved_wiki_refs,
+            already_surfaced_refs=state.surfaced_wiki_refs,
+            router_intent=decision.intent,
+            router_confidence=decision.confidence,
+            project_id=pid,
+            history_summary=state.history_summary,
+        )
+
+    # ── 3. Handle slide agreement / modification ─────────────────────────────
+    if current_state == "slide_negotiation":
+        arc_key = str(state.slots.get("storyline", {}).get("arc") or "scqa").strip()
+        if arc_key not in ARC_BLUEPRINTS:
+            arc_key = "scqa"
+        current_index = int(state.slots.get("current_slide_index") or 0)
+        total_slides = int(state.slots.get("total_slides") or len(ARC_BLUEPRINTS.get(arc_key, [])))
+        slide_decisions: list[dict] = state.slots.get("slide_decisions") if isinstance(state.slots.get("slide_decisions"), list) else []
+
+        feedback = parse_slide_feedback(content)
+
+        if feedback == "agree":
+            # Load the last proposed slide from messages and save it.
+            last_proposal: dict = {}
+            for m in reversed(prior_messages):
+                try:
+                    meta = json.loads(m.get("metadata") or m.get("metadata_json") or "{}")
+                    if isinstance(meta, dict) and meta.get("kind") == "slide_proposal":
+                        last_proposal = meta.get("slide") or {}
+                        break
+                except Exception:
+                    pass
+            if not last_proposal:
+                last_proposal = {"slide_num": current_index + 1, "title": f"Slide {current_index + 1}", "slide_type": "bullets", "key_message": ""}
+            last_proposal["agreed"] = True
+            save_agreed_slide(db, project_id=pid, slide=last_proposal)
+            slide_decisions.append(last_proposal)
+            current_index += 1
+            state.slots["current_slide_index"] = current_index
+            state.slots["slide_decisions"] = slide_decisions
+
+            if current_index >= total_slides:
+                # All slides agreed — move to structure_agreed.
+                state.state = "structure_agreed"
+                stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale="all_slides_agreed")
+                save_state(conv, state)
+                db.flush()
+                # Build a summary message.
+                summary_lines = [f"All {total_slides} slides agreed! Here's the deck structure we've locked in:\n"]
+                for i, s in enumerate(slide_decisions):
+                    summary_lines.append(f"**{i+1}. {s.get('title', f'Slide {i+1}')}** — {s.get('key_message', '')}")
+                summary_lines.append(
+                    "\nShall I generate the deck now? Say 'go' or 'build it' to start."
+                )
+                summary_message = "\n".join(summary_lines)
+                msg = ConversationMessage(
+                    conversation_id=conv.id,
+                    role="assistant",
+                    content=summary_message,
+                    metadata_json=json.dumps({
+                        "kind": "structure_summary",
+                        "slides": slide_decisions,
+                        "ready_to_build": True,
+                    }),
+                )
+                db.add(msg)
+                conv.updated_at = datetime.utcnow()
+                db.commit()
+                return {
+                    "conversation_id": conv.id,
+                    "messages": _serialize_messages(db, conv.id),
+                    "open_questions": [],
+                    "ready_for_confirmation": True,
+                    "plan_hash": None,
+                    "collaborative_state": "structure_agreed",
+                }
+
+            # More slides to go — propose the next one.
+            save_state(conv, state)
+            db.flush()
+            slide_result = propose_slide(
+                slide_index=current_index,
+                total_slides=total_slides,
+                arc_key=arc_key,
+                discovery_slots=merged_discovery,
+                project_context=project_context,
+                prior_slide_decisions=slide_decisions,
+            )
+            msg = ConversationMessage(
+                conversation_id=conv.id,
+                role="assistant",
+                content=slide_result["message"],
+                metadata_json=json.dumps(slide_result["metadata"]),
+            )
+            db.add(msg)
+            conv.updated_at = datetime.utcnow()
+            db.commit()
+            return {
+                "conversation_id": conv.id,
+                "messages": _serialize_messages(db, conv.id),
+                "open_questions": [],
+                "ready_for_confirmation": False,
+                "plan_hash": None,
+                "collaborative_state": "slide_negotiation",
+            }
+
+        # feedback == "modify" — re-propose the same slide incorporating user feedback.
+        save_state(conv, state)
+        db.flush()
+        slide_result = propose_slide(
+            slide_index=current_index,
+            total_slides=total_slides,
+            arc_key=arc_key,
+            discovery_slots=merged_discovery,
+            project_context=project_context,
+            prior_slide_decisions=slide_decisions,
+            user_feedback=content,
+        )
+        msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="assistant",
+            content="Revised — how does this look?\n\n" + slide_result["message"],
+            metadata_json=json.dumps(slide_result["metadata"]),
+        )
+        db.add(msg)
+        conv.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "conversation_id": conv.id,
+            "messages": _serialize_messages(db, conv.id),
+            "open_questions": [],
+            "ready_for_confirmation": False,
+            "plan_hash": None,
+            "collaborative_state": "slide_negotiation",
+        }
+
+    # ── 4. structure_agreed: user said 'go' / 'build it' → generate plan ────
+    if current_state == "structure_agreed":
+        # Assemble deck_outline_preview from agreed MemoryItems, then fall through
+        # to the normal plan generation path below.
+        from app.services.slide_negotiator import assemble_outline_from_decisions
+        agreed_outline = assemble_outline_from_decisions(db, project_id=pid)
+        # Store the assembled outline in deliverable so the plan builder picks it up.
+        state.deliverable = {
+            "template_ids": template_ids,
+            "representations": output_type_representations,
+            "content_skill_hint": content_skill_hint,
+            "deck_outline_preview": {"slides": agreed_outline},
+        }
+        state.state = "ready_to_plan"
+        stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale="structure_agreed_go")
+        save_state(conv, state)
+        db.flush()
+        # Fall through to normal plan generation (checkpoint_scope block below).
+        # We rebuild the local variables expected by that block.
+        pass
+
+    # Fall through to normal plan generation.
+    with checkpoint_scope(
+        db,
+        "post_project_conversation_message.plan_commit",
+        metadata={"project_id": pid, "conversation_id": conv.id},
+    ) as cp_plan:
+        state.state = "ready_to_plan"
+        state.pending_questions = []
+        state.deliverable = state.deliverable or {
+            "template_ids": template_ids,
+            "representations": output_type_representations,
+            "content_skill_hint": content_skill_hint,
+        }
+        stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
+        save_state(conv, state)
+        db.flush()
+        cp_plan.mark("state_ready_to_plan_flushed")
+
+        content_skill_targets = _derive_content_skill_targets(
+            instruction=combined_instruction,
+            template_ids=template_ids,
+            prior_plan_meta=prior_plan_meta if isinstance(prior_plan_meta, dict) else None,
+            llm_skill_hint=content_skill_hint,
+        )
+        regeneration_directive = _build_regeneration_directive(content)
+        prior_decision_answers = _sanitize_decision_answers(prior_plan_meta.get("decision_answers")) if isinstance(prior_plan_meta, dict) else {}
+        response = _persist_assistant_plan_message(
+            db=db,
+            conv=conv,
+            content=content,
+            instruction=combined_instruction,
+            template_ids=template_ids,
+            custom_output_types=custom_output_types,
+            output_type_representations=output_type_representations,
+            rationale=rationale,
+            decision_answers=prior_decision_answers,
+            content_skill_targets=content_skill_targets,
+            regeneration_directive=regeneration_directive,
+            discovery=merged_discovery,
+        )
+        state.state = "plan_proposed"
+        save_state(conv, state)
+        cp_plan.mark("assistant_plan_pre_commit")
+        db.commit()
+        cp_plan.mark("assistant_plan_committed")
+    response["memory_quick_add"] = {
+        "memory_page_path": "/memory",
+        "batch_api_relative": f"/api/memory/{pid}/batch",
+        "hint": "Save durable facts to Memory (or batch API after review); they are merged into run context when compaction is enabled.",
+    }
+    return response
+
+
+def _post_project_conversation_message_impl(
+    pid: str,
+    body: ConversationMessageRequest,
+    user: User,
+    db: Session,
+) -> dict:
     require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
     content = (body.content or "").strip()
     if not content:
@@ -2344,7 +2771,7 @@ def post_project_conversation_message(
     ]
     history_prompt = "\n".join(
         f"{m.get('role', 'user')}: {str(m.get('content') or '').strip()}"
-        for m in prior_messages[-12:]
+        for m in prior_messages[-20:]
         if str(m.get("content") or "").strip()
     )
     base_instruction = str((prior_plan_meta or {}).get("instruction") or "").strip()
@@ -2396,21 +2823,30 @@ def post_project_conversation_message(
                 "wiki_refs": wiki_source_refs[:8],
             }
         )
-        db.flush()
+        try:
+            db.flush()
+        except Exception:
+            _LOG.warning("failed to flush discovery metadata for conv %s", conv.id)
     state.slots = premerged_slots
     for slot_key in ("client", "outcome", "win_themes", "audience"):
         val = premerged_slots.get(slot_key)
         if val is not None and str(val).strip() not in {"", "[]", "{}"}:
-            record_discovery_answer(
-                db,
-                project_id=pid,
-                user_id=user.id,
-                slot_key=slot_key,
-                value=val,
-            )
+            try:
+                record_discovery_answer(
+                    db,
+                    project_id=pid,
+                    user_id=user.id,
+                    slot_key=slot_key,
+                    value=val,
+                )
+            except Exception:
+                _LOG.warning("record_discovery_answer failed for slot %s project %s", slot_key, pid)
     if summary_updated:
         save_state(conv, state)
-        db.flush()
+        try:
+            db.flush()
+        except Exception:
+            _LOG.warning("failed to flush summary state for conv %s", conv.id)
 
     try:
         context_bundle = _load_project_context_bundle(db, pid, combined_instruction)
@@ -2430,14 +2866,17 @@ def post_project_conversation_message(
         history_summary=state.history_summary,
         memory_profile=memory_profile,
     )
-    record_routing_decision(
-        db,
-        project_id=pid,
-        user_id=user.id,
-        decision_type=decision.intent,
-        confidence=decision.confidence,
-        outcome=decision.rationale or "router_decision",
-    )
+    try:
+        record_routing_decision(
+            db,
+            project_id=pid,
+            user_id=user.id,
+            decision_type=decision.intent,
+            confidence=decision.confidence,
+            outcome=decision.rationale or "router_decision",
+        )
+    except Exception:
+        _LOG.warning("record_routing_decision failed for project %s", pid)
 
     merged_discovery = _merge_discovery(premerged_slots, decision.extracted_slots)
     if decision.extracted_slots and not (extracted_fast or extracted_llm):
@@ -2573,6 +3012,33 @@ def post_project_conversation_message(
                 project_id=pid,
                 history_summary=state.history_summary,
             )
+
+    # ── Collaborative building flow ───────────────────────────────────────────────
+    # When all discovery slots are captured and collaborative_building_enabled,
+    # enter the storyline_building → slide_negotiation → structure_agreed flow
+    # instead of going straight to plan generation.
+    if settings.collaborative_building_enabled and proposal_detected and not canonical_missing_slots and template_ids:
+        return _handle_collaborative_building(
+            db=db,
+            conv=conv,
+            pid=pid,
+            content=content,
+            prior_messages=prior_messages,
+            state=state,
+            merged_discovery=merged_discovery,
+            project_context=project_context,
+            decision=decision,
+            template_ids=template_ids,
+            output_type_representations=output_type_representations,
+            content_skill_hint=content_skill_hint,
+            custom_output_types=custom_output_types,
+            combined_instruction=combined_instruction,
+            rationale=rationale,
+            resolved_wiki_refs=resolved_wiki_refs,
+            canonical_missing_slots=canonical_missing_slots,
+            prior_plan_meta=prior_plan_meta,
+            user=user,
+        )
 
     if decision.intent in {"smalltalk", "clarify", "greeting", "ack"} and not template_ids:
         state.state = "exploring"

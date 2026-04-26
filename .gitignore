@@ -22,6 +22,8 @@ backend/**/*.pyc
 
 # Legacy paths (kept for backwards compatibility with older clones)
 backend/processdoc.db
+backend/processdoc.db-shm
+backend/processdoc.db-wal
 backend/workspace/
 
 # Frontend runtime/build

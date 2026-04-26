@@ -191,6 +191,8 @@ class Settings(BaseSettings):
     proposal_discovery_enabled: bool = True
     proposal_discovery_prompts_enabled: bool = True
     wiki_aware_discovery_enabled: bool = True
+    # Collaborative document building: arc proposal → slide negotiation → structure agreement.
+    collaborative_building_enabled: bool = True
     scratchpad_visibility_enabled: bool = True
     # Phase C: LLM strategy options + execution_strategy decision prompt (extra Anthropic call per plan message).
     strategy_options_planning_enabled: bool = False
@@ -235,6 +237,8 @@ class Settings(BaseSettings):
     brave_search_api_key: str = ""
     google_custom_search_api_key: str = ""
     google_custom_search_cx: str = ""
+    tavily_api_key: str = ""
+    tavily_provider_enabled: bool = True
     lp_library_local_path: str = ""
     policy_evaluator_version: str = "policy-v2"
     policy_classifier_threshold: float = 0.5
@@ -288,6 +292,7 @@ class Settings(BaseSettings):
         "proposal_discovery_enabled",
         "proposal_discovery_prompts_enabled",
         "wiki_aware_discovery_enabled",
+        "collaborative_building_enabled",
         "scratchpad_visibility_enabled",
         "strategy_options_planning_enabled",
         "wiki_meta_schema_versioning_enabled",
@@ -322,6 +327,7 @@ class Settings(BaseSettings):
         "conversation_digest_tiered_compaction_enabled",
         "conversation_digest_sectioned_assembly_enabled",
         "conversation_digest_exclude_stale_sources",
+        "tavily_provider_enabled",
         mode="before",
     )
     @classmethod

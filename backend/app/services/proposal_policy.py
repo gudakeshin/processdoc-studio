@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 PROPOSAL_SKILL_ID = "proposal_finance_transformation_v1"
 PROPOSAL_OUTPUT_TYPES: tuple[str, ...] = ("docx", "pptx", "pdf")
@@ -134,6 +137,8 @@ def generate_deck_outline_preview(
     skill_id: str | None = None,
     discovery: dict[str, Any] | None = None,
     project_context: str | None = None,
+    db: "Session | None" = None,
+    project_id: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Generate a lightweight slide outline preview during plan creation.
@@ -145,6 +150,23 @@ def generate_deck_outline_preview(
     When ``project_context`` is provided (typically a planner excerpt built from
     wiki pages + project memory) the outline is grounded in that content.
     """
+    # When the user has collaboratively agreed on a deck structure, use those
+    # decisions directly rather than re-generating the outline from scratch.
+    if db is not None and project_id:
+        try:
+            from app.services.slide_negotiator import assemble_outline_from_decisions
+            agreed_slides = assemble_outline_from_decisions(db, project_id=project_id)
+            if agreed_slides:
+                return {
+                    "slides": agreed_slides,
+                    "rationale": "Assembled from collaboratively agreed slide decisions.",
+                    "output_type": output_type,
+                    "skill_id": skill_id or PROPOSAL_SKILL_ID,
+                    "source": "collaborative_decisions",
+                }
+        except Exception:
+            pass  # Fall through to LLM generation on any error.
+
     try:
         from app.services.claude import claude_generate_json, is_claude_enabled
     except ImportError:
