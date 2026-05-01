@@ -451,16 +451,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
   }, [backpressureRetrySec]);
 
   useEffect(() => {
-    if (backpressureRetrySec !== 0) return;
-    if (runStatus !== "plan_ready") {
-      setBackpressureRetrySec(null);
-      return;
-    }
-    void approvePlan();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backpressureRetrySec, runStatus]);
-
-  useEffect(() => {
     if (!token || !pid) return;
     void loadDeadLetters();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1116,14 +1106,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
 
   // Unified approval state for the persistent banner
   const approvalBannerState = useMemo<ApprovalBannerState>(() => {
-    if (runStatus === "plan_ready") {
-      return {
-        type: "plan_ready",
-        saving: savePlanBusy,
-        onSave: savePlan,
-        onApprove: approvePlan,
-      };
-    }
     if (runStatus === "plan_blocked") {
       return {
         type: "plan_blocked",
@@ -1141,9 +1123,8 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       };
     }
     if (
-      runStatus === "plan_ready" &&
-      (latestAssistantMetadata?.requires_user_approval ||
-        latestAssistantMetadata?.ready_to_run)
+      latestAssistantMetadata?.requires_user_approval ||
+      latestAssistantMetadata?.ready_to_run
     ) {
       return {
         type: "hitl_gate",
@@ -1155,7 +1136,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     }
     return null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runStatus, savePlanBusy, finalApproveBusy, latestAssistantMetadata, blockedContext]);
+  }, [runStatus, finalApproveBusy, latestAssistantMetadata, blockedContext]);
 
   // Download buttons — rendered inside ToolActivityFeed's Artifacts tab
   const downloadsContent =

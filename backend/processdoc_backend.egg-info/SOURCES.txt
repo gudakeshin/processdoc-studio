@@ -118,8 +118,10 @@ app/services/scenario_runner.py
 app/services/scheduled_tasks.py
 app/services/schema_inference.py
 app/services/skill_document.py
+app/services/slide_negotiator.py
 app/services/source_freshness.py
 app/services/storage.py
+app/services/storyline_builder.py
 app/services/strategy_plan.py
 app/services/swarm.py
 app/services/swarm_custom_tasks.py

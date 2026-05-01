@@ -412,7 +412,77 @@ async def sync_project_documents_to_wiki(
         else:
             skipped += 1
 
-    return {"status": "success", "ingested": ingested, "skipped": skipped, "errors": errors}
+    return {
+        "status": "success",
+        "ingested": ingested,
+        "synced": ingested,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+@router.post("/{wiki_type}/cleanup-orphans")
+async def cleanup_orphan_wiki_pages(
+    wiki_type: str,
+    project_id: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Delete wiki pages that are unclassified, not user-edited, and have no incoming links."""
+    _wiki_require_access(wiki_type, project_id, user, db, mutating=True)
+    from app.services.storage import workspace_path
+    from app.services.wiki_ingest import _is_user_edited_page, _read_frontmatter_field
+
+    if wiki_type == "leading_practice":
+        wiki_dir = workspace_path("leading_practices") / "wiki"
+    elif project_id:
+        wiki_dir = workspace_path(project_id) / "wiki"
+    else:
+        raise HTTPException(status_code=400, detail="project_id required for project wiki")
+
+    if not wiki_dir.is_dir():
+        return {"status": "success", "deleted": 0, "kept": 0, "pages": []}
+
+    md_files = [f for f in wiki_dir.glob("*.md")
+                if f.name not in ("index.md", "log.md", "WIKI_SCHEMA.md")]
+
+    # Build set of page_ids referenced by [[page_id|...]] anywhere in the wiki.
+    referenced: set[str] = set()
+    link_re = re.compile(r"\[\[([a-z0-9_]+)(?:\|[^\]]*)?\]\]")
+    for f in md_files:
+        try:
+            for m in link_re.finditer(f.read_text(encoding="utf-8")):
+                if m.group(1) != f.stem:
+                    referenced.add(m.group(1))
+        except Exception:
+            continue
+
+    deleted: list[str] = []
+    kept = 0
+    for f in md_files:
+        category = _read_frontmatter_field(f, "category")
+        if category != "unclassified":
+            kept += 1
+            continue
+        if _is_user_edited_page(f):
+            kept += 1
+            continue
+        if f.stem in referenced:
+            kept += 1
+            continue
+        try:
+            f.unlink()
+            deleted.append(f.stem)
+        except Exception as exc:
+            logger.warning(f"Failed to delete orphan wiki page {f}: {exc}")
+            kept += 1
+
+    return {
+        "status": "success",
+        "deleted": len(deleted),
+        "kept": kept,
+        "pages": deleted,
+    }
 
 
 @router.post("/project/{project_id}/vault/init")

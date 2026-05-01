@@ -45,9 +45,6 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
     runChecklistTodos,
     parsedRunEvents,
     artifactsError,
-    backpressureRetrySec,
-    setBackpressureRetrySec,
-    approvePlan,
     runStatus,
     statusSteps,
     currentStepIndex,
@@ -126,22 +123,6 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
         {pollMode ? (
           <div className="alert alert--warning text-xs">
             Live stream is in replay/poll continuity mode. New events may arrive with slight delay.
-          </div>
-        ) : null}
-        {backpressureRetrySec !== null && backpressureRetrySec > 0 ? (
-          <div className="alert alert--warning">
-            Approval is temporarily throttled. Auto-retry in <strong>{backpressureRetrySec}s</strong>.
-            <Button
-              type="button"
-              variant="secondary"
-              className="ml-3 min-h-9 px-2 py-1 text-xs"
-              onClick={() => {
-                setBackpressureRetrySec(null);
-                void approvePlan();
-              }}
-            >
-              Retry now
-            </Button>
           </div>
         ) : null}
         <ZoneAInstruction

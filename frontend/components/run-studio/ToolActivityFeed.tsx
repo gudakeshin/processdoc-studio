@@ -976,9 +976,9 @@ export function ToolActivityFeed({
                   {agreedDecisions.length} slide{agreedDecisions.length !== 1 ? "s" : ""} agreed
                 </p>
                 <ol className="space-y-1.5">
-                  {agreedDecisions.map((d) => (
+                  {agreedDecisions.map((d, idx) => (
                     <li
-                      key={d.slide_num}
+                      key={`decision-${idx}-${d.slide_num}`}
                       className="flex items-start gap-2 rounded border border-[var(--surface-border)] bg-white p-2"
                     >
                       <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--primary-600)] text-2xs font-bold text-white">

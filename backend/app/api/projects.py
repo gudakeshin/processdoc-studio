@@ -12,7 +12,15 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.api.formats import _load_output_types
-from app.api.runs import _recommend_output_types
+from app.api.runs import (
+    _build_plan_payload,
+    _ensure_run_enqueued,
+    _normalize_custom_output_types,
+    _normalize_output_type_representations,
+    _recommend_output_types,
+)
+from app.services.permission_pipeline import evaluate_permission_pipeline
+from app.services.swarm import persist_instruction_broadcast_swarm_event_payload
 from app.core.auth import get_current_user, require_project_role
 from app.core.config import settings
 from app.core.db_checkpoints import checkpoint_scope
@@ -50,7 +58,7 @@ from app.services.memory_event_service import (
     record_routing_decision,
 )
 from app.services.retrieval import TieredContextEngine
-from app.services.run_worker import append_run_event
+from app.services.run_worker import append_memory_event, append_run_event, enqueue_run_execution
 from app.services.storage import ensure_workspace, workspace_path
 
 router = APIRouter()
@@ -272,6 +280,336 @@ def _is_acknowledgment(content: str) -> bool:
             if lowered == pattern or lowered == pattern + "!":
                 return True
     return False
+
+
+_EXECUTE_NOW_PATTERNS = frozenset({
+    "go", "go ahead", "build it", "build it now", "draft it", "draft it now",
+    "proceed", "yes proceed", "please proceed", "ship it", "make it", "do it", "do it now",
+    "execute", "execute it", "run it", "start it", "start the run",
+    "let's go", "lets go", "let's build", "lets build", "let's do it", "lets do it",
+    "create it", "create it now", "generate it", "generate it now",
+})
+
+# Substrings that unambiguously mean "start executing" wherever they appear in the message.
+_EXECUTE_NOW_SUBSTRINGS = (
+    "go ahead and draft", "go ahead and build", "go ahead and create",
+    "go ahead and generate", "go ahead and start", "go ahead and make",
+    "please go ahead", "please draft", "please build the", "please create the",
+    "please generate the", "start building", "start drafting", "start creating",
+    "start generating", "begin building", "begin drafting", "begin creating",
+    "kick it off", "kick off the", "get it started", "get started on",
+)
+
+
+def _is_execute_now_intent(content: str) -> bool:
+    lowered = (content or "").lower().strip().rstrip("!.")
+    if not lowered:
+        return False
+    if lowered in _EXECUTE_NOW_PATTERNS:
+        return True
+    # Allow "ok go ahead", "yes go ahead", "please proceed" etc.
+    for phrase in _EXECUTE_NOW_PATTERNS:
+        if len(phrase) >= 4 and lowered.endswith(phrase):
+            prefix = lowered[: -len(phrase)].strip()
+            if prefix in {"ok", "okay", "yes", "yeah", "yep", "sure", "please", "alright", "great"}:
+                return True
+    # Substring match for unambiguous execute phrases.
+    return any(sub in lowered for sub in _EXECUTE_NOW_SUBSTRINGS)
+
+
+def _generate_and_execute_plan(
+    *,
+    db: Session,
+    conv: Conversation,
+    pid: str,
+    user: "User",
+    state: "ConversationState",
+    content: str,
+    instruction: str,
+    template_ids: list[str],
+    custom_output_types: list[str],
+    output_type_representations: dict[str, str],
+    content_skill_hint: object,
+    prior_messages: list[dict],
+) -> dict:
+    """Generate a plan from state context then execute immediately (no second 'go' needed)."""
+    from app.core.db_checkpoints import checkpoint_scope as _cp_scope
+
+    with _cp_scope(db, "auto_plan_and_execute", metadata={"project_id": pid, "conversation_id": conv.id}):
+        state.state = "ready_to_plan"
+        state.pending_questions = []
+        save_state(conv, state)
+        db.flush()
+
+        content_skill_targets = _derive_content_skill_targets(
+            instruction=instruction,
+            template_ids=template_ids,
+            prior_plan_meta=None,
+            llm_skill_hint=content_skill_hint,
+        )
+        discovery = _normalize_discovery(state.slots if isinstance(state.slots, dict) else {})
+        _persist_assistant_plan_message(
+            db=db,
+            conv=conv,
+            content=content,
+            instruction=instruction,
+            template_ids=template_ids,
+            custom_output_types=custom_output_types,
+            output_type_representations=output_type_representations,
+            rationale="User requested immediate execution",
+            content_skill_targets=content_skill_targets,
+            discovery=discovery,
+        )
+        state.state = "plan_proposed"
+        save_state(conv, state)
+        db.commit()
+
+    # Read the freshly committed plan and execute it.
+    fresh_messages = _serialize_messages(db, conv.id)
+    fresh_plan_meta = _latest_assistant_plan_metadata(fresh_messages)
+    if not fresh_plan_meta or not fresh_plan_meta.get("plan_hash"):
+        return {
+            "conversation_id": conv.id,
+            "messages": fresh_messages,
+            "open_questions": [],
+            "ready_for_confirmation": False,
+            "plan_hash": None,
+        }
+    return _execute_plan_now(
+        db=db, conv=conv, pid=pid, user=user,
+        plan_meta=fresh_plan_meta, state=state,
+    )
+
+
+def _execute_plan_now(
+    *,
+    db: Session,
+    conv: Conversation,
+    pid: str,
+    user: "User",
+    plan_meta: dict,
+    state: "ConversationState",
+) -> dict:
+    """Inline confirm + create Run (approved) + enqueue — called when user says 'go'."""
+    from app.services.strategy_plan import resolve_selected_strategy
+
+    instruction = str(plan_meta.get("instruction") or "").strip() or "Create deliverables"
+    template_ids: list[str] = [str(x) for x in (plan_meta.get("template_output_types") or []) if str(x).strip()]
+    custom_output_types = _normalize_custom_output_types(
+        [str(x) for x in (plan_meta.get("custom_output_types") or []) if str(x).strip()]
+    )
+    output_type_representations = _normalize_output_type_representations(
+        {str(k): str(v) for k, v in (plan_meta.get("output_type_representations") or {}).items()}
+    )
+    content_skill_targets: dict[str, str] = {
+        str(k).strip(): str(v).strip()
+        for k, v in (plan_meta.get("content_skill_targets") or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+    plan_hash = str(plan_meta.get("plan_hash") or "")
+    da = _sanitize_decision_answers(plan_meta.get("decision_answers"))
+    dossier = plan_meta.get("strategy_dossier") if isinstance(plan_meta.get("strategy_dossier"), dict) else None
+    selected_strategy = resolve_selected_strategy(dossier, da)
+    discovery = _normalize_discovery(plan_meta.get("discovery"))
+
+    # Guard: don't create a duplicate run for the same conversation.
+    existing_run = db.scalar(
+        select(Run)
+        .where(Run.project_id == pid)
+        .where(Run.status.in_({"plan_ready", "approved", "running", "review_ready"}))
+        .order_by(Run.id.desc())
+        .limit(1)
+    )
+    if existing_run:
+        assistant_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="assistant",
+            content="A run is already in progress — check the Activity panel for status.",
+            metadata_json=json.dumps({"kind": "auto_execute_skipped", "run_id": existing_run.id}),
+        )
+        db.add(assistant_msg)
+        conv.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "conversation_id": conv.id,
+            "messages": _serialize_messages(db, conv.id),
+            "run_id": existing_run.id,
+            "auto_executed": False,
+            "open_questions": [],
+            "ready_for_confirmation": False,
+            "plan_hash": plan_hash,
+        }
+
+    # Persist plan_confirmed message (mirrors confirm_project_conversation_plan).
+    confirm_msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="user",
+        content="Confirmed plan for execution.",
+        metadata_json=json.dumps({
+            "plan_confirmed": True,
+            "plan_hash": plan_hash,
+            "instruction": instruction,
+            "template_output_types": template_ids,
+            "custom_output_types": custom_output_types,
+            "output_type_representations": output_type_representations,
+            "content_skill_targets": content_skill_targets,
+            "regeneration_directive": str(plan_meta.get("regeneration_directive") or "").strip(),
+            "confirmed_at": datetime.utcnow().isoformat(),
+            "decision_answers": da,
+            "strategy_dossier": dossier,
+            "selected_strategy": selected_strategy,
+            "discovery": discovery,
+            "deck_outline_preview": plan_meta.get("deck_outline_preview")
+            if isinstance(plan_meta.get("deck_outline_preview"), dict) else None,
+            "document_outline_preview": plan_meta.get("document_outline_preview")
+            if isinstance(plan_meta.get("document_outline_preview"), dict) else None,
+            "wiki_context_refs": plan_meta.get("wiki_context_refs")
+            if isinstance(plan_meta.get("wiki_context_refs"), list) else [],
+        }),
+    )
+    db.add(confirm_msg)
+    db.flush()
+
+    # Build plan payload and run permission pipeline.
+    plan = dict(_build_plan_payload(
+        project_id=pid,
+        instruction=instruction,
+        output_types=template_ids,
+        custom_output_types=custom_output_types,
+        output_type_representations=output_type_representations,
+        content_skill_targets=content_skill_targets,
+        regeneration_directive=str(plan_meta.get("regeneration_directive") or "").strip(),
+    ))
+    if isinstance(selected_strategy, dict) and selected_strategy.get("option_id"):
+        plan["selected_strategy"] = selected_strategy
+    deck_outline = plan_meta.get("deck_outline_preview")
+    if isinstance(deck_outline, dict) and deck_outline.get("slides"):
+        plan["deck_outline_preview"] = deck_outline
+    document_outline = plan_meta.get("document_outline_preview")
+    if isinstance(document_outline, dict) and document_outline.get("sections"):
+        plan["document_outline_preview"] = document_outline
+    wiki_refs = plan_meta.get("wiki_context_refs")
+    if isinstance(wiki_refs, list) and wiki_refs:
+        plan["wiki_context_refs"] = [str(r).strip() for r in wiki_refs if str(r).strip()][:20]
+    plan["conversation_id"] = conv.id
+    if plan_hash:
+        plan["plan_hash"] = plan_hash
+
+    preflight = evaluate_permission_pipeline(
+        run_status="plan_ready",
+        has_approval=True,
+        requested_outputs=list(template_ids),
+        workspace_ready=bool(__import__("app.services.storage", fromlist=["workspace_path"]).workspace_path(pid).exists()),
+        classifier_score=1.0,
+        classifier_threshold=float(settings.policy_classifier_threshold),
+        enforce_policy=bool(settings.policy_enforce_enabled),
+        plan_payload=plan,
+        include_human_gate=False,
+        agentic_loop_enabled=bool(settings.coordinator_agentic_loop_enabled),
+    )
+    blocked = [d for d in preflight if not d.allowed]
+
+    if blocked:
+        first_block = blocked[0]
+        assistant_msg = ConversationMessage(
+            conversation_id=conv.id,
+            role="assistant",
+            content=f"Can't start the run — blocked by policy ({first_block.stage}: {first_block.reason}). Fix the issue and try again.",
+            metadata_json=json.dumps({
+                "kind": "auto_execute_blocked",
+                "blocked_stage": first_block.stage,
+                "blocked_reason": first_block.reason,
+                "blocked_code": first_block.code,
+            }),
+        )
+        db.add(assistant_msg)
+        conv.updated_at = datetime.utcnow()
+        db.commit()
+        return {
+            "conversation_id": conv.id,
+            "messages": _serialize_messages(db, conv.id),
+            "open_questions": [],
+            "ready_for_confirmation": False,
+            "plan_hash": plan_hash,
+        }
+
+    # Create Run directly in 'approved' status (skip plan_ready → approve cycle).
+    run_id = f"run_{uuid.uuid4().hex[:10]}"
+    now = datetime.utcnow()
+    run = Run(
+        id=run_id,
+        project_id=pid,
+        status="approved",
+        output_types=json.dumps(template_ids),
+        instruction=instruction,
+        plan_payload=json.dumps(plan),
+        approved_by=user.id,
+        approved_at=now,
+    )
+    db.add(run)
+    db.flush()
+
+    append_run_event(db, run_id, "plan_ready", plan)
+    for d in preflight:
+        append_run_event(db, run_id, "permission_stage", {
+            "stage": d.stage, "allowed": d.allowed, "code": d.code,
+            "reason": d.reason, "metadata": d.metadata or {},
+        })
+    append_run_event(db, run_id, "step", {"status": "plan_approved", "approved_by": user.email})
+    append_memory_event(
+        db,
+        project_id=pid,
+        run_id=run_id,
+        event_type="user_intent_updated",
+        payload_obj={"summary": instruction[:400]},
+    )
+    swarm_instr = persist_instruction_broadcast_swarm_event_payload(
+        db, project_id=pid, run_id=run_id, instruction=instruction,
+    )
+    if swarm_instr:
+        append_run_event(db, run_id, "swarm_message", swarm_instr)
+
+    # Enqueue — catch 503 so chat endpoint doesn't fail.
+    try:
+        if not enqueue_run_execution(pid, run_id):
+            raise RuntimeError("enqueue returned False")
+        enqueued = True
+    except Exception as exc:
+        _LOG.error("auto_execute: enqueue failed for run %s project %s: %s", run_id, pid, exc)
+        enqueued = False
+
+    state.state = "run_queued"
+    save_state(conv, state)
+
+    queue_msg = (
+        "Queued — watch the Activity panel for progress."
+        if enqueued
+        else "Run created but couldn't be queued right now. Use the Activity panel to retry."
+    )
+    assistant_msg = ConversationMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=queue_msg,
+        metadata_json=json.dumps({
+            "kind": "auto_executed",
+            "run_id": run_id,
+            "auto_executed": True,
+            "enqueued": enqueued,
+        }),
+    )
+    db.add(assistant_msg)
+    conv.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "conversation_id": conv.id,
+        "messages": _serialize_messages(db, conv.id),
+        "run_id": run_id,
+        "auto_executed": True,
+        "open_questions": [],
+        "ready_for_confirmation": False,
+        "plan_hash": plan_hash,
+    }
 
 
 _PROPOSAL_DISCOVERY_OUTPUT_TYPES = {"pptx", "docx"}
@@ -934,7 +1272,11 @@ def _persist_conversational_response(
         "and offer to create a specific deliverable (e.g. propose PPTX vs DOCX) — but do NOT say 'Plan Ready'.\n"
         "Keep replies concise (2-4 sentences). Use at most 1 emoji. Never return the generic 'Great topic!' template.\n"
         "When using facts sourced from the project wiki, cite inline as '(source: [Wiki: Title])'. "
-        "Only cite titles from allowed_wiki_refs."
+        "Only cite titles from allowed_wiki_refs.\n"
+        "HARD RULE: You are a text-only interface. You CANNOT execute, build, draft, or create anything. "
+        "NEVER claim to be starting work, drafting slides, building a document, or promise delivery by a "
+        "specific time (e.g. 'in 90 minutes', 'shortly', 'now'). If the user says 'go ahead' or asks you "
+        "to start, respond: 'Type \"go\" to queue the run and I will start immediately.' Nothing else."
     )
     if unsurfaced_refs:
         system_prompt += (
@@ -1070,7 +1412,11 @@ Respond with 1-2 sentences that:
 2. Either continue the discussion naturally OR gently ask what they'd like to do next
 3. Keep Sheldon's personality (energetic, supportive)
 
-Keep it SHORT — 1-2 sentences max. Don't be verbose."""
+Keep it SHORT — 1-2 sentences max. Don't be verbose.
+
+HARD RULE: You are a text-only interface. You CANNOT execute, build, draft, or create anything.
+NEVER say you are starting work, drafting, building, or promise delivery by a specific time.
+If the user wants to proceed, tell them to type "go" — that is the only way to queue a run."""
 
     user_prompt = f"""Captured context (known slots):
 {known_block}
@@ -2510,19 +2856,18 @@ def _handle_collaborative_building(
 
         if feedback == "agree":
             # Load the last proposed slide from messages and save it.
+            # _serialize_messages already parses metadata_json into a dict.
             last_proposal: dict = {}
             for m in reversed(prior_messages):
-                try:
-                    meta = json.loads(m.get("metadata") or m.get("metadata_json") or "{}")
-                    if isinstance(meta, dict) and meta.get("kind") == "slide_proposal":
-                        last_proposal = meta.get("slide") or {}
-                        break
-                except Exception:
-                    pass
+                meta = m.get("metadata")
+                if isinstance(meta, dict) and meta.get("kind") == "slide_proposal":
+                    last_proposal = meta.get("slide") or {}
+                    break
             if not last_proposal:
                 last_proposal = {"slide_num": current_index + 1, "title": f"Slide {current_index + 1}", "slide_type": "bullets", "key_message": ""}
             last_proposal["agreed"] = True
             save_agreed_slide(db, project_id=pid, slide=last_proposal)
+            _LOG.info(f"DEBUG: appending to slide_decisions: {last_proposal}")
             slide_decisions.append(last_proposal)
             current_index += 1
             state.slots["current_slide_index"] = current_index
@@ -2535,13 +2880,22 @@ def _handle_collaborative_building(
                 save_state(conv, state)
                 db.flush()
                 # Build a summary message.
-                summary_lines = [f"All {total_slides} slides agreed! Here's the deck structure we've locked in:\n"]
+                from app.services.slide_negotiator import SLIDE_TYPE_LABELS
+                summary_lines = [f"All {total_slides} slides agreed! Here's the full deck structure — review before I render:\n"]
                 for i, s in enumerate(slide_decisions):
-                    summary_lines.append(f"**{i+1}. {s.get('title', f'Slide {i+1}')}** — {s.get('key_message', '')}")
+                    slide_type = str(s.get("slide_type") or "bullets")
+                    type_label = SLIDE_TYPE_LABELS.get(slide_type, slide_type)
+                    evidence = str(s.get("evidence_source") or "").strip()
+                    line = f"**{i+1}. {s.get('title', f'Slide {i+1}')}** _{type_label}_ — {s.get('key_message', '')}"
+                    if evidence:
+                        line += f" _(source: {evidence})_"
+                    summary_lines.append(line)
                 summary_lines.append(
-                    "\nShall I generate the deck now? Say 'go' or 'build it' to start."
+                    "\nHappy with this structure? Say **'go'** or **'build it'** to render the deck, "
+                    "or tell me what to change."
                 )
                 summary_message = "\n".join(summary_lines)
+                _LOG.info(f"DEBUG: structure_summary slide_decisions: {slide_decisions}")
                 msg = ConversationMessage(
                     conversation_id=conv.id,
                     role="assistant",
@@ -2766,6 +3120,46 @@ def _post_project_conversation_message_impl(
                 project_context=str(context_bundle.get("text") or ""),
             )
 
+    # ── Auto-execute: user says 'go' — execute existing plan or generate+execute ──
+    if _is_execute_now_intent(content) and state.state not in {"run_queued", "done"}:
+        # Case 1: a plan message already exists → execute it directly.
+        if (
+            isinstance(prior_plan_meta, dict)
+            and prior_plan_meta.get("plan_hash")
+            and prior_plan_meta.get("template_output_types")
+        ):
+            return _execute_plan_now(
+                db=db, conv=conv, pid=pid, user=user,
+                plan_meta=prior_plan_meta, state=state,
+            )
+
+        # Case 2: no plan yet, but state.deliverable has template_ids from discovery.
+        # Skip the collaborative flow and generate + execute in one shot.
+        _deliverable = state.deliverable if isinstance(state.deliverable, dict) else {}
+        _template_ids = [str(x) for x in (_deliverable.get("template_ids") or []) if str(x).strip()]
+        if _template_ids:
+            # Build instruction from user messages in conversation history.
+            _instruction = " ".join(
+                str(m.get("content") or "").strip()
+                for m in prior_messages
+                if m.get("role") == "user" and str(m.get("content") or "").strip()
+                and not _is_execute_now_intent(str(m.get("content") or ""))
+            ).strip() or content
+            return _generate_and_execute_plan(
+                db=db, conv=conv, pid=pid, user=user, state=state,
+                content=content,
+                instruction=_instruction,
+                template_ids=_template_ids,
+                custom_output_types=_normalize_custom_output_types(
+                    [str(x) for x in (_deliverable.get("custom_output_types") or []) if str(x).strip()]
+                ),
+                output_type_representations=_normalize_output_type_representations(
+                    _deliverable.get("representations") or {}
+                ),
+                content_skill_hint=_deliverable.get("content_skill_hint"),
+                prior_messages=prior_messages,
+            )
+
     available_output_types = [
         item for item in _load_output_types() if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
     ]
@@ -2827,7 +3221,8 @@ def _post_project_conversation_message_impl(
             db.flush()
         except Exception:
             _LOG.warning("failed to flush discovery metadata for conv %s", conv.id)
-    state.slots = premerged_slots
+    existing_slots = state.slots if isinstance(state.slots, dict) else {}
+    state.slots = {**existing_slots, **premerged_slots}
     for slot_key in ("client", "outcome", "win_themes", "audience"):
         val = premerged_slots.get(slot_key)
         if val is not None and str(val).strip() not in {"", "[]", "{}"}:
@@ -2882,7 +3277,10 @@ def _post_project_conversation_message_impl(
     if decision.extracted_slots and not (extracted_fast or extracted_llm):
         user_msg.metadata_json = json.dumps({"kind": "discovery_answer", "discovery": merged_discovery, "captured": True})
         db.flush()
-    state.slots = merged_discovery
+    # Preserve non-discovery slots (slide negotiation, storyline, etc.) while
+    # refreshing discovery slots with the latest extraction.
+    existing_slots = state.slots if isinstance(state.slots, dict) else {}
+    state.slots = {**existing_slots, **merged_discovery}
     canonical_missing_slots = _required_discovery_missing_slots(merged_discovery)
     wiki_prefilled_slots = [
         slot for slot in ("client", "outcome", "win_themes")

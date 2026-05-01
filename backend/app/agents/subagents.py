@@ -1923,8 +1923,8 @@ def _shared_user_context_appendix(ctx: AgentContext) -> str:
             systems = getattr(enrichment, "systems_count", None)
             if steps or roles or systems:
                 metrics_parts.append(
-                    f"Process scale: {steps or '[TBC]'} steps, "
-                    f"{roles or '[TBC]'} roles, {systems or '[TBC]'} systems"
+                    f"Process scale: {steps or '?'} steps, "
+                    f"{roles or '?'} roles, {systems or '?'} systems"
                 )
 
             drivers = getattr(enrichment, "value_drivers", [])
@@ -2132,9 +2132,9 @@ def _pptx_deterministic_slides(pm: ProcessModel) -> list[dict[str, Any]]:
                     "fill": "mid_dark",
                 },
                 {
-                    "stat": "[TBC]",
-                    "label": "SLA / run rate\n(to validate)",
-                    "description": "Quantify cycle time or frequency when operational data is available.",
+                    "stat": "—",
+                    "label": "SLA / run rate\n(to define)",
+                    "description": "Quantify cycle time or frequency once operational data is available.",
                     "fill": "gray",
                 },
             ],
@@ -2187,19 +2187,19 @@ def _pptx_deterministic_slides(pm: ProcessModel) -> list[dict[str, Any]]:
             "slide_type": "stat_cards",
             "stat_cards": [
                 {
-                    "stat": "[TBC]",
+                    "stat": "—",
                     "label": "key control\npoints",
                     "description": "Map critical controls to steps once the control framework is agreed.",
                     "fill": "dark",
                 },
                 {
-                    "stat": "[TBC]",
+                    "stat": "—",
                     "label": "error or\nexception rate",
                     "description": "Track defect or rework rates where systems provide operational data.",
                     "fill": "mid_dark",
                 },
                 {
-                    "stat": "[TBC]",
+                    "stat": "—",
                     "label": "cycle time\nor SLA",
                     "description": "Baseline throughput targets after measuring end-to-end lead time.",
                     "fill": "gray",
@@ -2277,7 +2277,10 @@ def _generate_slides_batched(
         batch_outline = outline[batch_start:batch_end]
 
         outline_desc = "\n".join(
-            f"  {batch_start + i + 1}. [{s.get('slide_type', 'bullets')}] {s.get('title', '')} — {s.get('purpose', '')}"
+            (
+                f"  {batch_start + i + 1}. [{s.get('slide_type', 'bullets')}] {s.get('title', '')} — {s.get('purpose', '')}"
+                + (f" [source: {s.get('evidence_source')}]" if s.get('evidence_source') else "")
+            )
             for i, s in enumerate(batch_outline)
         )
         batch_instruction = (
@@ -2290,6 +2293,9 @@ def _generate_slides_batched(
             "(use discovery inputs, process model, and any wiki references provided). "
             "Do NOT copy the user's raw chat instruction onto any slide — "
             "if you are unsure of a title, use the outline title exactly as given.\n"
+            "When the outline entry includes a [source: ...] citation, copy that source "
+            "verbatim into the slide's `notes` field as 'Source: <citation>' so it appears "
+            "in the speaker notes.\n"
         )
         if batch_start == 0 and canonical_title:
             batch_instruction += (
@@ -2557,7 +2563,8 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
         sb = _build_system_from_skill(
             ctx, "pptx",
             fallback_system=(
-                "You are a Deloitte presentation strategist producing a slide blueprint for python-pptx rendering. "
+                "You are generating a production-ready PowerPoint presentation deck. "
+                "Your JSON output will be immediately rendered into a fully-branded .pptx file that users can download and open. "
                 "Use varied, professional slide types — not just bullet lists. "
                 "Return ONLY a JSON object with a single top-level key 'slides' containing an array. "
                 "No prose, no markdown fences, no explanation. The JSON must be parseable with json.loads().\n\n"
@@ -2643,13 +2650,13 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 data_for_slide_7 = (
                     "\nDATA FOR SLIDE 7 (stat_cards) — derive 3 metrics from the ProcessModel "
                     "(cycle time, error rate, control points, SLA, or volume counts). "
-                    "Each card needs stat, label, description. Use [TBC] only if truly unquantifiable.\n"
+                    "Each card needs stat, label, description. Omit a card entirely if no quantifiable value is available — never use placeholder text like [TBC].\n"
                 )
         else:
             data_for_slide_7 = (
                 "\nDATA FOR SLIDE 7 (stat_cards) — derive 3 metrics from the ProcessModel "
                 "(cycle time, error rate, control points, SLA, or volume counts). "
-                "Each card needs stat, label, description. Use [TBC] only if truly unquantifiable.\n"
+                "Each card needs stat, label, description. Omit a card entirely if no quantifiable value is available — never use placeholder text like [TBC].\n"
             )
 
         deck_outline_for_title = (ctx.plan_payload or {}).get("deck_outline_preview") if isinstance(ctx.plan_payload, dict) else None
@@ -2679,7 +2686,9 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             "                — stat: short metric (e.g. \"3–5\"); label: 2–4 word title;\n"
             "                  description: 1 sentence of context (10–20 words, tells the reader *why* it matters)\n"
             "  column_cards  [{heading: string, accent: \"green\"|\"dark\"|\"gray\", body: string}] | null\n"
-            "                — exactly 3 cards; body ≤40 words\n"
+            "                — exactly 3 cards; body ≤40 words;\n"
+            "                  heading must directly name the pillar described in body — never use a\n"
+            "                  heading that labels a different theme than what body actually says\n"
             "  stack_layers  [{label: string, description: string, fill: \"green\"|\"dark\"|\"mid_dark\"|\"gray\"|\"dark_green\"}] | null\n"
             "                — 3–6 rows; label ≤3 words; description ≤15 words\n"
             "  footer_note   string | null — single-line summary band at slide bottom (use sparingly)\n"
@@ -2688,7 +2697,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             "                 series: [{name: string, values: number[]}]} | null\n\n"
             "Rules:\n"
             "  - title and slide_type are required on every slide.\n"
-            "  - stat_cards must have exactly 3 items; do not fabricate numbers.\n"
+            "  - stat_cards: include only cards where a real quantifiable value exists; omit cards with no data rather than using placeholder text. Aim for 3 but 1 or 2 is acceptable.\n"
             "  - column_cards must have exactly 3 items.\n"
             "  - Do not mix bullets + table on the same slide.\n"
             "  - Return ONLY valid JSON: {\"slides\": [...]}\n\n"
@@ -2740,7 +2749,10 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                     else
                     "Slide ordering mandate (follow this sequence):\n"
                     f"1. slide_type=\"title\" — title=\"{presentation_title}\", subtitle=\"Process Overview\",\n"
-                    "   badges=[up to 4 short capability phrases from ProcessModel context]\n"
+                    "   badges=[derive ONLY from this ProcessModel: use step count, role count, system count,\n"
+                    "   or the actual names of the first 2–3 process steps/phases from the data provided —\n"
+                    "   never invent generic labels like 'P2P Standardization' or 'SAP Automation' unless\n"
+                    "   they appear verbatim in the process data]\n"
                     "2. slide_type=\"stat_cards\" — exactly 3 cards quantifying scale/impact metrics;\n"
                     "   derive from step count, role count, or ProcessModel.metadata; fills: dark, mid_dark, gray\n"
                     "   each card MUST have a description: 1 sentence (10–20 words) explaining the metric's significance\n"
@@ -2753,7 +2765,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                     "   one row per ProcessModel.steps entry\n"
                     "7. slide_type=\"stat_cards\" — 3 Key Metrics or Controls derived from the process\n"
                     "   (error rate, SLA, compliance gates, cycle time, etc.);\n"
-                    "   each card must have stat, label, description; use [TBC] only if truly unquantifiable\n"
+                    "   each card must have stat, label, description; omit a card entirely if no quantifiable value is available — never use placeholder text like [TBC]\n"
                     "   Prefer stat_cards here — use column_cards only if all 3 items are purely qualitative pillars\n"
                     "8+ (if more slides needed): slide_type=\"bullets\" or \"column_cards\" for workflow phases\n"
                     "Final slide: slide_type=\"bullets\", title=\"Recommended Next Actions\",\n"

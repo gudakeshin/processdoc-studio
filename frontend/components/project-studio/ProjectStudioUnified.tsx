@@ -15,9 +15,7 @@ import { WikiQuickAccess } from "@/components/wiki/WikiQuickAccess";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import {
-  RunCreationError,
   useClearRunsMutation,
-  useCreateRunMutation,
   useDeleteRunMutation,
   useRunsQuery,
 } from "@/hooks/useRuns";
@@ -73,12 +71,10 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
   const [decisionBusy, setDecisionBusy] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [openQuestions, setOpenQuestions] = useState<string[]>([]);
-  const [readyForConfirmation, setReadyForConfirmation] = useState(false);
   const [planHash, setPlanHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const runsQuery = useRunsQuery(pid, Boolean(token && pid));
-  const createRunMutation = useCreateRunMutation(pid);
   const clearRunsMutation = useClearRunsMutation(pid);
   const deleteRunMutation = useDeleteRunMutation(pid);
 
@@ -199,6 +195,8 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
         open_questions?: string[];
         ready_for_confirmation?: boolean;
         plan_hash?: string;
+        run_id?: string;
+        auto_executed?: boolean;
         messages?: Array<{
           id: number;
           role: "user" | "assistant";
@@ -210,7 +208,6 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
       if (!res.ok) throw new Error(extractApiErrorMessage(data, "Conversation send failed"));
       setConversationId(data.conversation_id ?? conversationId);
       setOpenQuestions(Array.isArray(data.open_questions) ? data.open_questions : []);
-      setReadyForConfirmation(Boolean(data.ready_for_confirmation));
       setPlanHash(typeof data.plan_hash === "string" && data.plan_hash ? data.plan_hash : null);
       const mapped = Array.isArray(data.messages)
         ? data.messages.map((m) => ({
@@ -222,6 +219,9 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
           }))
         : [];
       setChatMessages(mapped);
+      if (data.auto_executed && typeof data.run_id === "string" && data.run_id) {
+        setActiveRunId(data.run_id);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Conversation send failed");
     } finally {
@@ -264,7 +264,6 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
       if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to apply decision updates"));
       setConversationId(data.conversation_id ?? conversationId);
       setOpenQuestions(Array.isArray(data.open_questions) ? data.open_questions : []);
-      setReadyForConfirmation(Boolean(data.ready_for_confirmation));
       setPlanHash(typeof data.plan_hash === "string" && data.plan_hash ? data.plan_hash : null);
       const mapped = Array.isArray(data.messages)
         ? data.messages.map((m) => ({
@@ -280,76 +279,6 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
       setError(e instanceof Error ? e.message : "Failed to apply decision updates");
     } finally {
       setDecisionBusy(false);
-    }
-  }
-
-  async function confirmPlanAndStartRun() {
-    if (!conversationId || !planHash) return;
-    setError(null);
-    try {
-      const confirm = await api(`/api/projects/${encodeURIComponent(pid)}/conversation/confirm`, {
-        method: "POST",
-        body: JSON.stringify({ conversation_id: conversationId, plan_hash: planHash }),
-      });
-      const confirmData = (await confirm.json().catch(() => ({}))) as {
-        instruction?: string;
-        template_output_types?: string[];
-        custom_output_types?: string[];
-        output_type_representations?: Record<string, string>;
-      };
-      if (!confirm.ok) throw new Error(extractApiErrorMessage(confirmData, "Plan confirmation failed"));
-      const runIdCreated = await createRunMutation.mutateAsync({
-        instruction: String(confirmData.instruction ?? "Create deliverables"),
-        output_types: Array.isArray(confirmData.template_output_types) ? confirmData.template_output_types : [],
-        custom_output_types: Array.isArray(confirmData.custom_output_types) ? confirmData.custom_output_types : [],
-        output_type_representations:
-          confirmData.output_type_representations && typeof confirmData.output_type_representations === "object"
-            ? confirmData.output_type_representations
-            : {},
-        conversation_id: conversationId,
-        plan_hash: planHash,
-      });
-      setActiveRunId(runIdCreated);
-      setReadyForConfirmation(false);
-      const appr = await api(
-        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(runIdCreated)}/approve`,
-        { method: "POST" }
-      );
-      if (!appr.ok) {
-        const retryAfter = appr.headers.get("Retry-After");
-        const queueDepth = appr.headers.get("X-Admission-Queue-Depth");
-        const projectLimit = appr.headers.get("X-Admission-Project-Limit");
-        const globalLimit = appr.headers.get("X-Admission-Global-Limit");
-        const userLimit = appr.headers.get("X-Admission-User-Limit");
-        const apprData = (await appr.json().catch(() => ({}))) as { detail?: string | { message?: string } };
-        if (appr.status === 429) {
-          const retrySec = retryAfter ? Number.parseInt(retryAfter, 10) : NaN;
-          studio.setBackpressureRetrySec(
-            Number.isFinite(retrySec) && retrySec > 0 ? retrySec : 5
-          );
-          const retryIn = retryAfter ? `${retryAfter}s` : "a short interval";
-          setError(
-            `Approval throttled. Retry in ${retryIn}. ` +
-              `Queue depth: ${queueDepth ?? "n/a"}, limits (project/global/user): ` +
-              `${projectLimit ?? "n/a"}/${globalLimit ?? "n/a"}/${userLimit ?? "n/a"}. ` +
-              "Use Approve & Run below when ready."
-          );
-          return;
-        }
-        setError(
-          extractApiErrorMessage(
-            apprData,
-            "Run was created but approval failed — use Approve & Run below to start execution."
-          )
-        );
-        return;
-      }
-    } catch (e) {
-      if (e instanceof RunCreationError && e.code === "output_selection_required") {
-        setError("Output type confirmation is required before run creation.");
-      } else {
-        setError(e instanceof Error ? e.message : "Run creation failed");
-      }
     }
   }
 
@@ -418,36 +347,7 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
             onToggleThinkingTrace={() => cowork.setThinkingExpanded((prev) => !prev)}
           />
           {activeRunId ? (
-            <>
-              {studio.backpressureRetrySec !== null && studio.backpressureRetrySec > 0 ? (
-                <div className="alert alert--warning text-xs">
-                  Approval is temporarily throttled. Auto-retry in{" "}
-                  <strong>{studio.backpressureRetrySec}s</strong>.
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="ml-3 min-h-9 px-2 py-1 text-xs"
-                    onClick={() => {
-                      studio.setBackpressureRetrySec(null);
-                      void studio.approvePlan();
-                    }}
-                  >
-                    Retry now
-                  </Button>
-                </div>
-              ) : null}
-              <ApprovalBanner state={studio.approvalBannerState} />
-            </>
-          ) : null}
-          {!activeRunId && readyForConfirmation ? (
-            <div className="rounded border border-[var(--accent-blue-light)] bg-[var(--info-light)] p-3">
-              <p className="mb-2 text-xs text-[var(--text-muted)]">
-                Sheldon has a plan ready. Confirm to start building.
-              </p>
-              <Button type="button" onClick={() => void confirmPlanAndStartRun()}>
-                Let&apos;s build it 🚀
-              </Button>
-            </div>
+            <ApprovalBanner state={studio.approvalBannerState} />
           ) : null}
         </section>
 

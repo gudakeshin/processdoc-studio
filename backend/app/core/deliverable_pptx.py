@@ -36,11 +36,35 @@ def _hex_to_rgb(raw: str) -> RGBColor:
     return RGBColor(0x86, 0xBC, 0x25)
 
 
+_TOPIC_PALETTES: list[tuple[tuple[str, ...], dict[str, str]]] = [
+    # (keyword triggers, palette overrides matching SKILL.md palette table)
+    (("finance", "cfo", "audit", "tax", "treasury", "accounting", "close", "record"),
+     {"primary_color": "#990011", "accent_light": "#FCF6F5", "accent_dark": "#7A0010"}),
+    (("technology", "digital", "data", "ai", "cloud", "cyber", "it ", "iot", "platform"),
+     {"primary_color": "#065A82", "accent_light": "#C6E2F0", "accent_dark": "#1C7293"}),
+    (("people", "hr", "talent", "culture", "workforce", "learning", "change"),
+     {"primary_color": "#6D2E46", "accent_light": "#ECE2D0", "accent_dark": "#A26769"}),
+    (("sustainability", "esg", "environment", "climate", "green", "carbon", "energy"),
+     {"primary_color": "#2C5F2D", "accent_light": "#D8EED8", "accent_dark": "#97BC62"}),
+    # Default: operations / process / supply / procurement keep Deloitte chrome unchanged.
+]
+
+
+def _pick_topic_palette(process_name: str) -> dict[str, str]:
+    """Return palette overrides for a topic-matched process name, or {} to keep defaults."""
+    lowered = (process_name or "").lower()
+    for keywords, overrides in _TOPIC_PALETTES:
+        if any(kw in lowered for kw in keywords):
+            return overrides
+    return {}
+
+
 def _merge_branding_dict(branding: Any) -> dict[str, Any]:
     """Normalize BrandingContext, plain dict, or None into flat keys for the renderer."""
     if branding is None:
         return {}
     if isinstance(branding, dict):
+        body_font = str(branding.get("font_family") or "Calibri")
         return {
             "primary_color": str(branding.get("primary_color") or "#86BC25"),
             "secondary_color": str(
@@ -50,7 +74,8 @@ def _merge_branding_dict(branding: Any) -> dict[str, Any]:
             ),
             "accent_light": str(branding.get("accent_light") or "#EBF5D3"),
             "accent_dark": str(branding.get("accent_dark") or "#5A8A00"),
-            "font_family": str(branding.get("font_family") or "Calibri"),
+            "font_family": body_font,
+            "font_family_header": str(branding.get("font_family_header") or "Calibri"),
             "company_name": str(branding.get("company_name") or "Deloitte"),
             "footer_text": branding.get("footer_text") or branding.get("custom_footer_text"),
             "neutral_light": str(branding.get("neutral_light") or "#AAAAAA"),
@@ -60,6 +85,7 @@ def _merge_branding_dict(branding: Any) -> dict[str, Any]:
         }
     # BrandingContext or similar dataclass
     pal = getattr(branding, "palette", None)
+    body_font = str(getattr(branding, "font_family", None) or "Calibri")
     return {
         "primary_color": str(getattr(branding, "primary_color", None) or "#86BC25"),
         "secondary_color": str(
@@ -68,7 +94,8 @@ def _merge_branding_dict(branding: Any) -> dict[str, Any]:
         or "#E8007C",
         "accent_light": str(getattr(pal, "accent_light", None) if pal is not None else None) or "#EBF5D3",
         "accent_dark": str(getattr(pal, "accent_dark", None) if pal is not None else None) or "#5A8A00",
-        "font_family": str(getattr(branding, "font_family", None) or "Calibri"),
+        "font_family": body_font,
+        "font_family_header": str(getattr(branding, "font_family_header", None) or body_font),
         "company_name": str(getattr(branding, "company_name", None) or "Deloitte"),
         "footer_text": getattr(branding, "custom_footer_text", None),
         "neutral_light": str(getattr(pal, "neutral_light", None) if pal is not None else None) or "#AAAAAA",
@@ -121,8 +148,17 @@ class PPTXDeliverable(IDeliverable):
                         "text_inverse": "#FFFFFF",
                     }
                 )
+            # Apply topic palette only when the project is on default Deloitte branding
+            # (primary_color is the Deloitte green default, meaning no custom palette was set).
+            if self._brand.get("primary_color", "").upper() == "#86BC25":
+                pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
+                process_name = str(pm.get("process_name") or "")
+                topic_overrides = _pick_topic_palette(process_name)
+                if topic_overrides:
+                    self._brand.update(topic_overrides)
             self._colors = self._build_color_tokens(self._brand)
             self._font = str(self._brand.get("font_family") or "Calibri")
+            self._header_font = str(self._brand.get("font_family_header") or self._font)
             ft = self._brand.get("footer_text")
             if ft and str(ft).strip():
                 self._footer_word = str(ft).strip()
@@ -375,6 +411,7 @@ class PPTXDeliverable(IDeliverable):
         color_token: str,
         bold: bool = False,
         align: str = "left",
+        font: str | None = None,
     ) -> Any:
         txb = slide.shapes.add_textbox(Inches(self._ix(x)), Inches(self._iy(y)), Inches(self._ix(w)), Inches(self._iy(h)))
         tf = txb.text_frame
@@ -388,7 +425,7 @@ class PPTXDeliverable(IDeliverable):
         )
         run = p.add_run()
         run.text = self._safe_text(text, "")
-        run.font.name = self._font
+        run.font.name = font or self._font
         run.font.size = Pt(size)
         run.font.bold = bold
         run.font.color.rgb = self._rgb(color_token)
@@ -398,7 +435,7 @@ class PPTXDeliverable(IDeliverable):
     def _add_chrome(self, slide: Any, title: str, page_num: int, total: int) -> None:
         self._add_rect(slide, self._ix(0.0), self._iy(0.0), self._ix(10.0), self._iy(0.07), "green")
         self._add_rect(slide, self._ix(0.0), self._iy(0.07), self._ix(0.06), self._iy(5.55), "dark")
-        self._add_text(slide, 0.28, 0.18, 8.50, 0.60, title, 22, "dark", bold=True)
+        self._add_text(slide, 0.28, 0.18, 8.50, 0.60, title, 22, "dark", bold=True, font=self._header_font)
         self._add_text(slide, 8.80, 5.30, 1.00, 0.25, f"{page_num} / {total}", 9, "light_gray")
         self._add_text(slide, 0.18, 5.30, 1.50, 0.25, self._footer_word, 10, "gray", bold=True)
 
@@ -458,48 +495,7 @@ class PPTXDeliverable(IDeliverable):
         self._add_chrome(slide, self._safe_text(item.get("title"), ""), page_num, total)
         bullets = item.get("bullets") if isinstance(item.get("bullets"), list) else []
 
-        n = len(bullets)
-        if n <= 3:
-            font_size, max_chars = 16, 140
-        elif n <= 5:
-            font_size, max_chars = 14, 120
-        elif n <= 8:
-            font_size, max_chars = 12, 100
-        else:
-            font_size, max_chars = 10, 80
-
-        validated_bullets: list[str] = []
-        for i, bullet in enumerate(bullets[:12]):
-            bullet_text = self._safe_text(bullet)
-            if len(bullet_text) > max_chars:
-                logger.warning(
-                    "Bullet %s on '%s' exceeds %s chars (got %s)",
-                    i,
-                    item.get("title"),
-                    max_chars,
-                    len(bullet_text),
-                )
-                bullet_text = bullet_text[: max_chars - 3] + "..."
-            validated_bullets.append(bullet_text)
-
-        if validated_bullets:
-            txb = slide.shapes.add_textbox(
-                Inches(self._ix(0.28)), Inches(self._iy(0.95)), Inches(self._ix(9.44)), Inches(self._iy(4.5))
-            )
-            tf = txb.text_frame
-            tf.word_wrap = True
-            tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-            for i, bullet_text in enumerate(validated_bullets):
-                p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-                p.alignment = PP_ALIGN.LEFT
-                p.level = 0
-                run = p.add_run()
-                run.text = bullet_text
-                run.font.name = self._font
-                run.font.size = Pt(font_size)
-                run.font.color.rgb = self._rgb("dark")
-            self._set_shape_alt(txb, "Bullet list")
-        else:
+        if not bullets:
             self._render_content_pending(
                 slide,
                 item,
@@ -507,6 +503,43 @@ class PPTXDeliverable(IDeliverable):
                 total,
                 "No bullet items were provided for this slide.",
             )
+        else:
+            # Render each bullet as a numbered row: colored marker box + text.
+            # Mirrors the stack_layers pattern so every bullet slide has a visual element.
+            visible = bullets[:10]
+            n = len(visible)
+            available_h = 4.10
+            row_h = min(0.90, max(0.42, available_h / n))
+            font_size = 14 if n <= 3 else (12 if n <= 5 else (11 if n <= 8 else 10))
+            marker_colors = ["dark", "mid_dark", "green", "mid", "dark_green"]
+            marker_w = 0.42
+            text_x = 0.28 + marker_w + 0.14
+            text_w = 9.44 - marker_w - 0.14
+            start_y = 0.96
+
+            for i, bullet in enumerate(visible):
+                bullet_text = self._safe_text(bullet)
+                y = start_y + i * row_h
+                color = marker_colors[i % len(marker_colors)]
+                # Numbered marker
+                self._add_rect(slide, self._ix(0.28), self._iy(y), self._ix(marker_w), self._iy(row_h - 0.06), color)
+                self._add_text(slide, 0.28, y + 0.04, marker_w, row_h - 0.12, str(i + 1), font_size, "white", bold=True)
+                # Bullet text
+                txb = slide.shapes.add_textbox(
+                    Inches(self._ix(text_x)), Inches(self._iy(y + 0.04)),
+                    Inches(self._ix(text_w)), Inches(self._iy(row_h - 0.08)),
+                )
+                tf = txb.text_frame
+                tf.word_wrap = True
+                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+                p = tf.paragraphs[0]
+                p.alignment = PP_ALIGN.LEFT
+                run = p.add_run()
+                run.text = bullet_text
+                run.font.name = self._font
+                run.font.size = Pt(font_size)
+                run.font.color.rgb = self._rgb("dark")
+                self._set_shape_alt(txb, f"Bullet {i + 1}")
 
         footer = self._safe_text(item.get("footer_note") or item.get("footer"), "")
         if footer:
@@ -546,7 +579,7 @@ class PPTXDeliverable(IDeliverable):
 
             stat = self._safe_text(card.get("stat"), "—")
             label = self._safe_text(card.get("label"), "")
-            desc = self._safe_text(card.get("description"), "")[:60]
+            desc = self._safe_text(card.get("description"), "")
 
             self._add_text(slide, x + 0.15, y + 0.20, card_w - 0.30, 0.50, stat, 18, "white", bold=True)
             self._add_text(slide, x + 0.15, y + 0.75, card_w - 0.30, 0.35, label, 11, "white", bold=True)
@@ -586,7 +619,7 @@ class PPTXDeliverable(IDeliverable):
             heading = self._safe_text(card.get("heading"), "")
             body = self._safe_text(card.get("body"), "")
 
-            self._add_text(slide, x + 0.20, y + 0.25, col_w - 0.40, 0.40, heading, 14, "white", bold=True)
+            self._add_text(slide, x + 0.20, y + 0.25, col_w - 0.40, 0.40, heading, 14, "white", bold=True, font=self._header_font)
             self._add_text(slide, x + 0.20, y + 0.75, col_w - 0.40, 3.0, body, 11, "white")
             self._set_shape_alt(rect, f"Column card: {heading or 'column'}")
 
@@ -617,7 +650,7 @@ class PPTXDeliverable(IDeliverable):
             description = self._safe_text(layer.get("description"), "")
 
             rect = self._add_rect(slide, self._ix(0.28), self._iy(y), self._ix(9.44), self._iy(layer_height - 0.05), color)
-            self._add_text(slide, 0.50, y + 0.15, 4.0, 0.40, label, 14, "white", bold=True)
+            self._add_text(slide, 0.50, y + 0.15, 4.0, 0.40, label, 14, "white", bold=True, font=self._header_font)
             if description:
                 self._add_text(slide, 0.50, y + 0.60, 8.94, 0.35, description, 10, "light_gray")
             self._set_shape_alt(rect, f"Stack layer: {label}")
@@ -682,7 +715,7 @@ class PPTXDeliverable(IDeliverable):
                 if isinstance(row, list):
                     for col_idx, cell_value in enumerate(row[:num_cols]):
                         cell = tbl.cell(actual_row, col_idx)
-                        cell.text = str(cell_value).strip()[:50]
+                        cell.text = str(cell_value).strip()
                         for paragraph in cell.text_frame.paragraphs:
                             paragraph.font.name = self._font
                             paragraph.font.color.rgb = self._rgb("dark")

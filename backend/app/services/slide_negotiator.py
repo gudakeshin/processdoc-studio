@@ -64,6 +64,16 @@ ARC_BLUEPRINTS: dict[str, list[dict[str, str]]] = {
 }
 
 
+def _word_overlap(a: str, b: str) -> float:
+    """Jaccard word overlap between two strings. Returns 0.0–1.0."""
+    stop = {"the", "a", "an", "and", "or", "of", "to", "in", "for", "with", "is", "are", "this", "that", "by", "on"}
+    wa = {w.lower().strip(".,;:") for w in a.split() if w.lower() not in stop and len(w) > 3}
+    wb = {w.lower().strip(".,;:") for w in b.split() if w.lower() not in stop and len(w) > 3}
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
 def _lp_snippet_for_slide(purpose: str, domain_hint: str) -> str:
     query = f"{purpose} {domain_hint} consulting slide best practice"
     try:
@@ -161,7 +171,21 @@ def propose_slide(
         lines.append(f"**My view:** {slide['sheldon_view']}")
     if lp_evidence:
         lines.append(f"_LP library reference: {lp_evidence[:120].strip()}..._")
-    lines.append("\nDoes this work for you, or would you like to change anything?")
+
+    # Warn if this slide's key_message overlaps heavily with a prior agreed slide.
+    overlap_warning = ""
+    new_km = slide["key_message"]
+    for prior in prior_slide_decisions:
+        prior_km = str(prior.get("key_message") or prior.get("title") or "")
+        if prior_km and _word_overlap(new_km, prior_km) >= 0.5:
+            prior_title = str(prior.get("title") or f"Slide {prior.get('slide_num', '?')}")
+            overlap_warning = (
+                f"\n⚠️ **Possible overlap** with **{prior_title}** — both slides cover similar ground. "
+                "Should we merge them or give this one a distinct angle?"
+            )
+            break
+
+    lines.append("\nDoes this work for you, or would you like to change anything?" + overlap_warning)
     message = "\n".join(lines).strip()
 
     return {
@@ -180,7 +204,9 @@ def save_agreed_slide(
     """Persist an agreed slide as a MemoryItem (type=decision, key=slide_N)."""
     slide_num = int(slide.get("slide_num") or 1)
     key = f"slide_{slide_num}"
-    value = json.dumps({**slide, "agreed": True, "agreed_at": datetime.utcnow().isoformat()})
+    # strip display-only fields before persisting so they don't leak into the render payload
+    _render_fields = {k: v for k, v in slide.items() if k not in ("slide_type_label", "sheldon_view")}
+    value = json.dumps({**_render_fields, "agreed": True, "agreed_at": datetime.utcnow().isoformat()})
 
     existing = (
         db.query(MemoryItem)
@@ -243,6 +269,7 @@ def assemble_outline_from_decisions(db: Session, *, project_id: str) -> list[dic
             "title": str(s.get("title") or f"Slide {s.get('slide_num', i + 1)}"),
             "slide_type": str(s.get("slide_type") or "bullets"),
             "purpose": str(s.get("key_message") or ""),
+            "evidence_source": str(s.get("evidence_source") or ""),
         }
         for i, s in enumerate(agreed)
     ]

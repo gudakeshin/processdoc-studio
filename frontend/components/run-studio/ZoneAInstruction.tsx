@@ -181,8 +181,8 @@ function StructureSummaryCard({
     <div className="mt-2 rounded-lg border border-[var(--primary-300)] bg-[var(--primary-50)] p-3">
       <p className="mb-2 text-xs font-semibold text-[var(--primary-900)]">Agreed deck structure</p>
       <ol className="space-y-0.5">
-        {slides.map((s) => (
-          <li key={s.slide_num} className="flex items-start gap-1.5 text-2xs text-[var(--text-muted)]">
+        {slides.map((s, idx) => (
+          <li key={`${s.slide_num}-${idx}`} className="flex items-start gap-1.5 text-2xs text-[var(--text-muted)]">
             <span className="mt-0.5 h-4 w-4 shrink-0 rounded-full bg-[var(--primary-600)] text-center text-2xs font-bold leading-4 text-white">
               {s.slide_num}
             </span>

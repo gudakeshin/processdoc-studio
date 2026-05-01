@@ -216,6 +216,7 @@ def _parse_source(source_type: str, source_data: dict, project_id: str | None = 
                                     "title": filename,
                                     "content": parsed_data.get("text", ""),
                                     "source_url": f"document://{project_id}/{filename}",
+                                    "content_digest": digest,
                                     "chunk_count": parsed_data.get("chunk_count", 0),
                                     "entities": [],
                                     "concepts": [],
@@ -231,6 +232,7 @@ def _parse_source(source_type: str, source_data: dict, project_id: str | None = 
                         "title": filename,
                         "content": text,
                         "source_url": f"document://{project_id}/{filename}",
+                        "content_digest": digest,
                         "chunk_count": max(1, len(text) // 1200),  # Estimate chunks
                         "entities": [],
                         "concepts": [],
@@ -633,6 +635,25 @@ def _make_frontmatter(fields: dict) -> str:
     return "\n".join(lines)
 
 
+def _read_frontmatter_field(page_file: Path, field: str) -> str | None:
+    """Read a single string field from a page's YAML frontmatter."""
+    try:
+        if not page_file.exists():
+            return None
+        text = page_file.read_text(encoding="utf-8")
+        fm = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+        if not fm:
+            return None
+        for line in fm.group(1).splitlines():
+            stripped = line.strip()
+            if stripped.startswith(f"{field}:"):
+                value = stripped.split(":", 1)[1].strip()
+                return value.strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Backlink weaving
 # ---------------------------------------------------------------------------
@@ -846,7 +867,27 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
 
         source_title = extracted.get("title", "Document")
         source_url = extracted.get("source_url", "")
+        content_digest = extracted.get("content_digest", "")
         content_preview = extracted.get("content", "")[:3000]
+
+        # Short-circuit: if a main page for this source_url already exists with the
+        # same content_digest, the document is unchanged. Skip LLM and entity work.
+        candidate_main_id = re.sub(r"[^a-z0-9_]", "", source_title.lower().replace(" ", "_"))[:50]
+        candidate_main_file = wiki_dir / f"{candidate_main_id}.md"
+        if (
+            content_digest
+            and candidate_main_file.exists()
+            and _read_frontmatter_field(candidate_main_file, "content_digest") == content_digest
+            and _read_frontmatter_field(candidate_main_file, "source_url") == source_url
+        ):
+            _LOG.info(f"[INGEST] Skipping unchanged source: {source_title} (digest match)")
+            return {
+                "created": 0,
+                "updated": 0,
+                "page_ids": [candidate_main_id],
+                "corrections": [],
+                "skipped_unchanged": True,
+            }
 
         existing_pages = [f.stem for f in wiki_dir.glob("*.md")
                           if f.name not in ("index.md", "log.md")]
@@ -931,7 +972,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
         updated = 0
         page_ids = []
 
-        # --- Main source page ---
+        # --- Main source page (frontmatter prepared now, body written after entity resolution) ---
         page_id = re.sub(r"[^a-z0-9_]", "", source_title.lower().replace(" ", "_"))[:50]
         page_file = wiki_dir / f"{page_id}.md"
         is_update = page_file.exists()
@@ -939,30 +980,10 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
         source_category = _infer_category(extracted)
         semantic_type = _infer_semantic_type(source_category, source_title, extracted.get("content", ""))
 
-        fm = _make_frontmatter({
-            "title": source_title,
-            "category": source_category,
-            "semantic_type": semantic_type,
-            "confidence": "medium",
-            "source_count": 1,
-            "source_url": source_url,
-            "last_updated": now,
-            **({"created_at": now} if not is_update else {}),
-        })
-        page_text = f"{fm}\n# {source_title}\n\n{page_summary}\n"
-        if is_update and _is_user_edited_page(page_file):
-            _compound_update_entity_page(page_file, source_title, page_summary, source_title, page_id)
-        else:
-            page_file.write_text(page_text)
-        _annotate_contradictions(page_file, source_title, related_pages)
-        page_ids.append(page_id)
-
-        if is_update:
-            updated += 1
-        else:
-            created += 1
-
         # --- Entity pages (up to 3) ---
+        # Track every (entity_name, real_page_id) we touched, so we can build a
+        # "## Related concepts" section on the parent and rewrite LLM slug guesses.
+        related_entity_links: list[tuple[str, str]] = []  # (page_id, display_name)
         for entity in entities[:3]:
             ename = (entity.get("name") or "").strip()
             esummary = (entity.get("summary") or "").strip()
@@ -988,6 +1009,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                         _compound_update_entity_page(efile, ename, esummary, source_title, page_id)
                         updated += 1
                         page_ids.append(best_match)
+                        related_entity_links.append((best_match, ename))
                 continue
 
             eid = re.sub(r"[^a-z0-9_]", "", ename.lower().replace(" ", "_"))[:50]
@@ -999,20 +1021,77 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                 updated += 1
             else:
                 entity_semantic_type = entity.get("semantic_type", "concept")
-                # In Karpathy's Second Brain, don't hardcode category — let the graph reveal it
-                # Category will be inferred post-hoc from connectivity patterns
+                # Inherit category from the parent source so new entity pages aren't orphaned
+                # under "unclassified". They also persist a source_url back to the parent doc.
                 efm = _make_frontmatter({
                     "title": ename,
-                    "category": "unclassified",  # Will be determined by graph analysis
+                    "category": source_category,
                     "semantic_type": entity_semantic_type,
                     "confidence": "medium",
                     "source_count": 1,
+                    "source_url": source_url,
+                    "source_pages": f"[{page_id}]",
                     "last_updated": now,
                     "created_at": now,
                 })
                 efile.write_text(f"{efm}\n# {ename}\n\n{esummary}\n")
                 created += 1
             page_ids.append(eid)
+            related_entity_links.append((eid, ename))
+
+        # --- Rewrite LLM-invented slugs in page_summary to real page_ids ---
+        # The LLM emits [[guessed_slug|Display]] but its slug rarely matches our slugger.
+        # Map by display title (case-insensitive) onto: created entities, then existing pages.
+        title_to_id: dict[str, str] = {}
+        for eid, ename in related_entity_links:
+            title_to_id[ename.lower()] = eid
+        for pid in existing_pages:
+            pfile = wiki_dir / f"{pid}.md"
+            t = _read_frontmatter_field(pfile, "title") if pfile.exists() else None
+            if t:
+                title_to_id.setdefault(t.lower(), pid)
+            title_to_id.setdefault(pid.lower(), pid)
+
+        def _fix_link(m: re.Match) -> str:
+            display = m.group(2).strip()
+            real = title_to_id.get(display.lower())
+            if real:
+                return f"[[{real}|{display}]]"
+            # Drop unresolved links to plain text so the page doesn't render dead [[…]] chips
+            return display
+
+        page_summary = re.sub(r"\[\[([^\[\]\|]+)\|([^\[\]]+)\]\]", _fix_link, page_summary)
+
+        # --- Build the source page body, including a Related concepts section ---
+        related_section = ""
+        if related_entity_links:
+            bullets = "\n".join(f"- [[{eid}|{name}]]" for eid, name in related_entity_links)
+            related_section = f"\n\n## Related concepts\n\n{bullets}\n"
+
+        fm = _make_frontmatter({
+            "title": source_title,
+            "category": source_category,
+            "semantic_type": semantic_type,
+            "confidence": "medium",
+            "source_count": 1,
+            "source_url": source_url,
+            "content_digest": content_digest,
+            "last_updated": now,
+            **({"created_at": now} if not is_update else {}),
+        })
+        page_body = f"# {source_title}\n\n{page_summary}{related_section}"
+        page_text = f"{fm}\n{page_body}\n"
+        if is_update and _is_user_edited_page(page_file):
+            _compound_update_entity_page(page_file, source_title, page_summary, source_title, page_id)
+        else:
+            page_file.write_text(page_text)
+        _annotate_contradictions(page_file, source_title, related_pages)
+        page_ids.insert(0, page_id)
+
+        if is_update:
+            updated += 1
+        else:
+            created += 1
 
         # Weave backlinks: replace bare title mentions with [[page_id|Title]] links
         new_titles = {}

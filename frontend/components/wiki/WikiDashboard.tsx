@@ -50,6 +50,8 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [vaultPath, setVaultPath] = useState<string | null>(null);
   const [scorecard, setScorecard] = useState<WikiScorecard | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
   const storylineEnabled = process.env.NEXT_PUBLIC_WIKI_STORYLINE_CANVAS_ENABLED === 'true';
 
   const fetchStats = useCallback(async () => {
@@ -88,6 +90,27 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
       // Keep dashboard functional even if Obsidian isn't installed.
     }
   }, [wikiType, projectId, api]);
+
+  const cleanupOrphans = useCallback(async () => {
+    if (wikiType !== 'project' || !projectId) return;
+    setCleaning(true);
+    setCleanupMessage(null);
+    try {
+      const params = new URLSearchParams({ project_id: projectId });
+      const res = await api(`/api/wiki/project/cleanup-orphans?${params}`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setCleanupMessage(`Removed ${data.deleted} orphaned page${data.deleted === 1 ? '' : 's'}.`);
+        await fetchStats();
+      } else {
+        setCleanupMessage('Cleanup failed.');
+      }
+    } catch {
+      setCleanupMessage('Cleanup failed.');
+    } finally {
+      setCleaning(false);
+    }
+  }, [wikiType, projectId, api, fetchStats]);
 
   // Auto-sync project documents on mount
   useEffect(() => {
@@ -208,10 +231,21 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
       )}
 
       {wikiType === 'project' && projectId && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button variant="secondary" className="text-xs px-3 py-1.5" onClick={initAndOpenVault}>
             Open in Obsidian
           </Button>
+          <Button
+            variant="ghost"
+            className="text-xs px-3 py-1.5"
+            onClick={cleanupOrphans}
+            disabled={cleaning}
+          >
+            {cleaning ? 'Cleaning…' : 'Clean up orphaned pages'}
+          </Button>
+          {cleanupMessage && (
+            <span className="text-[10px] text-[var(--text-muted)]">{cleanupMessage}</span>
+          )}
           {vaultPath && (
             <span className="text-[10px] text-[var(--text-muted)] font-mono">{vaultPath}</span>
           )}

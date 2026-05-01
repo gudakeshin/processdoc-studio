@@ -658,6 +658,7 @@ class Coordinator:
         wanted: list[str],
         *,
         apply_remediation: bool = True,
+        emit_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         if not settings.enable_unified_quality_framework:
             return {}, outputs
@@ -686,6 +687,19 @@ class Coordinator:
                     artifact_path = run_dir / artifact_name
                     if artifact_path.exists():
                         metadata = deliverable.extract_quality_signals(artifact_path)
+                        if emit_event and metadata.get("content_pending_slides", 0) > 0:
+                            emit_event("step", {
+                                "status": "post_processing_start",
+                                "agent": output_type,
+                                "step": f"quality_check_{output_type}",
+                                "message": (
+                                    f"{metadata['content_pending_slides']} slide(s) rendered as "
+                                    "'Content pending' — payload was missing or invalid. "
+                                    "Use the regenerate-slide action to fix individual slides."
+                                ),
+                                "content_pending_slides": metadata["content_pending_slides"],
+                                "slide_count": metadata.get("slide_count", 0),
+                            })
             except Exception:
                 metadata = {}
             reports[output_type] = self.quality_framework.evaluate_deliverable(
@@ -1170,7 +1184,7 @@ class Coordinator:
         outputs = self._outputs_from_state(state, wanted)
 
         # Unified framework is now the authoritative quality gate.
-        unified_reports, outputs = self._run_unified_quality_framework(state, outputs, wanted)
+        unified_reports, outputs = self._run_unified_quality_framework(state, outputs, wanted, emit_event=emit_event)
         state["deliverable_quality_report"] = None
         state["unified_quality_reports"] = unified_reports
 
@@ -2402,7 +2416,7 @@ class Coordinator:
                 )
 
             outputs = self._outputs_from_state(state, wanted)
-            unified_reports, outputs = self._run_unified_quality_framework(state, outputs, wanted)
+            unified_reports, outputs = self._run_unified_quality_framework(state, outputs, wanted, emit_event=emit_event)
             state["deliverable_quality_report"] = None
             state["unified_quality_reports"] = unified_reports
             qa_threshold = float(state.get("qa_threshold", 0.8))

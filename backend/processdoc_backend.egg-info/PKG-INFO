@@ -16,6 +16,7 @@ Requires-Dist: httpx
 Requires-Dist: python-dotenv
 Requires-Dist: orjson
 Requires-Dist: openpyxl
+Requires-Dist: python-pptx<2.0,>=1.0
 Requires-Dist: reportlab
 Requires-Dist: sqlalchemy
 Requires-Dist: alembic

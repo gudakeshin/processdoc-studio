@@ -1,3 +1,5 @@
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 from docx import Document
@@ -82,6 +84,17 @@ def test_pptx_slides_contract_renders_table_and_chart(tmp_path) -> None:
         second_shapes = list(prs.slides[1].shapes)
         assert any(getattr(shape, "has_table", False) for shape in first_shapes)
         assert any(getattr(shape, "has_chart", False) for shape in second_shapes)
+
+        # Editable-chart contract: the chart must ship with an embedded xlsx
+        # workbook so PowerPoint's "Edit Data" opens Excel with real cells.
+        with zipfile.ZipFile(out) as pkg:
+            embed_names = [n for n in pkg.namelist() if n.startswith("ppt/embeddings/") and n.endswith(".xlsx")]
+            assert embed_names, "expected an embedded .xlsx workbook for the chart, found none"
+            wb_bytes = pkg.read(embed_names[0])
+        wb = load_workbook(BytesIO(wb_bytes), data_only=False)
+        cells = [c.value for ws in wb.worksheets for row in ws.iter_rows() for c in row]
+        assert "Q1" in cells and "Q2" in cells and "Q3" in cells, f"chart categories missing from embedded workbook: {cells}"
+        assert 10 in cells and 12 in cells and 15 in cells, f"chart series values missing from embedded workbook: {cells}"
     finally:
         settings.workspace_root = old_root
 

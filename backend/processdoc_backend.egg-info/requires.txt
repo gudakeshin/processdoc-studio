@@ -11,6 +11,7 @@ httpx
 python-dotenv
 orjson
 openpyxl
+python-pptx<2.0,>=1.0
 reportlab
 sqlalchemy
 alembic

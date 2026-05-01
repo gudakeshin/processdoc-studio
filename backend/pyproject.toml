@@ -21,6 +21,7 @@ dependencies = [
   "python-dotenv",
   "orjson",
   "openpyxl",
+  "python-pptx>=1.0,<2.0",
   "reportlab",
   "sqlalchemy",
   "alembic",

@@ -51,19 +51,23 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
         return False, ["pptx_slides has no slides"]
 
     slide_type_requirements = {
-        "stat_cards": ("stat_cards", 3),
+        "stat_cards": ("stat_cards", 1),
         "column_cards": ("column_cards", 3),
         "stack_layers": ("stack_layers", 3),
         "table": ("table", 1),
         "bullets": ("bullets", 1),
     }
 
+    type_counts: dict[str, int] = {}
     for idx, slide in enumerate(slides):
         if not isinstance(slide, dict):
             continue
 
         slide_type = slide.get("slide_type")
         title = slide.get("title", f"[Slide {idx + 1}]")
+
+        if isinstance(slide_type, str):
+            type_counts[slide_type] = type_counts.get(slide_type, 0) + 1
 
         if slide_type in slide_type_requirements:
             field, min_items = slide_type_requirements[slide_type]
@@ -75,6 +79,18 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
                     f"Slide {idx + 1} ({title}): "
                     f"slide_type='{slide_type}' requires {min_items} {field}, got {actual}"
                 )
+
+    # Slide-type diversity: a deck dominated by bullets reads as auto-generated.
+    # Title + section_divider don't count toward content variety.
+    content_total = sum(c for t, c in type_counts.items() if t not in ("title", "section_divider"))
+    if content_total >= 4:
+        bullets_count = type_counts.get("bullets", 0)
+        if bullets_count / content_total > 0.6:
+            issues.append(
+                f"Slide-type variety: {bullets_count} of {content_total} content slides are 'bullets' "
+                f"({int(bullets_count / content_total * 100)}%); diversify with stat_cards, column_cards, "
+                "stack_layers, or table to avoid a monotone deck."
+            )
 
     return len(issues) == 0, issues
 

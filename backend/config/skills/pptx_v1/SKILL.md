@@ -40,11 +40,12 @@ sample_instruction: Build a 10-slide executive deck summarizing current-state pr
 custom: false
 ---
 
-# PPTX Blueprint Generation — Deloitte Visual Standard
+# PPTX Deck Generation — Deloitte Visual Standard
 
-This skill generates a **JSON slide blueprint** — a structured `{"slides": [...]}` object that is
-rendered into a fully-branded python-pptx deck by the platform renderer. You do NOT write python
-code or call shell tools. Your entire output is valid JSON.
+This skill generates the content specifications for a **fully-branded, production-ready PPTX presentation deck**. 
+Your output is a structured `{"slides": [...]}` JSON object that the platform immediately renders into an actual 
+.pptx file that users can download and open in PowerPoint. Your output IS the deck — no further manual steps needed.
+You do NOT write python code or call shell tools. Your entire output is valid JSON.
 
 ---
 
