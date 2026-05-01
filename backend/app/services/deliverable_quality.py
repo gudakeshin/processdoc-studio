@@ -80,6 +80,20 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
                     f"slide_type='{slide_type}' requires {min_items} {field}, got {actual}"
                 )
 
+        elif slide_type == "big_number":
+            bn = slide.get("big_number")
+            if not isinstance(bn, dict) or not bn.get("stat"):
+                issues.append(
+                    f"Slide {idx + 1} ({title}): big_number requires a dict with 'stat' field"
+                )
+        elif slide_type == "process_flow":
+            pf = slide.get("process_flow")
+            steps = pf.get("steps", []) if isinstance(pf, dict) else []
+            if not isinstance(steps, list) or len(steps) < 2:
+                issues.append(
+                    f"Slide {idx + 1} ({title}): process_flow requires at least 2 steps"
+                )
+
     # Slide-type diversity: a deck dominated by bullets reads as auto-generated.
     # Title + section_divider don't count toward content variety.
     content_total = sum(c for t, c in type_counts.items() if t not in ("title", "section_divider"))
@@ -89,7 +103,7 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
             issues.append(
                 f"Slide-type variety: {bullets_count} of {content_total} content slides are 'bullets' "
                 f"({int(bullets_count / content_total * 100)}%); diversify with stat_cards, column_cards, "
-                "stack_layers, or table to avoid a monotone deck."
+                "stack_layers, table, big_number, process_flow, or chart to avoid a monotone deck."
             )
 
     return len(issues) == 0, issues

@@ -2590,6 +2590,22 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 '    ["3. Create PO", "Procurement", "PR → PO in ME21N"]\n'
                 "  ]\n"
                 '}}\n\n'
+                "EXAMPLE — chart slide (slide_type=\"chart\"):\n"
+                '{"slide_type": "chart", "title": "Savings Trajectory", "chart": {\n'
+                '  "type": "column", "categories": ["Q1","Q2","Q3","Q4"],\n'
+                '  "series": [{"name": "Cumulative Savings ($M)", "values": [15, 38, 65, 92]}],\n'
+                '  "subtitle": "Source: FY2024 management accounts"\n'
+                '}}\n\n'
+                "EXAMPLE — big_number slide (slide_type=\"big_number\"):\n"
+                '{"slide_type": "big_number", "title": "Savings Opportunity", "big_number": {\n'
+                '  "stat": "$400M–$600M", "label": "Annual Savings Run-Rate",\n'
+                '  "context": "Achievable by Month 18 with full $6B spendbase coverage.", "fill": "dark"}}\n\n'
+                "EXAMPLE — process_flow slide (slide_type=\"process_flow\"):\n"
+                '{"slide_type": "process_flow", "title": "End-to-End Workflow", "process_flow": {"steps": [\n'
+                '  {"label": "Initiation", "description": "Request raised in ERP system", "fill": "dark"},\n'
+                '  {"label": "Review", "description": "Finance validates against approved budget", "fill": "green"},\n'
+                '  {"label": "Approval", "description": "CFO signs off digitally", "fill": "mid_dark"}\n'
+                ']}}\n\n'
                 "RULE: Do NOT generate empty stat_cards=[], column_cards=[], or table.rows=[]. Always populate with real data.\n"
             ),
         )
@@ -2678,23 +2694,31 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             "Each slide object schema (omit fields that are null):\n"
             "  title         string — ≤10 words (required)\n"
             "  slide_type    string — one of: title | bullets | stat_cards | column_cards |\n"
-            "                         stack_layers | table | chart | section_divider (required)\n"
+            "                         stack_layers | table | chart | section_divider |\n"
+            "                         big_number | process_flow (required)\n"
             "  subtitle      string | null\n"
             "  bullets       string[] | null — each ≤15 words; for slide_type=\"bullets\"\n"
             "  badges        string[] | null — short phrases for title slide pills (slide_type=\"title\" only)\n"
             "  stat_cards    [{stat: string, label: string, description: string, fill: \"dark\"|\"mid_dark\"|\"gray\"}] | null\n"
             "                — stat: short metric (e.g. \"3–5\"); label: 2–4 word title;\n"
-            "                  description: 1 sentence of context (10–20 words, tells the reader *why* it matters)\n"
+            "                  description: 1 sentence of context (≤25 words, tells the reader *why* it matters)\n"
             "  column_cards  [{heading: string, accent: \"green\"|\"dark\"|\"gray\", body: string}] | null\n"
             "                — exactly 3 cards; body ≤40 words;\n"
             "                  heading must directly name the pillar described in body — never use a\n"
             "                  heading that labels a different theme than what body actually says\n"
             "  stack_layers  [{label: string, description: string, fill: \"green\"|\"dark\"|\"mid_dark\"|\"gray\"|\"dark_green\"}] | null\n"
-            "                — 3–6 rows; label ≤3 words; description ≤15 words\n"
+            "                — 3–6 rows; label ≤3 words; description ≤20 words\n"
             "  footer_note   string | null — single-line summary band at slide bottom (use sparingly)\n"
             "  table         {headers: string[], rows: string[][], x: 0.28, y: 1.0, w: 9.44, h: 4.3} | null\n"
-            "  chart         {type: \"bar\"|\"line\"|\"pie\", categories: string[],\n"
-            "                 series: [{name: string, values: number[]}]} | null\n\n"
+            "  chart         {type: \"bar\"|\"line\"|\"pie\"|\"column\"|\"area\"|\"doughnut\"|\"column_stacked\",\n"
+            "                 categories: string[] (3-8), series: [{name: string, values: number[]}],\n"
+            "                 subtitle: string (cite source ≤15 words)} | null\n"
+            "                — use when trend shape, ranking, or composition is the story\n"
+            "  big_number    {stat: string, label: string, context?: string, fill: \"dark\"|\"green\"|\"mid_dark\"} | null\n"
+            "                — renders stat at 80pt; use for ONE dominant KPI; at most once per deck\n"
+            "  process_flow  {steps: [{label: string ≤4 words, description: string ≤12 words,\n"
+            "                          fill: \"green\"|\"dark\"|\"mid_dark\"|\"dark_green\"|\"mid\"}]} | null\n"
+            "                — horizontal arrow chain for ordered steps; 2–5 steps required\n\n"
             "Rules:\n"
             "  - title and slide_type are required on every slide.\n"
             "  - stat_cards: include only cards where a real quantifiable value exists; omit cards with no data rather than using placeholder text. Aim for 3 but 1 or 2 is acceptable.\n"
@@ -2756,18 +2780,19 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                     "2. slide_type=\"stat_cards\" — exactly 3 cards quantifying scale/impact metrics;\n"
                     "   derive from step count, role count, or ProcessModel.metadata; fills: dark, mid_dark, gray\n"
                     "   each card MUST have a description: 1 sentence (10–20 words) explaining the metric's significance\n"
-                    "3. slide_type=\"column_cards\" — exactly 3 columns representing the three core pillars\n"
-                    "   of this process (e.g. Intelligence / Quality / Productivity); accent: green, dark, gray\n"
+                    "3. slide_type=\"column_cards\" OR \"process_flow\" — use column_cards for three-pillar frameworks;\n"
+                    "   use process_flow when 3–5 steps are strictly ordered (process_flow.steps: 2–5 items);\n"
+                    "   column_cards: accent: green, dark, gray; exactly 3 items\n"
                     "4. slide_type=\"stack_layers\" — 3–6 rows showing workflow phases or architecture layers;\n"
                     "   fills rotate: green, mid_dark, dark, gray, mid, dark_green\n"
                     "5. slide_type=\"bullets\" — Process Overview: one bullet per role mandate\n"
                     "6. slide_type=\"table\" — Workflow Walkthrough: headers=[Step, Owner, Inputs → Outputs];\n"
                     "   one row per ProcessModel.steps entry\n"
-                    "7. slide_type=\"stat_cards\" — 3 Key Metrics or Controls derived from the process\n"
-                    "   (error rate, SLA, compliance gates, cycle time, etc.);\n"
-                    "   each card must have stat, label, description; omit a card entirely if no quantifiable value is available — never use placeholder text like [TBC]\n"
-                    "   Prefer stat_cards here — use column_cards only if all 3 items are purely qualitative pillars\n"
-                    "8+ (if more slides needed): slide_type=\"bullets\" or \"column_cards\" for workflow phases\n"
+                    "7. slide_type=\"chart\" (if time-series or benchmark data exists),\n"
+                    "   OR \"big_number\" (if one metric is the headline — big_number.fill must be dark/green/mid_dark),\n"
+                    "   OR \"stat_cards\" (3 parallel KPIs). NEVER use \"bullets\" for slide 7.\n"
+                    "   Each card/field must have a real quantifiable value; omit if no data — never use [TBC]\n"
+                    "8+ (if more slides needed): slide_type=\"bullets\", \"column_cards\", \"chart\", or \"process_flow\"\n"
                     "Final slide: slide_type=\"bullets\", title=\"Recommended Next Actions\",\n"
                     "   bullets=[exactly 3 numbered actions specific to this process, each ≤15 words]\n\n"
                 )
