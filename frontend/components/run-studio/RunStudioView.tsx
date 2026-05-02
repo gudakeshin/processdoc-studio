@@ -6,7 +6,10 @@ import { memo, useMemo } from "react";
 import { ZoneAInstruction } from "@/components/run-studio/ZoneAInstruction";
 import { ZoneCLiveMonitor } from "@/components/run-studio/ZoneCLiveMonitor";
 import { ApprovalBanner } from "@/components/run-studio/ApprovalBanner";
+import { ApprovalBannerRedesigned } from "@/components/run-studio/ApprovalBannerRedesigned";
 import { ToolActivityFeed } from "@/components/run-studio/ToolActivityFeed";
+import { ActivityFeedRedesigned } from "@/components/run-studio/ActivityFeedRedesigned";
+import { SystemBanner } from "@/components/run-studio/SystemBanner";
 import { RunChecklist } from "@/components/run-studio/RunChecklist";
 import { SwarmPanel } from "@/components/run-studio/SwarmPanel";
 import { Button } from "@/components/ui/Button";
@@ -80,12 +83,39 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
   }, [instructionChatMessages]);
 
   return (
-    <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <section className="relative flex min-h-0 flex-col gap-3">
-        <div className="alert alert--info">
-          Expected flow:{" "}
-          <strong>Use uploaded docs, execute, pass visual QA, review/refine, final-approve, then run guardrails.</strong>
-        </div>
+    <div className="min-h-screen flex flex-col">
+      {/* System banners — sticky top bar */}
+      <div className="sticky top-0 z-40 border-b border-[#E0E0E0] bg-white">
+        {pollMode && (
+          <SystemBanner
+            type="info"
+            title="Polling mode active"
+            detail="Waiting for stream reconnection..."
+          />
+        )}
+        {approvalBannerState?.type === "plan_blocked" && (
+          <SystemBanner
+            type="error"
+            title="Governance checks failed"
+            detail={approvalBannerState.blockedReason}
+          />
+        )}
+        {streamError && (
+          <SystemBanner
+            type="warn"
+            title="Stream error"
+            detail={streamError}
+          />
+        )}
+      </div>
+
+      {/* Main layout grid */}
+      <div className="grid min-w-0 flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="relative flex min-h-0 flex-col gap-3">
+          <div className="alert alert--info">
+            Expected flow:{" "}
+            <strong>Use uploaded docs, execute, pass visual QA, review/refine, final-approve, then run guardrails.</strong>
+          </div>
         <div className="rounded-lg border border-[var(--surface-border)] bg-white p-3 text-xs">
           <p>
             <strong>Run status:</strong> {runStatus ?? "unknown"}
@@ -180,24 +210,19 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
             ) : null}
           </div>
         ) : null}
-        <ApprovalBanner state={approvalBannerState} />
+        <ApprovalBannerRedesigned state={approvalBannerState} />
       </section>
-      <ToolActivityFeed
-        events={liveEvents}
-        parsedEvents={parsedRunEvents}
-        runChecklistTodos={runChecklistTodos}
-        artifacts={artifacts}
-        pollMode={pollMode}
-        streamError={streamError}
-        showAgentGraph={AGENT_GRAPH_ENABLED}
-        downloadsContent={downloadsContent}
-        onTaskAction={applyTaskAction}
-        hooksPanel={hooksPanel}
-        permissionPanel={permissionPanel}
-        projectId={pid}
-        runId={rid}
-        agreedDecisions={agreedDecisions}
-      />
+        <ActivityFeedRedesigned
+          parsedEvents={parsedRunEvents}
+          artifacts={artifacts?.ready_downloads || []}
+          runTodos={runChecklistTodos || []}
+          contextMetadata={{
+            leadingPractices: artifacts?.leading_practices || [],
+            nonNegotiables: artifacts?.memory_summary?.non_negotiables || [],
+          }}
+          width={360}
+        />
+      </div>
     </div>
   );
 }

@@ -126,6 +126,67 @@ class PPTXDeliverable(IDeliverable):
         )
 
     def render(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
+        # Route to artifact-tool renderer if flag is enabled
+        from app.core.config import settings
+
+        if settings.pptx_artifact_renderer_enabled:
+            return self._render_with_artifact_tool(payload, run_dir, branding)
+        else:
+            return self._render_with_python_pptx(payload, run_dir, branding)
+
+    def _render_with_artifact_tool(
+        self,
+        payload: dict[str, Any],
+        run_dir: Path,
+        branding: Any | None = None
+    ) -> Path | None:
+        """Render using new artifact-tool-style composition-based renderer."""
+        try:
+            from app.core.pptx_artifact_renderer import render_pptx_with_artifact_tool
+
+            result = render_pptx_with_artifact_tool(payload, run_dir, branding)
+
+            if result["status"] == "success":
+                output_path = result["output_path"]
+                logger.info("PPTX rendered with artifact-tool: %s", output_path)
+
+                # Export supplementary formats
+                try:
+                    from app.core.deck_exporter import export_deck_artifacts
+
+                    slides = payload.get("pptx_slides", [])
+                    brand_dict = _merge_branding_dict(branding) or {}
+                    export_deck_artifacts(
+                        slides if isinstance(slides, list) else [],
+                        run_dir,
+                        brand_dict,
+                    )
+                except Exception as exporter_exc:
+                    logger.warning("deck_exporter sidecar failed: %s", exporter_exc)
+
+                return output_path
+            else:
+                # QA failed; log and return None to trigger repair mode
+                qa_report = result.get("qa_report", {})
+                logger.error(
+                    "PPTX artifact-tool render QA failed: %s",
+                    qa_report.get("summary", "Unknown error"),
+                )
+                for error in result.get("errors", []):
+                    logger.error("  - %s", error)
+                return None
+
+        except Exception as e:
+            logger.error("Failed to render PPTX with artifact-tool: %s", e, exc_info=True)
+            return None
+
+    def _render_with_python_pptx(
+        self,
+        payload: dict[str, Any],
+        run_dir: Path,
+        branding: Any | None = None
+    ) -> Path | None:
+        """Render using original python-pptx template-based renderer."""
         out = run_dir / "output.pptx"
         try:
             self._signals: list[dict[str, Any]] = []

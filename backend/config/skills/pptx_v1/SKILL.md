@@ -177,6 +177,39 @@ Full-bleed dark slide for major section breaks. Include only `title` and optiona
 
 ---
 
+## Executive Story Guidance (Boardroom Standard)
+
+When building executive-grade decks (PPTX_ARTIFACT_RENDERER_ENABLED), elevate your narrative:
+
+**Pre-Composition Planning (Internal):**
+1. **Thesis Statement** — Distill the deck's argument to one sentence (e.g., "This process transformation unlocks $2.3M in annual savings and improves customer response time by 40%.")
+2. **Audience Decision** — What decision/action will this deck unlock? (Approval, budget allocation, resource commitment, strategic pivot.)
+3. **Slide-by-Slide Story Arc** — Map each slide's role in the narrative:
+   - Slide 1–2: Establish the problem/opportunity (current state pain, market context)
+   - Slide 3–4: Present the business case (opportunity size, ROI, stakeholder benefit)
+   - Slide 5–7: Describe the solution/approach (design, phasing, dependencies)
+   - Slide 8–10: Seal the ask (recommended actions, next steps, owner accountability)
+4. **Evidence Plan** — Before writing each metric:
+   - Is this from ProcessModel? (✓ use it)
+   - Is this from uploaded/source data? (✓ cite it; add source_refs to slide notes)
+   - Is this an inference/estimate? (⚠️ label explicitly: "estimated", "projected", ~, ±)
+   - Is this made up? (✗ stop; derive from data or reframe the claim)
+
+**Deck Composition Rules (Executive Standard):**
+- **One dominant object per slide** — choose ONE narrative anchor (a stat, a chart trend, a workflow) per slide; support with bullets/labels only
+- **Shorter copy** — stat_cards descriptions should be ≤2 sentences; column_card bodies ≤40 words; no padding
+- **Evidence visibility** — Include data sources (citations, ranges) directly in slides; use speaker_notes for assumptions
+- **No generic headers** — Replace context headings like "Process Context" with specifics (e.g., "Why This Matters: 3-Month Manual Effort Vs. Automated SLA")
+- **Consistent branding** — Use the branding palette throughout; avoid gray as a default (use dark/green/mid_dark for intentional contrast)
+
+**Claim Substantiation Checklist:**
+- ✓ Financial claims ($M, ROI, savings) → ProcessModel.financials or explicit user instruction
+- ✓ Volume/scale claims (N steps, N roles, N systems) → ProcessModel.steps/.roles/.systems counts
+- ✓ Improvement claims (X% faster, Y% cheaper) → source data, benchmarks, or labeled assumption
+- ✗ Avoid: vague metrics without source, percentages without baselines, "significant" / "major" without numbers
+
+---
+
 ## Mandatory Slide Sequence
 
 1. `slide_type: "title"` — process name as title, `subtitle: "Process Overview"`, badges

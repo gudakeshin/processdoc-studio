@@ -1,0 +1,182 @@
+/**
+ * tokens-redesign.css — Extended design token system for RunStudio redesign
+ *
+ * Extends (does not replace) tokens.css. Adds semantic status colors, density variants,
+ * and accent theme options. Opt-in via data attributes — existing components unaffected.
+ */
+
+:root {
+  /* =========================================================================
+     Status Colors — semantic, distinct from existing --status-* surfaces
+     ========================================================================= */
+
+  --status-ok: #2d7a3b; /* Dark green for success/approved states */
+  --status-warn: #b8651a; /* Burnt orange for warnings/review needed */
+  --status-error: #b23c3c; /* Muted red for failures/blocked states */
+  --status-info: #0072b1; /* Deloitte blue for info/running states */
+
+  /* =========================================================================
+     Accent Theme Variants — customize primary color throughout UI
+     ========================================================================= */
+
+  --accent-green: #2d7a3b; /* Default (existing deloitte-green) */
+  --accent-blue: #0072b1; /* Info/primary action */
+  --accent-black: #000000; /* Bold, high contrast */
+  --accent-amber: #d4a574; /* Warm highlight */
+
+  /* Primary accent color — set to variant above based on data-accent attribute */
+  --accent-primary: var(--accent-green);
+
+  /* =========================================================================
+     Density Tokens — padding/spacing variants for comfortable vs. compact
+     ========================================================================= */
+
+  /* Comfortable (default, current spacing) */
+  --density-comfortable-gap: 12px;
+  --density-comfortable-px: 16px;
+  --density-comfortable-py: 12px;
+
+  /* Compact (tighter spacing for information-dense layouts) */
+  --density-compact-gap: 8px;
+  --density-compact-px: 12px;
+  --density-compact-py: 8px;
+
+  /* =========================================================================
+     Animation Tokens — reusable transitions and keyframes
+     ========================================================================= */
+
+  --transition-fast: 150ms ease-out;
+  --transition-normal: 250ms ease-out;
+  --transition-slow: 400ms ease-out;
+}
+
+/* =========================================================================
+   Density Variants — applied via [data-density] attribute
+   ========================================================================= */
+
+[data-density="compact"] {
+  --density-active-gap: var(--density-compact-gap);
+  --density-active-px: var(--density-compact-px);
+  --density-active-py: var(--density-compact-py);
+}
+
+[data-density="comfortable"] {
+  --density-active-gap: var(--density-comfortable-gap);
+  --density-active-px: var(--density-comfortable-px);
+  --density-active-py: var(--density-comfortable-py);
+}
+
+/* Default if no data-density attribute */
+:root {
+  --density-active-gap: var(--density-comfortable-gap);
+  --density-active-px: var(--density-comfortable-px);
+  --density-active-py: var(--density-comfortable-py);
+}
+
+/* =========================================================================
+   Accent Color Variants — applied via [data-accent] attribute
+   ========================================================================= */
+
+[data-accent="blue"] {
+  --accent-primary: var(--accent-blue);
+}
+
+[data-accent="black"] {
+  --accent-primary: var(--accent-black);
+}
+
+[data-accent="amber"] {
+  --accent-primary: var(--accent-amber);
+}
+
+[data-accent="green"] {
+  --accent-primary: var(--accent-green);
+}
+
+/* Default if no data-accent attribute */
+:root {
+  --accent-primary: var(--accent-green);
+}
+
+/* =========================================================================
+   Component-Specific Tokens
+   ========================================================================= */
+
+/* Status pill backgrounds (used in ActivityFeed, etc.) */
+.status-surface--ok {
+  background-color: color-mix(in srgb, var(--status-ok) 12%, white);
+  border: 1px solid color-mix(in srgb, var(--status-ok) 30%, white);
+  color: var(--status-ok);
+}
+
+.status-surface--warn {
+  background-color: color-mix(in srgb, var(--status-warn) 12%, white);
+  border: 1px solid color-mix(in srgb, var(--status-warn) 30%, white);
+  color: var(--status-warn);
+}
+
+.status-surface--error {
+  background-color: color-mix(in srgb, var(--status-error) 12%, white);
+  border: 1px solid color-mix(in srgb, var(--status-error) 30%, white);
+  color: var(--status-error);
+}
+
+.status-surface--info {
+  background-color: color-mix(in srgb, var(--status-info) 12%, white);
+  border: 1px solid color-mix(in srgb, var(--status-info) 30%, white);
+  color: var(--status-info);
+}
+
+/* =========================================================================
+   Utility Classes for Common Patterns
+   ========================================================================= */
+
+/* Quick status badge styling */
+.badge--ok {
+  background-color: color-mix(in srgb, var(--status-ok) 15%, white);
+  color: var(--status-ok);
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0;
+  font-size: 0.6875rem;
+}
+
+.badge--warn {
+  background-color: color-mix(in srgb, var(--status-warn) 15%, white);
+  color: var(--status-warn);
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0;
+  font-size: 0.6875rem;
+}
+
+.badge--error {
+  background-color: color-mix(in srgb, var(--status-error) 15%, white);
+  color: var(--status-error);
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0;
+  font-size: 0.6875rem;
+}
+
+.badge--info {
+  background-color: color-mix(in srgb, var(--status-info) 15%, white);
+  color: var(--status-info);
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0;
+  font-size: 0.6875rem;
+}
+
+/* =========================================================================
+   Responsive Adjustments
+   ========================================================================= */
+
+@media (max-width: 768px) {
+  :root {
+    /* Tighter spacing on mobile by default */
+    --density-comfortable-gap: 8px;
+    --density-comfortable-px: 12px;
+    --density-comfortable-py: 8px;
+  }
+}

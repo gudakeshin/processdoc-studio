@@ -262,6 +262,10 @@ class Settings(BaseSettings):
     pptx_visual_critic_enabled: bool = True
     # Optional model override for PPTX visual critic; empty uses ANTHROPIC_CLAUDE_MODEL.
     pptx_visual_critic_model: str = ""
+    # Feature flag for new artifact-tool-based PPTX renderer (executive-quality slides with composed layouts).
+    # When enabled, uses artifact-tool Presentation with compose-first layouts instead of fixed python-pptx templates.
+    # Defaults to false; enable for boardroom-standard decks with evidence validation and post-render QA.
+    pptx_artifact_renderer_enabled: bool = False
     # Feature flag for narrative-coherence LLM critique blend (fail-open when disabled or unavailable).
     # When enabled, a short LLM critique augments the deterministic issues list
     # before the narrative score is aggregated.
@@ -315,6 +319,7 @@ class Settings(BaseSettings):
         "enable_unified_quality_framework",
         "enable_content_enrichment_engine",
         "pptx_visual_critic_enabled",
+        "pptx_artifact_renderer_enabled",
         "narrative_llm_critique_enabled",
         "structured_logging_enabled",
         "run_queue_embed_redis_consumer",
