@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import hashlib
 import json
@@ -721,6 +722,12 @@ def maybe_start_run_execution(project_id: str, run_id: str) -> None:
 
 
 def _queue_worker_loop() -> None:
+    """Dispatch loop: pops jobs and submits them to a thread pool so multiple runs execute concurrently."""
+    max_workers = int(getattr(settings, "run_queue_local_max_workers", 4))
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=max_workers,
+        thread_name_prefix="run-exec",
+    )
     while True:
         _queue_rt.mark_worker_heartbeat()
         global _last_librarian_tick_ts
@@ -741,30 +748,35 @@ def _queue_worker_loop() -> None:
             attempt_history = []
         key = f"{project_id}:{run_id}"
         _queue_rt.local_discard_key(key)
-        try:
-            success, error_detail = _execute_run_job(project_id, run_id, job)
-            if success:
-                _queue_rt.bump_processed()
-            else:
+
+        def _on_done(future, _pid=project_id, _rid=run_id, _att=attempt, _hist=attempt_history, _key=key):
+            try:
+                success, error_detail = future.result()
+                if success:
+                    _queue_rt.bump_processed()
+                else:
+                    _handle_failed_job(
+                        project_id=_pid,
+                        run_id=_rid,
+                        attempt=_att,
+                        last_error=error_detail,
+                        prior_attempt_history=_hist,
+                        backend="local",
+                    )
+            except Exception as exc:
                 _handle_failed_job(
-                    project_id=project_id,
-                    run_id=run_id,
-                    attempt=attempt,
-                    last_error=error_detail,
-                    prior_attempt_history=attempt_history,
+                    project_id=_pid,
+                    run_id=_rid,
+                    attempt=_att,
+                    last_error=str(exc),
+                    prior_attempt_history=_hist,
                     backend="local",
                 )
-        except Exception as exc:
-            _handle_failed_job(
-                project_id=project_id,
-                run_id=run_id,
-                attempt=attempt,
-                last_error=str(exc),
-                prior_attempt_history=attempt_history,
-                backend="local",
-            )
-        finally:
-            _queue_rt.local_discard_key(key)
+            finally:
+                _queue_rt.local_discard_key(_key)
+
+        future = executor.submit(_execute_run_job, project_id, run_id, job)
+        future.add_done_callback(_on_done)
 
 
 def run_redis_worker_loop() -> None:

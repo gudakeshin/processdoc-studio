@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -28,7 +29,7 @@ class RunQueueRuntime:
     )
 
     def __init__(self, s: Settings) -> None:
-        self._locks: dict[str, threading.Lock] = {}
+        self._locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
         self._meta = threading.Lock()
         self._queue: list[dict[str, Any]] = []
         self._queued_keys: set[str] = set()
@@ -86,10 +87,16 @@ class RunQueueRuntime:
                 increment("run_worker_heartbeat_write_fail_total")
 
     def lock_for(self, run_id: str) -> threading.Lock:
+        # WeakValueDictionary: the entry is evicted automatically once the caller's
+        # local 'lock' variable drops out of scope (after each enqueue completes).
+        # Callers MUST assign the result to a variable before entering 'with lock:'
+        # so the strong reference keeps the lock alive for the duration of the block.
         with self._meta:
-            if run_id not in self._locks:
-                self._locks[run_id] = threading.Lock()
-            return self._locks[run_id]
+            lock = self._locks.get(run_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[run_id] = lock
+            return lock
 
     def publish_run_event(self, run_id: str, event_id: int, event_type: str, payload: str) -> None:
         client = self.get_redis_client() if self.queue_backend == "redis" else None

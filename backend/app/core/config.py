@@ -48,13 +48,21 @@ class Settings(BaseSettings):
     jwt_secret: str = ""
     database_url: str = "sqlite:///./processdoc.db"
     # Applied to non-SQLite engines (e.g. Postgres). Size ≈ concurrent DB-bound requests per process.
-    database_pool_size: int = 5
-    database_max_overflow: int = 10
+    # Raise well above default for 500+ concurrent users; each SSE stream holds a connection.
+    database_pool_size: int = 20
+    database_max_overflow: int = 20
     database_pool_pre_ping: bool = True
+    # Recycle connections after this many seconds to avoid stale connections behind load balancers.
+    database_pool_recycle: int = 300
+    # Seconds to wait for a free pool connection before raising; prevents silent hangs.
+    database_pool_timeout: int = 30
     # When False, Redis must be reachable or CacheService startup fails (avoids split-brain cache across API replicas).
     cache_allow_memory_fallback: bool = True
     workspace_root: str = "./workspace"
     redis_url: str = "redis://localhost:6379/0"
+    # Shared connection pool for SSE pub/sub. Each active SSE stream borrows one
+    # pubsub connection; size to >= peak concurrent streams expected.
+    sse_redis_max_connections: int = 300
 
     jwt_algorithm: str = "HS256"
     jwt_access_exp_minutes: int = 60
@@ -65,6 +73,11 @@ class Settings(BaseSettings):
     # SlowAPI limit strings, e.g. "30/minute" (see limits.readthedocs.io).
     auth_login_rate_limit: str = "30/minute"
     auth_refresh_rate_limit: str = "60/minute"
+    # Per-IP rate limits for high-cost run operations (LLM calls, execution triggers).
+    run_create_rate_limit: str = "20/minute"
+    run_approve_rate_limit: str = "20/minute"
+    run_recommend_rate_limit: str = "30/minute"
+    run_regenerate_rate_limit: str = "10/minute"
     scheduler_enabled: bool = True
     auth_allow_self_signup: bool = False
     # Comma-separated emails permitted to mutate the shared leading_practice wiki.
@@ -186,6 +199,9 @@ class Settings(BaseSettings):
     run_max_active_global: int = 500
     run_max_active_per_project: int = 20
     run_max_active_per_user: int = 8
+    # Parallel workers for the local (non-Redis) queue. Each worker is a thread executing one run.
+    # At 500 users, use RUN_QUEUE_BACKEND=redis with external worker processes instead.
+    run_queue_local_max_workers: int = 4
     run_dead_letter_max_replay_attempts: int = 3
     run_execution_retry_max_attempts: int = 3
     run_execution_retry_backoff_base_sec: float = 1.5

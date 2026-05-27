@@ -1,14 +1,16 @@
+import asyncio
 import contextlib
 import json
 import logging
 import shutil
+import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 import redis
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
@@ -17,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.api.formats import _load_output_types
 from app.core.auth import get_current_user, get_current_user_sse, require_project_role
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.db.models import Conversation, ConversationMessage, MemoryEvent, Run, RunEvent, RunTask, ScheduledTaskRun, User
 from app.db.session import SessionLocal, get_db
 from app.schemas.common import RunSummary
@@ -41,8 +44,47 @@ from app.services.swarm import persist_instruction_broadcast_swarm_event_payload
 
 router = APIRouter()
 _log = logging.getLogger(__name__)
-_DEBUG_LOG_PATH = Path("/Users/pallavchaturvedi/Agentic Projects/Process Doc v2/.cursor/debug-a9841a.log")
-_DEBUG_SESSION_ID = "a9841a"
+
+# Shared Redis connection pool for SSE pub/sub subscriptions.
+# Created lazily on first SSE request so the pool is not allocated when Redis is unused.
+# All concurrent streams share this pool; each active subscription borrows one connection.
+_sse_redis_pool: redis.ConnectionPool | None = None
+_sse_redis_pool_lock = threading.Lock()
+
+
+def _get_or_create_sse_redis_pool() -> redis.ConnectionPool | None:
+    global _sse_redis_pool
+    if settings.run_queue_backend != "redis":
+        return None
+    if _sse_redis_pool is not None:
+        return _sse_redis_pool
+    with _sse_redis_pool_lock:
+        if _sse_redis_pool is None:
+            try:
+                _sse_redis_pool = redis.ConnectionPool.from_url(
+                    settings.redis_url,
+                    decode_responses=True,
+                    max_connections=settings.sse_redis_max_connections,
+                )
+            except Exception:
+                return None
+    return _sse_redis_pool
+
+
+def _run_create_rate_limit() -> str:
+    return (settings.run_create_rate_limit or "20/minute").strip() or "20/minute"
+
+
+def _run_approve_rate_limit() -> str:
+    return (settings.run_approve_rate_limit or "20/minute").strip() or "20/minute"
+
+
+def _run_recommend_rate_limit() -> str:
+    return (settings.run_recommend_rate_limit or "30/minute").strip() or "30/minute"
+
+
+def _run_regenerate_rate_limit() -> str:
+    return (settings.run_regenerate_rate_limit or "10/minute").strip() or "10/minute"
 
 
 def _ensure_run_enqueued(project_id: str, run_id: str, *, context: str) -> None:
@@ -65,9 +107,12 @@ def _ensure_run_enqueued(project_id: str, run_id: str, *, context: str) -> None:
 
 
 def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    raw = (settings.processdoc_runs_debug_log or "").strip()
+    if not raw:
+        return
     try:
+        path = Path(raw)
         payload = {
-            "sessionId": _DEBUG_SESSION_ID,
             "runId": str(run_id or ""),
             "hypothesisId": hypothesis_id,
             "location": location,
@@ -75,8 +120,8 @@ def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str,
             "data": data,
             "timestamp": int(time.time() * 1000),
         }
-        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
     except Exception:  # noqa: S110 — best-effort, non-fatal
         pass
@@ -183,12 +228,12 @@ def _build_plan_payload(
     if parsed_dir.exists():
         for parsed_file in parsed_dir.glob("*.json"):
             try:
-                parsed_payload = json.loads(parsed_file.read_text(encoding="utf-8"))
-            except Exception:  # noqa: S112 — best-effort, non-fatal
-                continue
-            chunks = parsed_payload.get("chunks")
-            if isinstance(chunks, list):
-                parsed_chunk_count += len([c for c in chunks if isinstance(c, str) and c.strip()])
+                # Estimate chunk count from file size; avoids reading every parsed document
+                # at run-start time (major I/O bottleneck under concurrent load).
+                # Parsed JSON is ~1–3 KB per text chunk including metadata.
+                parsed_chunk_count += max(1, parsed_file.stat().st_size // 1500)
+            except OSError:
+                parsed_chunk_count += 3
     estimated_tokens = max(800, min(12000, len(instruction.split()) * 6 + (parsed_count * 120)))
     canonical_outputs = list(dict.fromkeys(output_types))
     contract_nodes: list[dict] = []
@@ -718,7 +763,9 @@ def delete_run(
 
 
 @router.post("/recommend-output-types")
+@limiter.limit(_run_recommend_rate_limit)
 def recommend_output_types(
+    request: Request,
     body: RecommendOutputTypesRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -742,7 +789,9 @@ def recommend_output_types(
 
 
 @router.post("")
+@limiter.limit(_run_create_rate_limit)
 def start_run(
+    request: Request,
     body: CreateRunRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -938,7 +987,9 @@ def start_run(
 
 
 @router.post("/{project_id}/{run_id}/approve")
+@limiter.limit(_run_approve_rate_limit)
 def approve_run(
+    request: Request,
     project_id: str,
     run_id: str,
     user: User = Depends(get_current_user),
@@ -1226,91 +1277,118 @@ def stream_run(
     if after_event_id > 0:
         increment("sse_replay_continuity_check_total")
 
-    def event_stream():
+    async def event_stream():
+        # Async generator: runs in the event loop (not a thread), so 500 concurrent
+        # SSE streams do not consume 500 threads. DB calls are dispatched via
+        # asyncio.to_thread so they don't block other streams during polling.
         pubsub = None
-        redis_client = None
         if settings.run_queue_backend == "redis":
+            def _setup_pubsub():
+                try:
+                    pool = _get_or_create_sse_redis_pool()
+                    if pool is None:
+                        return None
+                    _rc = redis.Redis(connection_pool=pool)
+                    _rc.ping()
+                    _ps = _rc.pubsub(ignore_subscribe_messages=True)
+                    _ps.subscribe(f"{settings.run_events_channel_prefix}:{run_id}")
+                    return _ps
+                except Exception:
+                    return None
+            pubsub = await asyncio.to_thread(_setup_pubsub)
+
+        # Initial DB check: verify run exists, emit legacy plan_ready burst if no events yet.
+        def _initial_check():
+            _sess = SessionLocal()
             try:
-                redis_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
-                redis_client.ping()
-                pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
-                pubsub.subscribe(f"{settings.run_events_channel_prefix}:{run_id}")
-            except Exception:
-                pubsub = None
-        session = SessionLocal()
-        try:
-            row = session.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
-            if not row:
-                return
-            # Older runs without a persisted timeline replay from the run row once.
-            if after_event_id == 0:
-                has_events = (
-                    session.scalar(
-                        select(RunEvent.id).where(RunEvent.run_id == run_id).limit(1)
+                _row = _sess.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+                if not _row:
+                    return None
+                if after_event_id == 0:
+                    _has_events = (
+                        _sess.scalar(select(RunEvent.id).where(RunEvent.run_id == run_id).limit(1))
+                        is not None
                     )
-                    is not None
-                )
-                if not has_events and row.status == "plan_ready":
-                    yield f"event: plan_ready\ndata: {row.plan_payload}\n\n"
-                    yield 'event: step\ndata: {"status": "awaiting_hitl_approval"}\n\n'
-                    return
-            if row.status == "approved":
-                maybe_start_run_execution(project_id, run_id)
-        finally:
-            session.close()
+                    if not _has_events and _row.status == "plan_ready":
+                        return ("plan_ready_no_events", _row.plan_payload)
+                if _row.status == "approved":
+                    maybe_start_run_execution(project_id, run_id)
+                return ("stream", _row.status)
+            finally:
+                _sess.close()
+
+        init_result = await asyncio.to_thread(_initial_check)
+        if init_result is None:
+            return
+        if init_result[0] == "plan_ready_no_events":
+            yield f"event: plan_ready\ndata: {init_result[1]}\n\n"
+            yield 'event: step\ndata: {"status": "awaiting_hitl_approval"}\n\n'
+            return
 
         last_id = after_event_id
         deadline = time.monotonic() + 600.0
         idle_cycles = 0
         try:
             while time.monotonic() < deadline:
+                # Fast path: Redis pub/sub delivers events without a DB round-trip.
                 if pubsub is not None:
                     try:
-                        msg = pubsub.get_message(timeout=0.25)
-                        if msg and msg.get("type") == "message":
-                            raw = msg.get("data")
+                        ps_msg = await asyncio.to_thread(pubsub.get_message, timeout=0.1)
+                        if ps_msg and ps_msg.get("type") == "message":
+                            raw = ps_msg.get("data")
                             if isinstance(raw, str):
-                                payload = json.loads(raw)
-                                ev_id = int(payload.get("id", 0) or 0)
+                                ps_payload = json.loads(raw)
+                                ev_id = int(ps_payload.get("id", 0) or 0)
                                 if ev_id > last_id:
                                     last_id = ev_id
                                     yield (
                                         f"id: {ev_id}\n"
-                                        f"event: {payload.get('event_type', 'step')}\n"
-                                        f"data: {payload.get('payload', '{}')}\n\n"
+                                        f"event: {ps_payload.get('event_type', 'step')}\n"
+                                        f"data: {ps_payload.get('payload', '{}')}\n\n"
                                     )
-                                    if payload.get("event_type") in ("done", "failed"):
+                                    if ps_payload.get("event_type") in ("done", "failed"):
                                         return
                     except Exception:
                         pubsub = None
-                session = SessionLocal()
-                try:
-                    row = session.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
-                    if not row:
+
+                # DB poll: authoritative fallback and run-status termination check.
+                # One session per poll cycle, closed immediately after use.
+                def _poll_db(lid=last_id):
+                    _sess = SessionLocal()
+                    try:
+                        _row = _sess.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+                        if not _row:
+                            return None, []
+                        _events = list(
+                            _sess.scalars(
+                                select(RunEvent)
+                                .where(RunEvent.run_id == run_id, RunEvent.id > lid)
+                                .order_by(RunEvent.id)
+                            ).all()
+                        )
+                        return _row.status, _events
+                    finally:
+                        _sess.close()
+
+                row_status, events = await asyncio.to_thread(_poll_db)
+                if row_status is None:
+                    return
+                for ev in events:
+                    last_id = ev.id
+                    yield f"id: {ev.id}\nevent: {ev.event_type}\ndata: {ev.payload}\n\n"
+                    if ev.event_type in ("done", "failed"):
                         return
-                    events = session.scalars(
-                        select(RunEvent)
-                        .where(RunEvent.run_id == run_id, RunEvent.id > last_id)
-                        .order_by(RunEvent.id)
-                    ).all()
-                    for ev in events:
-                        last_id = ev.id
-                        yield f"id: {ev.id}\nevent: {ev.event_type}\ndata: {ev.payload}\n\n"
-                        if ev.event_type in ("done", "failed"):
-                            return
-                    if row.status in ("review_ready", "done", "failed") and not events:
-                        return
-                    # Stay connected while awaiting HITL: closing here caused immediate EventSource
-                    # reconnect loops and false "stream error" + poll-only UX in the browser.
-                    idle_cycles = 0 if events else min(idle_cycles + 1, 20)
-                finally:
-                    session.close()
-                sleep_sec = 0.25 if idle_cycles < 8 else 0.75
-                time.sleep(sleep_sec)
+                if row_status in ("review_ready", "done", "failed") and not events:
+                    return
+                # Stay connected while awaiting HITL: closing here caused immediate EventSource
+                # reconnect loops and false "stream error" + poll-only UX in the browser.
+                idle_cycles = 0 if events else min(idle_cycles + 1, 20)
+                sleep_sec = 0.5 if idle_cycles < 8 else 1.5
+                await asyncio.sleep(sleep_sec)
         finally:
             if pubsub is not None:
                 with contextlib.suppress(Exception):
-                    pubsub.close()
+                    pubsub.close()  # returns connection to the shared pool
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -1537,7 +1615,9 @@ def control_run(
 
 
 @router.post("/{project_id}/{run_id}/slides/{slide_index}/regenerate")
+@limiter.limit(_run_regenerate_rate_limit)
 def regenerate_run_slide(
+    request: Request,
     project_id: str,
     run_id: str,
     slide_index: int,
