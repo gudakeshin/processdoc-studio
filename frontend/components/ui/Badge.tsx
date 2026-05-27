@@ -18,7 +18,7 @@ export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
 // Semantic variant → Tailwind classes. Kept CSS-native (no --var) so the palette
 // works whether design tokens are loaded or not.
 const VARIANT_STYLES: Record<BadgeVariant, string> = {
-  default:   "border-[#E5E5E5] bg-white text-[#0F0B0B]",
+  default:   "border-[var(--surface-border)] bg-white text-[var(--coral-black)]",
   success:   "border-green-200 bg-green-50 text-green-800",
   warning:   "border-amber-200 bg-amber-50 text-amber-800",
   error:     "border-red-200 bg-red-50 text-red-800",

@@ -7,7 +7,6 @@ import {
   FolderOpen,
   Lock,
   Puzzle,
-  Settings2,
   SlidersHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -29,7 +28,6 @@ const links = [
   { href: "/tasks", label: "Scheduled Tasks", icon: CalendarClock },
   { href: "/customize", label: "Customize", icon: SlidersHorizontal },
   { href: "/memory", label: "Memory", icon: Brain },
-  { href: "/projects", label: "Settings", icon: Settings2 },
 ];
 
 function NavLinkList({ onNavigate }: { onNavigate?: () => void }) {
@@ -45,7 +43,7 @@ function NavLinkList({ onNavigate }: { onNavigate?: () => void }) {
             href={item.href}
             onClick={onNavigate}
             className={cn(
-              "flex min-h-11 items-center gap-2 rounded-md px-2 py-2 text-sm transition !no-underline",
+              "flex min-h-11 items-center gap-2 px-2 py-2 text-sm transition !no-underline",
               active
                 ? "bg-[color:color-mix(in_srgb,var(--accent-blue)_30%,black)] !text-white shadow-sm"
                 : "!text-[#d9dee3] hover:bg-[color:color-mix(in_srgb,var(--primary-800)_82%,black)] hover:!text-white"
@@ -170,7 +168,7 @@ export function ShellSidebar({
           )}
           <button
             type="button"
-            className="flex h-9 w-9 items-center justify-center rounded border border-[color:color-mix(in_srgb,var(--primary-700)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--primary-800)_78%,black)] text-[#f3f6f8]"
+            className="flex h-9 w-9 items-center justify-center border border-[color:color-mix(in_srgb,var(--primary-700)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--primary-800)_78%,black)] text-[#f3f6f8]"
             onClick={onDesktopToggle}
             aria-label={desktopCollapsed ? "Expand navigation" : "Collapse navigation"}
             aria-expanded={!desktopCollapsed}
@@ -264,7 +262,7 @@ export function ShellSidebar({
             <Button
               type="button"
               variant="ghost"
-              className="flex h-11 w-11 items-center justify-center rounded-md p-0 text-[#f3f6f8] hover:bg-[color:color-mix(in_srgb,var(--primary-800)_82%,black)] hover:text-[#f3f6f8] bg-transparent"
+              className="flex h-11 w-11 items-center justify-center p-0 text-[#f3f6f8] hover:bg-[color:color-mix(in_srgb,var(--primary-800)_82%,black)] hover:text-[#f3f6f8] bg-transparent"
               onClick={onMobileClose}
               aria-label="Close menu"
             >

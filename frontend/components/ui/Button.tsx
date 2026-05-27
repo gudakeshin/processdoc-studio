@@ -12,10 +12,10 @@ export function Button({ className, variant = "primary", ...props }: Props) {
       className={cn(
         "px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 active:brightness-90",
         variant === "primary" &&
-          "bg-[#86BC24] text-white hover:bg-[#7aa71f] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0F0B0B]",
+          "bg-[var(--accent-green)] text-white hover:bg-[var(--accent-green-dark)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--coral-black)]",
         variant === "secondary" &&
-          "border-2 border-[#0F0B0B] bg-white text-[#0F0B0B] hover:bg-[#f6f8f9] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0F0B0B]",
-        variant === "ghost" && "text-[#4C4C4C] hover:bg-[#f6f8f9] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0F0B0B]",
+          "border-2 border-[var(--coral-black)] bg-white text-[var(--coral-black)] hover:bg-[var(--primary-50)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--coral-black)]",
+        variant === "ghost" && "text-[var(--tundora-gray)] hover:bg-[var(--primary-50)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--coral-black)]",
         className
       )}
       {...props}
