@@ -657,6 +657,11 @@ def list_runs(
                 "status": r.status,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "instruction": r.instruction[:200] + ("…" if len(r.instruction) > 200 else ""),
+                "tokens_input": r.tokens_input,
+                "tokens_output": r.tokens_output,
+                "tokens_cache_read": r.tokens_cache_read,
+                "tokens_cache_creation": r.tokens_cache_creation,
+                "cost_usd": r.cost_usd,
             }
             for r in rows
         ]
@@ -1050,6 +1055,37 @@ def update_run_plan(
     db.commit()
 
     return {"run_id": run.id, "status": run.status, "plan": plan}
+
+
+@router.get("/{project_id}/{run_id}/usage")
+def get_run_usage(
+    project_id: str,
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return live token usage for an executing run, or final values from the DB."""
+    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    from app.services.run_budget import get_live_usage
+    from app.services.llm_pricing import calculate_run_cost_usd
+
+    live = get_live_usage(run_id)
+    if live is not None:
+        cost = calculate_run_cost_usd(**live)
+        return {"run_id": run_id, "live": True, **live, "cost_usd": cost}
+
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {
+        "run_id": run_id,
+        "live": False,
+        "input_tokens": run.tokens_input or 0,
+        "output_tokens": run.tokens_output or 0,
+        "cache_read_tokens": run.tokens_cache_read or 0,
+        "cache_creation_tokens": run.tokens_cache_creation or 0,
+        "cost_usd": run.cost_usd,
+    }
 
 
 @router.get("/{project_id}/{run_id}/events")

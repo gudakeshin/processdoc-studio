@@ -3057,6 +3057,17 @@ def _post_project_conversation_message_impl(
     user: User,
     db: Session,
 ) -> dict:
+    from app.services.run_budget import project_token_context
+    with project_token_context(pid):
+        return _post_project_conversation_message_inner(pid, body, user, db)
+
+
+def _post_project_conversation_message_inner(
+    pid: str,
+    body: ConversationMessageRequest,
+    user: User,
+    db: Session,
+) -> dict:
     require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
     content = (body.content or "").strip()
     if not content:
@@ -4204,3 +4215,25 @@ def run_scheduled_task_now(
     row.updated_at = datetime.utcnow()
     db.commit()
     return {"project_id": pid, "task_id": task_id, "run_id": run_id, "status": "plan_ready"}
+
+
+@router.get("/{pid}/token-usage")
+def get_project_token_usage(
+    pid: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return accumulated token counts and estimated cost for this project session."""
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    from app.services.run_budget import get_project_usage
+    from app.services.llm_pricing import calculate_run_cost_usd
+    usage = get_project_usage(pid)
+    cost = calculate_run_cost_usd(**usage)
+    return {
+        "project_id": pid,
+        "input_tokens": usage["input_tokens"],
+        "output_tokens": usage["output_tokens"],
+        "cache_read_tokens": usage["cache_read_tokens"],
+        "cache_creation_tokens": usage["cache_creation_tokens"],
+        "cost_usd": cost,
+    }

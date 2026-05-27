@@ -49,7 +49,8 @@ from app.services.retry_policy import (
     should_apply_fallback,
     validate_retry_transition,
 )
-from app.services.run_budget import run_llm_budget
+from app.services.run_budget import get_run_usage, project_token_context, run_llm_budget
+from app.services.llm_pricing import calculate_run_cost_usd
 from app.services.run_events import hook_exec_id
 from app.services.run_event_service import RunEventService
 from app.services.run_queue.runtime import RunQueueRuntime
@@ -983,12 +984,28 @@ def _handle_failed_job(
     increment("run_execution_retry_exhausted_total")
 
 
+def _write_token_usage(run: Run, usage: dict[str, int], cost: float | None) -> None:
+    """Write accumulated token counts and cost to the Run row. Best-effort — never raises."""
+    if not usage:
+        return
+    try:
+        run.tokens_input = usage.get("input_tokens", 0)
+        run.tokens_output = usage.get("output_tokens", 0)
+        run.tokens_cache_read = usage.get("cache_read_tokens", 0)
+        run.tokens_cache_creation = usage.get("cache_creation_tokens", 0)
+        run.cost_usd = cost
+    except Exception as _exc:
+        _log.warning("Failed to set token usage on run %s: %s", getattr(run, "id", "?"), _exc)
+
+
 def _execute_run_job(
     project_id: str,
     run_id: str,
     queue_payload: dict[str, Any] | None = None,
 ) -> tuple[bool, str | None]:
     started_at = perf_counter()
+    _run_usage: dict[str, int] = {}
+    _run_cost: float | None = None
     session = SessionLocal()
     try:
         run = session.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
@@ -1262,8 +1279,12 @@ def _execute_run_job(
                 return result_holder.get("value", {})
 
             try:
-                with run_llm_budget(int(settings.anthropic_max_tokens_per_run or 0)):
-                    state = _run_coordinator_async()
+                with project_token_context(project_id), run_llm_budget(int(settings.anthropic_max_tokens_per_run or 0), run_id=run_id):
+                    try:
+                        state = _run_coordinator_async()
+                    finally:
+                        _run_usage = get_run_usage()
+                        _run_cost = calculate_run_cost_usd(**_run_usage)
             except RunAborted:
                 session.refresh(run)
                 append_run_event(
@@ -1272,6 +1293,7 @@ def _execute_run_job(
                     "run_control_applied",
                     {"action": "abort", "checkpoint": "during_generation"},
                 )
+                _write_token_usage(run, _run_usage, _run_cost)
                 run.status = "failed"
                 run.error_message = "Aborted during generation."
                 session.commit()
@@ -1284,6 +1306,7 @@ def _execute_run_job(
                     "failed",
                     {"error": "run_token_budget_exhausted", "detail": str(budget_exc)[:500]},
                 )
+                _write_token_usage(run, _run_usage, _run_cost)
                 run.status = "failed"
                 run.error_message = str(budget_exc)[:2000]
                 session.commit()
@@ -1674,6 +1697,7 @@ def _execute_run_job(
                 )
                 return False, run.error_message
 
+            _write_token_usage(run, _run_usage, _run_cost)
             run.status = "review_ready"
             run.error_message = None
             run.plan_payload = _strip_visual_remediation_from_plan(run.plan_payload)
@@ -1791,6 +1815,7 @@ def _execute_run_job(
             )
             run = session.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
             if run:
+                _write_token_usage(run, _run_usage, _run_cost)
                 run.status = "failed"
                 run.error_message = str(exc)[:2000]
                 session.commit()

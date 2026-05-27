@@ -50,11 +50,13 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
     if not slides:
         return False, ["pptx_slides has no slides"]
 
+    # slide_type → (list_field, min_count)
+    # Note: "table" is NOT here because slide["table"] is a dict, not a list.
+    # It is validated separately below.
     slide_type_requirements = {
         "stat_cards": ("stat_cards", 1),
         "column_cards": ("column_cards", 3),
         "stack_layers": ("stack_layers", 3),
-        "table": ("table", 1),
         "bullets": ("bullets", 1),
     }
 
@@ -78,6 +80,36 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
                 issues.append(
                     f"Slide {idx + 1} ({title}): "
                     f"slide_type='{slide_type}' requires {min_items} {field}, got {actual}"
+                )
+            else:
+                # For card-based types, also check that individual items have substantive content.
+                # An agent can pass the count gate while submitting empty dicts.
+                if slide_type == "column_cards":
+                    empty = sum(
+                        1 for card in items
+                        if isinstance(card, dict) and not str(card.get("heading") or "").strip()
+                    )
+                    if empty:
+                        issues.append(
+                            f"Slide {idx + 1} ({title}): {empty} column_card(s) have an empty 'heading' field"
+                        )
+                elif slide_type == "stack_layers":
+                    empty = sum(
+                        1 for layer in items
+                        if isinstance(layer, dict) and not str(layer.get("label") or "").strip()
+                    )
+                    if empty:
+                        issues.append(
+                            f"Slide {idx + 1} ({title}): {empty} stack_layer(s) have an empty 'label' field"
+                        )
+
+        elif slide_type == "table":
+            # slide["table"] is a dict {headers, rows}, not a list — check rows separately.
+            table_data = slide.get("table")
+            rows = table_data.get("rows", []) if isinstance(table_data, dict) else []
+            if not isinstance(rows, list) or len(rows) < 1:
+                issues.append(
+                    f"Slide {idx + 1} ({title}): table requires at least 1 row in table.rows"
                 )
 
         elif slide_type == "big_number":

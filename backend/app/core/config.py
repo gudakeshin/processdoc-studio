@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     coordinator_llm_planning_enabled: bool = True
     anthropic_thinking_budget_tokens: int = 8000
     anthropic_coordinator_plan_max_tokens: int = 8192
+    # Anthropic pricing ($/MTok) — update when rates change or override via env
+    llm_price_input_per_mtok: float = 3.00
+    llm_price_output_per_mtok: float = 15.00
+    llm_price_cache_read_per_mtok: float = 0.30
+    llm_price_cache_creation_per_mtok: float = 3.75
     # Token budget & compression settings
     token_estimate_ratio: float = 3.5  # empirical: chars per token
     token_budget_safety_margin_tokens: int = 500  # reserve tokens for estimation errors

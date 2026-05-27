@@ -105,9 +105,18 @@ def is_claude_enabled() -> bool:
 
 
 def _record_message_usage(message: Any) -> None:
-    inp, out = extract_usage_counts(message)
+    inp, out = extract_usage_counts(message)  # billed weighted totals for budget check
+    usage = getattr(message, "usage", None)
+    raw_inp = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
+    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0
+    cache_create = int(getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0
     if inp or out:
-        charge_llm_usage(input_tokens=inp, output_tokens=out)
+        charge_llm_usage(
+            input_tokens=raw_inp,
+            output_tokens=out,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_create,
+        )
 
 
 def _build_cached_system(system: str) -> list[dict[str, Any]]:

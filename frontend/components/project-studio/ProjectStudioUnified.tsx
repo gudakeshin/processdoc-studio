@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { DocumentUploader } from "@/components/documents/DocumentUploader";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { ToolActivityFeed } from "@/components/run-studio/ToolActivityFeed";
 import { ApprovalBanner } from "@/components/run-studio/ApprovalBanner";
 import { ZoneAInstruction } from "@/components/run-studio/ZoneAInstruction";
@@ -22,8 +23,11 @@ import {
 import { useRunStudio, type ChatMessage } from "@/hooks/useRunStudio";
 import { useCoworkState } from "@/hooks/useCoworkState";
 import { useRunStream } from "@/hooks/useRunStream";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
 import { extractApiErrorMessage } from "@/lib/api-error";
+import { buildTokenBreakdown, formatCostCompact, formatTokenCount } from "@/lib/formatTokens";
+import { useLiveTokens, useProjectTokenUsage, computeProjectTotals } from "@/hooks/useLiveTokens";
 
 
 type Props = {
@@ -42,14 +46,14 @@ function CollapsibleSection({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="rounded-lg border border-[var(--surface-border)] bg-white">
+    <section className="border border-[var(--surface-border)] bg-white">
       <button
         type="button"
         className="flex min-h-11 w-full items-center justify-between px-3 py-2 text-left"
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
       >
-        <span className="text-sm font-semibold">{title}</span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">{title}</span>
         {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
       </button>
       {open ? <div className="border-t border-[var(--surface-border)] p-3">{children}</div> : null}
@@ -74,12 +78,13 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
   const [planHash, setPlanHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const qc = useQueryClient();
   const runsQuery = useRunsQuery(pid, Boolean(token && pid));
   const clearRunsMutation = useClearRunsMutation(pid);
   const deleteRunMutation = useDeleteRunMutation(pid);
 
   const runId = activeRunId ?? "";
-  const { events, parsedEvents, error: streamError, pollMode } = useRunStream(pid, runId);
+  const { events, parsedEvents, status: runStatus, error: streamError, pollMode } = useRunStream(pid, runId);
   const studio = useRunStudio({
     pid,
     rid: runId,
@@ -92,6 +97,22 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
     messages: studio.instructionChatMessages,
     openQuestions: studio.openQuestions,
   });
+
+  // Live token polling — polls /usage every 2 s while run is executing, stops on terminal states
+  const { data: liveUsage, isLive } = useLiveTokens(pid, activeRunId, runStatus);
+  // Project-wide token counter — polls even during chat (no active run needed)
+  const projectLiveUsage = useProjectTokenUsage(pid, isLive || chatBusy || studio.chatBusy);
+
+  // When run reaches a terminal state, refetch the runs list so final token/cost values appear
+  const prevRunStatusRef = useRef<string>("");
+  useEffect(() => {
+    const TERMINAL = new Set(["review_ready", "done", "failed"]);
+    if (TERMINAL.has(runStatus) && !TERMINAL.has(prevRunStatusRef.current)) {
+      void qc.invalidateQueries({ queryKey: ["runs", pid] });
+      void qc.invalidateQueries({ queryKey: ["run-live-usage", pid, activeRunId] });
+    }
+    prevRunStatusRef.current = runStatus;
+  }, [runStatus, pid, activeRunId, qc]);
 
   const latestAssistantMetadata = useMemo(() => {
     for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
@@ -178,6 +199,38 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
     () => activeRunId ? studio.unresolvedPromptIds : unresolvedPromptIds,
     [activeRunId, studio.unresolvedPromptIds, unresolvedPromptIds]
   );
+
+  const activeRun = useMemo(
+    () => (runsQuery.data ?? []).find((r) => r.id === activeRunId) ?? null,
+    [runsQuery.data, activeRunId]
+  );
+
+  const projectTotals = useMemo(
+    () => computeProjectTotals(runsQuery.data ?? []),
+    [runsQuery.data]
+  );
+
+  // Token/cost data to display: prefer live polling data for the current run, else DB values
+  const displayUsage = useMemo(() => {
+    if (liveUsage) return liveUsage;
+    if (!activeRun) return null;
+    return {
+      input_tokens: activeRun.tokens_input ?? 0,
+      output_tokens: activeRun.tokens_output ?? 0,
+      cache_read_tokens: activeRun.tokens_cache_read ?? 0,
+      cache_creation_tokens: activeRun.tokens_cache_creation ?? 0,
+      cost_usd: activeRun.cost_usd ?? null,
+      live: false,
+    };
+  }, [liveUsage, activeRun]);
+
+  // Session-wide cost label: prefer live project total (includes chat tokens), fallback to DB sum
+  const sessionCostUsd = projectLiveUsage?.cost_usd ?? projectTotals.totalCost;
+  const sessionCostLabel = formatCostCompact(sessionCostUsd);
+  const sessionTokens = projectLiveUsage
+    ? (projectLiveUsage.input_tokens + projectLiveUsage.output_tokens +
+       projectLiveUsage.cache_read_tokens + projectLiveUsage.cache_creation_tokens)
+    : projectTotals.totalTokens;
 
   async function sendMessage() {
     const msg = chatInput.trim();
@@ -319,7 +372,23 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
           <h1 className="text-2xl font-semibold">Project {pid}</h1>
           <p className="text-xs text-[var(--text-muted)]">Unified Project + Studio workspace</p>
         </div>
-        <Button type="button" variant="ghost" onClick={logout}>Sign out</Button>
+        <div className="flex items-center gap-3">
+          {/* Token meter — always visible, updates during chat and runs */}
+          <div className="flex items-center gap-2 border border-[var(--surface-border)] bg-white px-3 py-1.5 text-xs">
+            <span className="text-[var(--text-muted)]">Session</span>
+            <span className="font-mono font-medium">
+              {formatTokenCount(sessionTokens)} tok
+            </span>
+            <span className="text-[var(--text-muted)]">·</span>
+            <span className="font-mono font-semibold text-[var(--accent-blue)]">
+              {sessionCostLabel}
+            </span>
+            {(isLive || chatBusy || studio.chatBusy) && (
+              <span className="inline-block animate-spin text-[var(--accent-blue)]">↻</span>
+            )}
+          </div>
+          <Button type="button" variant="ghost" onClick={logout}>Sign out</Button>
+        </div>
       </header>
 
       {error ? <div className="alert alert--error p-2 text-sm">{error}</div> : null}
@@ -351,7 +420,7 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
           ) : null}
         </section>
 
-        <aside className="space-y-3 min-w-0">
+        <aside className="space-y-3 min-w-0 border-l border-[var(--surface-border)] pl-3 bg-[var(--surface-muted)]">
           <CollapsibleSection title="Project Documents" defaultOpen={true}>
             <DocumentUploader projectId={pid} />
           </CollapsibleSection>
@@ -423,12 +492,62 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
                     title={`${r.id} · ${r.status}`}
                   >
                     {r.id} · {r.status}
+                    {formatCostCompact(r.cost_usd) && (
+                      <span className="ml-1.5 text-[var(--text-muted)]">
+                        {formatCostCompact(r.cost_usd)}
+                      </span>
+                    )}
                   </button>
                   <button type="button" className="text-2xs text-[var(--error)]" onClick={() => void deleteRun(r.id)}>Delete</button>
                 </div>
               ))}
-              {(runsQuery.data ?? []).length === 0 ? <p className="text-xs text-[var(--text-muted)]">No runs yet.</p> : null}
+              {(runsQuery.data ?? []).length === 0 ? (
+                <EmptyState title="No runs yet" description="Start a new run to see execution history here." />
+              ) : null}
             </div>
+            {/* Token breakdown — always visible when a run is selected */}
+            {activeRunId && (
+              <div className="mt-2 border border-[var(--surface-border)] bg-white p-3 text-xs">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium text-[var(--text-primary)]">
+                    Token Usage
+                    {isLive && (
+                      <span className="ml-1.5 inline-block animate-spin text-[var(--accent-blue)]">↻</span>
+                    )}
+                  </span>
+                  <span className="font-mono font-semibold text-[var(--accent-blue)]">
+                    {formatCostCompact(displayUsage?.cost_usd ?? null)}
+                  </span>
+                </div>
+                {displayUsage ? (
+                  <table className="w-full">
+                    <thead>
+                      <tr className="text-[var(--text-muted)]">
+                        <th className="text-left font-normal pb-1">Category</th>
+                        <th className="text-right font-normal pb-1">Tokens</th>
+                        <th className="text-right font-normal pb-1">Rate</th>
+                        <th className="text-right font-normal pb-1">Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(buildTokenBreakdown(displayUsage) ?? [
+                        { label: "Input", tokens: 0, rate: "$3.00/MTok", cost: "$0.0000" },
+                        { label: "Output", tokens: 0, rate: "$15.00/MTok", cost: "$0.0000" },
+                      ]).map((row) => (
+                        <tr key={row.label} className="border-t border-[var(--surface-border)]">
+                          <td className="py-0.5">{row.label}</td>
+                          <td className="py-0.5 text-right font-mono">{row.tokens.toLocaleString()}</td>
+                          <td className="py-0.5 text-right text-[var(--text-muted)]">{row.rate}</td>
+                          <td className="py-0.5 text-right font-mono">{row.cost}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="text-[var(--text-muted)]">Waiting for first LLM call…</p>
+                )}
+              </div>
+            )}
             <div className="mt-2 flex flex-wrap gap-2">
               <Button type="button" variant="ghost" onClick={() => void clearRuns()} disabled={clearRunsMutation.isPending}>
                 {clearRunsMutation.isPending ? "Clearing..." : "Clear"}

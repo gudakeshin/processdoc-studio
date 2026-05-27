@@ -54,7 +54,14 @@ def _extract_pptx_text(pptx_path: Path) -> dict[int, list[str]]:
         for slide_idx, slide in enumerate(prs.slides):
             text_blocks = []
             for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text:
+                # Table shapes: shape.text is empty; extract cell text directly.
+                if hasattr(shape, "table"):
+                    for row in shape.table.rows:
+                        for cell in row.cells:
+                            t = cell.text_frame.text.strip()
+                            if t:
+                                text_blocks.append(t)
+                elif hasattr(shape, "text") and shape.text:
                     text_blocks.append(shape.text.strip())
             text_by_slide[slide_idx] = text_blocks
     except Exception as e:

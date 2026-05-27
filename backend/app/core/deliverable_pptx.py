@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -51,12 +52,25 @@ _TOPIC_PALETTES: list[tuple[tuple[str, ...], dict[str, str]]] = [
 
 
 def _pick_topic_palette(process_name: str) -> dict[str, str]:
-    """Return palette overrides for a topic-matched process name, or {} to keep defaults."""
+    """Return palette overrides for a topic-matched process name, or {} to keep defaults.
+
+    Uses word-boundary matching (avoids "ai" inside "sustainability"/"chain") and
+    picks the palette with the highest keyword-hit count so that ambiguous names
+    like "Carbon Tax Audit" resolve to the palette with the most evidence (finance:
+    "tax"+"audit"=2 > ESG: "carbon"=1) rather than whichever palette comes first.
+    """
     lowered = (process_name or "").lower()
+    best_overrides: dict[str, str] = {}
+    best_count = 0
     for keywords, overrides in _TOPIC_PALETTES:
-        if any(kw in lowered for kw in keywords):
-            return overrides
-    return {}
+        count = sum(
+            1 for kw in keywords
+            if re.search(r"\b" + re.escape(kw.strip()) + r"\b", lowered)
+        )
+        if count > best_count:
+            best_count = count
+            best_overrides = overrides
+    return best_overrides
 
 
 def _merge_branding_dict(branding: Any) -> dict[str, Any]:

@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -90,6 +90,11 @@ class Run(Base):
     pause_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resume_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     abort_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_cache_read: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_cache_creation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class SwarmTeam(Base):
