@@ -1,5 +1,6 @@
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from app.core.tz import IST
 
 from fastapi import Depends, Header, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer
@@ -25,14 +26,14 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(subject: str) -> str:
-    expiry = datetime.now(UTC) + timedelta(minutes=settings.jwt_access_exp_minutes)
+    expiry = datetime.now(IST) + timedelta(minutes=settings.jwt_access_exp_minutes)
     payload = {"sub": subject, "exp": expiry, "typ": "access", "jti": str(uuid.uuid4())}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
 def create_refresh_token(subject: str, db: Session, user_id: str) -> str:
     jti = str(uuid.uuid4())
-    expiry = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_exp_days)
+    expiry = datetime.now(IST) + timedelta(days=settings.jwt_refresh_exp_days)
     row = RefreshToken(id=jti, user_id=user_id, expires_at=expiry)
     db.add(row)
     db.commit()
@@ -55,13 +56,13 @@ def rotate_refresh_token(db: Session, refresh_token: str) -> tuple[User, str]:
     email = payload.get("sub")
     if not jti or not email or not isinstance(email, str):
         raise credentials_exc
-    now = datetime.now(UTC)
+    now = datetime.now(IST)
     row = db.scalar(select(RefreshToken).where(RefreshToken.id == str(jti)))
     if row is None or row.revoked_at is not None:
         raise credentials_exc
     exp_at = row.expires_at
     if exp_at.tzinfo is None:
-        exp_at = exp_at.replace(tzinfo=UTC)
+        exp_at = exp_at.replace(tzinfo=IST)
     if exp_at < now:
         raise credentials_exc
     user = db.scalar(select(User).where(User.email == email))
@@ -82,7 +83,7 @@ def rotate_refresh_token(db: Session, refresh_token: str) -> tuple[User, str]:
 
 
 def create_sse_token(subject: str, *, run_id: str | None = None) -> str:
-    exp = datetime.now(UTC) + timedelta(seconds=max(30, int(settings.jwt_sse_exp_seconds)))
+    exp = datetime.now(IST) + timedelta(seconds=max(30, int(settings.jwt_sse_exp_seconds)))
     pl: dict = {"sub": subject, "exp": exp, "typ": "sse"}
     if run_id:
         pl["run_id"] = str(run_id)

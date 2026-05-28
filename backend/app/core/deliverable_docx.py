@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -164,7 +165,7 @@ def _add_cover_page(doc: Document, title: str, company: str,
     # Date
     date_para = doc.add_paragraph()
     date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    date_run = date_para.add_run(datetime.now(UTC).strftime("%B %Y"))
+    date_run = date_para.add_run(datetime.now(IST).strftime("%B %Y"))
     date_run.font.name = font_family
     date_run.font.size = Pt(11)
 
@@ -178,7 +179,7 @@ def _apply_core_properties(doc: Document, title: str, company: str, author: str)
         props.title = title[:255]
         props.author = author[:255]
         props.company = company[:255]
-        props.modified = datetime.now(UTC)
+        props.modified = datetime.now(IST)
         props.keywords = "processdoc,docx"
     except Exception as exc:
         logger.debug("Core properties skipped: %s", exc)

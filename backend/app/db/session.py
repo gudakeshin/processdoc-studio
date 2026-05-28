@@ -49,35 +49,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 _initialized = False
 
 
-def _migrate_db() -> None:
-    """Apply additive column additions to existing DBs. Idempotent — skips columns that exist."""
-    from sqlalchemy import inspect, text
-
-    inspector = inspect(engine)
-    _additions = [
-        ("runs", "tokens_input", "INTEGER"),
-        ("runs", "tokens_output", "INTEGER"),
-        ("runs", "tokens_cache_read", "INTEGER"),
-        ("runs", "tokens_cache_creation", "INTEGER"),
-        ("runs", "cost_usd", "REAL"),
-    ]
-    with engine.connect() as conn:
-        existing_tables = set(inspector.get_table_names())
-        for table, col, col_type in _additions:
-            if table not in existing_tables:
-                continue
-            existing_cols = {c["name"] for c in inspector.get_columns(table)}
-            if col not in existing_cols:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
-        conn.commit()
-
-
 def init_db() -> None:
     global _initialized
     from app.db import models as _models  # noqa: F401 — register ORM tables on Base.metadata
 
     Base.metadata.create_all(bind=engine)
-    _migrate_db()
     _initialized = True
 
 

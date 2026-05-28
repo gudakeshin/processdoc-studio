@@ -9,7 +9,8 @@ import json
 import logging
 import re
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -259,7 +260,7 @@ class SchemaAnalyzer:
             }
         """
         return {
-            "analysis_date": datetime.now(UTC).isoformat(),
+            "analysis_date": datetime.now(IST).isoformat(),
             "wiki_type": self.wiki_type,
             "project_id": self.project_id,
             "emerging_categories": self.detect_emerging_categories(),

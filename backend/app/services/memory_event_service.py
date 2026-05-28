@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from app.core.tz import IST
 import hashlib
 import json
 from typing import Any
@@ -14,7 +15,7 @@ from app.db.models import MemoryEvent, ProjectMemoryProfile, Run
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _normalize_user_profile(summary: dict[str, Any], user_id: str) -> dict[str, Any]:
@@ -44,13 +45,30 @@ def _load_profile(session: Session, *, project_id: str) -> tuple[ProjectMemoryPr
         return row, {}
 
 
+def _load_profile_for_update(session: Session, *, project_id: str) -> tuple[ProjectMemoryProfile | None, dict[str, Any]]:
+    """Like _load_profile but acquires a row-level lock (SELECT FOR UPDATE on PostgreSQL).
+    Prevents lost-update races when multiple coordinator instances modify the same profile."""
+    row = session.scalar(
+        select(ProjectMemoryProfile)
+        .where(ProjectMemoryProfile.project_id == project_id)
+        .with_for_update()
+    )
+    if row is None or not row.summary_json:
+        return row, {}
+    try:
+        data = json.loads(row.summary_json)
+        return row, data if isinstance(data, dict) else {}
+    except Exception:
+        return row, {}
+
+
 def _save_profile(session: Session, *, project_id: str, row: ProjectMemoryProfile | None, payload: dict[str, Any]) -> None:
     text = json.dumps(payload, sort_keys=True)
     if row is None:
         session.add(ProjectMemoryProfile(project_id=project_id, summary_json=text))
     else:
         row.summary_json = text
-        row.updated_at = datetime.utcnow()
+        row.updated_at = datetime.now(IST).replace(tzinfo=None)
     session.flush()
 
 
@@ -109,7 +127,7 @@ def record_discovery_answer(
     key = str(slot_key or "").strip()
     if not key:
         return
-    row, summary = _load_profile(session, project_id=project_id)
+    row, summary = _load_profile_for_update(session, project_id=project_id)
     block = _normalize_user_profile(summary, user_id)
     slots = block["aggregated_slots"]
     slots[key] = value
@@ -133,7 +151,7 @@ def record_routing_decision(
     outcome: str,
 ) -> None:
     dkey = str(decision_type or "").strip() or "unknown"
-    row, summary = _load_profile(session, project_id=project_id)
+    row, summary = _load_profile_for_update(session, project_id=project_id)
     block = _normalize_user_profile(summary, user_id)
     outcomes = block["decision_outcomes"]
     current = outcomes.get(dkey) if isinstance(outcomes.get(dkey), dict) else {}

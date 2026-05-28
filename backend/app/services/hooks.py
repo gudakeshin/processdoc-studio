@@ -7,6 +7,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any, Literal
 
 from sqlalchemy import select
@@ -266,7 +267,7 @@ def is_hook_disabled(hook_name: str) -> bool:
 
 def sync_disabled_hooks_from_db(session, *, project_id: str | None = None) -> None:
     rows = session.scalars(select(HookControl).where(HookControl.disabled.is_(True))).all()
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     active: set[str] = set()
     for row in rows:
         if row.expires_at and row.expires_at <= now:
@@ -301,13 +302,13 @@ def upsert_hook_control(
             disabled=bool(disabled),
             actor=actor,
             reason=reason,
-            updated_at=datetime.utcnow(),
+            updated_at=datetime.now(IST).replace(tzinfo=None),
         )
         session.add(row)
     else:
         row.disabled = bool(disabled)
         row.actor = actor
         row.reason = reason
-        row.updated_at = datetime.utcnow()
+        row.updated_at = datetime.now(IST).replace(tzinfo=None)
     return row
 

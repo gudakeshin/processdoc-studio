@@ -13,7 +13,8 @@ Performs comprehensive health checks on wiki content:
 
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from app.core.tz import IST
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -345,7 +346,7 @@ class WikiQAEvaluator:
         if not pages:
             return issues
 
-        now = datetime.now(UTC)
+        now = datetime.now(IST)
         threshold_date = now - timedelta(days=days_threshold)
 
         for page in pages:
@@ -357,7 +358,7 @@ class WikiQAEvaluator:
                 updated_at = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
                 # Make naive datetimes aware for comparison
                 if updated_at.tzinfo is None:
-                    updated_at = updated_at.replace(tzinfo=UTC)
+                    updated_at = updated_at.replace(tzinfo=IST)
             except (ValueError, AttributeError):
                 continue
 
@@ -376,7 +377,7 @@ class WikiQAEvaluator:
                         log_ts = datetime.fromisoformat(log_ts_str.replace("Z", "+00:00"))
                         # Make naive datetimes aware for comparison
                         if log_ts.tzinfo is None:
-                            log_ts = log_ts.replace(tzinfo=UTC)
+                            log_ts = log_ts.replace(tzinfo=IST)
                     except (ValueError, AttributeError):
                         continue
 

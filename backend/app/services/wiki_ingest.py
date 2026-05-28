@@ -7,7 +7,8 @@ import json
 import logging
 import re
 import time as _time
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -336,27 +337,27 @@ def _extract_text_from_file(filename: str, content: bytes) -> str:
                 from app.core.config import settings
                 from app.core.office.zip_safety import UnsafeZipError, validate_zip_for_read
 
-                zf = zipfile.ZipFile(io.BytesIO(content))
                 try:
-                    validate_zip_for_read(
-                        zf,
-                        max_uncompressed_bytes=int(
-                            getattr(settings, "zip_max_uncompressed_bytes", 100 * 1024 * 1024)
-                        ),
-                    )
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        validate_zip_for_read(
+                            zf,
+                            max_uncompressed_bytes=int(
+                                getattr(settings, "zip_max_uncompressed_bytes", 100 * 1024 * 1024)
+                            ),
+                        )
+                        text_parts = []
+                        for name in sorted(zf.namelist()):
+                            if not name.startswith("ppt/") or not name.endswith(".xml"):
+                                continue
+                            raw = zf.read(name).decode("utf-8", errors="ignore")
+                            cleaned = _re.sub(r"<[^>]+>", " ", raw)
+                            cleaned = _re.sub(r"\s+", " ", cleaned).strip()
+                            if cleaned:
+                                text_parts.append(cleaned)
+                    return "\n".join(text_parts) if text_parts else "[No text content in PPTX]"
                 except UnsafeZipError as zerr:
                     _LOG.warning("Unsafe PPTX zip %s: %s", filename, zerr)
                     return "[Rejected PPTX archive: failed safety checks]"
-                text_parts = []
-                for name in sorted(zf.namelist()):
-                    if not name.startswith("ppt/") or not name.endswith(".xml"):
-                        continue
-                    raw = zf.read(name).decode("utf-8", errors="ignore")
-                    cleaned = _re.sub(r"<[^>]+>", " ", raw)
-                    cleaned = _re.sub(r"\s+", " ", cleaned).strip()
-                    if cleaned:
-                        text_parts.append(cleaned)
-                return "\n".join(text_parts) if text_parts else "[No text content in PPTX]"
             except Exception as pptx_err:
                 _LOG.warning(f"Failed to parse PPTX {filename}: {pptx_err}")
                 return "[Unable to extract text from PPTX file]"
@@ -607,7 +608,7 @@ def emit_wiki_change_event(
             "wiki_type": wiki_type,
             "project_id": project_id,
             "changed_page_ids": sorted(set(changed_page_ids or [])),
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(IST).isoformat(),
         }
         with events_file.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(event) + "\n")
@@ -786,7 +787,7 @@ def _compound_update_entity_page(
         existing_body = fm_match.group(2).strip() if fm_match else existing_text.strip()
 
         # Update last_updated timestamp in frontmatter
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(IST).isoformat()
         frontmatter = re.sub(r'last_updated:\s*"[^"]*"', f'last_updated: "{now}"', frontmatter)
         if "last_updated" not in frontmatter and frontmatter:
             frontmatter = frontmatter.removesuffix("---\n") + f'\nlast_updated: "{now}"\n---\n'
@@ -967,7 +968,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
             except Exception as llm_err:
                 _LOG.warning(f"LLM synthesis failed, falling back to excerpt: {llm_err}")
 
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(IST).isoformat()
         created = 0
         updated = 0
         page_ids = []
@@ -1172,7 +1173,7 @@ def _persist_related_page_suggestions(
 
         relationships = data.get("relationships", [])
         existing_pairs = {(r.get("source_id"), r.get("target_id")) for r in relationships}
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(IST).isoformat()
         for rel in related_pages:
             target_id = str(rel.get("page_id") or "").strip()
             if not target_id or target_id == source_page_id:
@@ -1422,7 +1423,7 @@ def _update_wiki_index(wiki_type: str, project_id: str | None) -> dict:
                 continue
 
         total = sum(len(v) for v in by_category.values())
-        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        date_str = datetime.now(IST).strftime("%Y-%m-%d")
 
         lines = [
             "# Wiki Index",
@@ -1504,7 +1505,7 @@ def _append_wiki_log(
         log_file = wiki_dir / "log.md"
 
         # Karpathy-compatible format: ## [date] operation | title
-        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        date_str = datetime.now(IST).strftime("%Y-%m-%d")
         heading = f"## [{date_str}] {operation}"
         if source_name:
             heading += f" | {source_name}"
@@ -1519,8 +1520,8 @@ def _append_wiki_log(
         else:
             log_file.write_text("# Wiki Log\n" + entry)
 
-        log_entry_id = f"log_{int(datetime.now(UTC).timestamp() * 1000)}"
+        log_entry_id = f"log_{int(datetime.now(IST).timestamp() * 1000)}"
         return log_entry_id
     except Exception as e:
         _LOG.error(f"Error appending to wiki log: {e}")
-        return f"log_{int(datetime.now(UTC).timestamp())}"
+        return f"log_{int(datetime.now(IST).timestamp())}"

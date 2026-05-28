@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from app.db.models import Conversation
@@ -106,7 +107,7 @@ def stamp_router(
         "intent": str(intent or "").strip(),
         "confidence": max(0.0, min(1.0, float(confidence))),
         "rationale": str(rationale or "").strip(),
-        "ts": datetime.utcnow().isoformat(),
+        "ts": datetime.now(IST).isoformat(),
     }
 
 

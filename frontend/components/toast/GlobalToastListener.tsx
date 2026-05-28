@@ -25,7 +25,7 @@ export function GlobalToastListener() {
         : "alert alert--info";
 
   return (
-    <div role="status" aria-live="polite" className={`fixed bottom-4 right-4 z-[60] max-w-sm shadow-lg ${cls}`}>
+    <div role="status" aria-live="polite" aria-atomic="true" className={`fixed bottom-4 right-4 z-[60] max-w-sm shadow-lg ${cls}`}>
       {toast.message}
     </div>
   );

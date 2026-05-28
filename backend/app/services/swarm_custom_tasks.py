@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from sqlalchemy import select
@@ -66,7 +67,7 @@ def execute_custom_swarm_tasks_sync(
             candidates.sort(key=lambda x: (-int(x.priority or 0), x.created_at or datetime.min))
             t = candidates[0]
             t.status = "in_progress"
-            now = datetime.utcnow()
+            now = datetime.now(IST).replace(tzinfo=None)
             t.started_at = now
             t.updated_at = now
             db.commit()
@@ -94,7 +95,7 @@ def execute_custom_swarm_tasks_sync(
             else:
                 summary = "Claude disabled; no LLM execution for this custom task."
 
-            end = datetime.utcnow()
+            end = datetime.now(IST).replace(tzinfo=None)
             t.output_json = json.dumps({"summary": summary[:12000]})
             t.updated_at = end
             if ok and summary.startswith("error:"):

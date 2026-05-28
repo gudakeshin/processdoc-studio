@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -131,7 +132,7 @@ def build_breach_notification_report(
     Email delivery is stubbed in this phase; we persist the schedule for a later worker.
     """
 
-    now = datetime.now(UTC)
+    now = datetime.now(IST)
     email_due_at = now + timedelta(hours=1)
     clock_end_at = now + timedelta(hours=72)
 
@@ -190,7 +191,7 @@ def process_due_breach_notifications(project_id: str | None = None) -> dict[str,
     roots = [workspace_path(project_id)] if project_id else [p for p in Path(workspace_path("__dummy__")).parent.glob("*") if p.is_dir()]
     sent = 0
     failed = 0
-    now = datetime.now(UTC)
+    now = datetime.now(IST)
     for root in roots:
         breaches_dir = root / "dpdp" / "breaches"
         if not breaches_dir.exists():
@@ -264,7 +265,7 @@ def update_breach_incident_state(
         payload = json.loads(incident_path.read_text(encoding="utf-8"))
     except Exception:
         return None
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(IST).isoformat()
     payload["state"] = state
     payload["updated_at"] = now
     if resolution_notes is not None:

@@ -3,7 +3,8 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -325,7 +326,7 @@ class XLSXDeliverable(IDeliverable):
                 payload.get("presentation_title") or pm.get("process_name") or "ProcessDoc Output"
             )[:255]
             props.company = str(getattr(branding, "company_name", None) or "")[:255]
-            props.modified = datetime.now(UTC)
+            props.modified = datetime.now(IST)
         except Exception as exc:
             logger.debug("Workbook properties skipped: %s", exc)
 

@@ -587,6 +587,16 @@ export function ToolActivityFeed({
             aria-controls={`tool-feed-panel-${tab}`}
             tabIndex={activeTab === tab ? 0 : -1}
             onClick={() => setActiveTab(tab)}
+            onKeyDown={(e) => {
+              const allTabs = (["activity", "artifacts", "canvas", "deck", "context", "decisions", "governance"] as const).filter(
+                (t) => t !== "canvas" || DOCUMENT_CANVAS_ENABLED
+              );
+              const idx = allTabs.indexOf(tab);
+              if (e.key === "ArrowRight") { e.preventDefault(); setActiveTab(allTabs[(idx + 1) % allTabs.length]); }
+              else if (e.key === "ArrowLeft") { e.preventDefault(); setActiveTab(allTabs[(idx - 1 + allTabs.length) % allTabs.length]); }
+              else if (e.key === "Home") { e.preventDefault(); setActiveTab(allTabs[0]); }
+              else if (e.key === "End") { e.preventDefault(); setActiveTab(allTabs[allTabs.length - 1]); }
+            }}
             className={`flex min-h-11 flex-1 items-center justify-center gap-1 px-1 py-2 text-xs font-medium capitalize transition-colors ${
               activeTab === tab
                 ? "border-b-2 border-[var(--primary-900)] text-[var(--text-default)]"
@@ -923,6 +933,7 @@ export function ToolActivityFeed({
                   type="button"
                   className="min-h-9 rounded border border-[var(--surface-border)] bg-[var(--surface-muted)] px-3 py-2 text-2xs"
                   disabled={!hooksPanel || hooksPanel.loading}
+                  aria-busy={hooksPanel?.loading}
                   onClick={hooksPanel?.onRefresh}
                 >
                   {hooksPanel?.loading ? "Loading…" : "Refresh"}

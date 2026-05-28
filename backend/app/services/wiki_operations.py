@@ -10,7 +10,8 @@ import json
 import logging
 import re
 import time
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from app.core.config import settings
@@ -645,7 +646,7 @@ def _append_wiki_log(
         log_file = wiki_dir / "log.md"
 
         # Create log entry
-        timestamp = datetime.now(UTC).isoformat()
+        timestamp = datetime.now(IST).isoformat()
         entry = f"\n## {timestamp}\n"
         entry += f"**Operation:** {operation}\n"
         if source_name:
@@ -660,11 +661,11 @@ def _append_wiki_log(
         else:
             log_file.write_text("# Wiki Log\n" + entry)
 
-        log_entry_id = f"log_{int(datetime.now(UTC).timestamp() * 1000)}"
+        log_entry_id = f"log_{int(datetime.now(IST).timestamp() * 1000)}"
         return log_entry_id
     except Exception as e:
         logger.error(f"Error appending to wiki log: {e}")
-        return f"log_{int(datetime.now(UTC).timestamp())}"
+        return f"log_{int(datetime.now(IST).timestamp())}"
 
 
 def _extract_relationships(
@@ -731,7 +732,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
             })
 
         # Pattern for cross-project wiki links
@@ -751,7 +752,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
             })
 
     except Exception as e:
@@ -830,7 +831,7 @@ def _build_cross_wiki_relationships(
             "lp_to_projects": lp_to_projects,
             "projects_to_lp": projects_to_lp,
             "total_links": len(lp_to_projects) + len(projects_to_lp),
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         logger.info(f"Built cross-wiki relationships: {len(lp_to_projects)} LP refs, {len(projects_to_lp)} Project refs")
@@ -948,7 +949,7 @@ def _save_persistent_graph(
             "metadata": {
                 "node_count": G.number_of_nodes(),
                 "edge_count": G.number_of_edges(),
-                "last_updated": datetime.now(UTC).isoformat(),
+                "last_updated": datetime.now(IST).isoformat(),
             }
         }, indent=2))
 
@@ -1017,7 +1018,7 @@ def _llm_find_relationships(pages: dict) -> list:
             return []
 
         all_ids = set(pages.keys())
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(IST).isoformat()
         return [
             {
                 "source_id": r["source_id"],
@@ -1536,7 +1537,7 @@ def _save_god_nodes(
             "total_pages": god_nodes_data["total_pages"],
             "avg_importance": god_nodes_data["avg_importance"],
             "god_nodes": god_nodes_data["god_nodes"],
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         return True
@@ -1832,7 +1833,7 @@ def _save_communities(
             "total_communities": communities_data["total_communities"],
             "communities": communities_data["communities"],
             "page_community_map": communities_data["page_community_map"],
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         return True

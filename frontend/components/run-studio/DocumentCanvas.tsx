@@ -58,22 +58,27 @@ export function DocumentCanvas({
 
   const handleSave = useCallback(async () => {
     if (!activeKey || !isDirty) return;
+    // Capture the value being saved before the await so that edits typed
+    // during the in-flight request are not silently discarded.
+    const snapshot = edited;
     setSaveState("saving");
     try {
       const res = await apiFetch(`/api/runs/${projectId}/${runId}/canvas`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ artifact_key: activeKey, content: edited }),
+        body: JSON.stringify({ artifact_key: activeKey, content: snapshot }),
       });
       if (!res.ok) {
         setSaveState("error");
+        setTimeout(() => setSaveState("idle"), 4000);
         return;
       }
-      setOriginal(edited);
+      setOriginal(snapshot);
       setSaveState("saved");
       setTimeout(() => setSaveState("idle"), 2000);
     } catch {
       setSaveState("error");
+      setTimeout(() => setSaveState("idle"), 4000);
     }
   }, [activeKey, edited, isDirty, projectId, runId]);
 
@@ -91,13 +96,26 @@ export function DocumentCanvas({
   return (
     <div className="flex h-full flex-col">
       {/* Artifact tab selector */}
-      <div className="flex shrink-0 border-b border-[var(--surface-border)] px-2 pt-1">
+      <div className="flex shrink-0 border-b border-[var(--surface-border)] px-2 pt-1" role="tablist" aria-label="Document artifact tabs">
         {available.map(({ key, label }) => (
           <button
             key={key}
+            role="tab"
+            id={`canvas-tab-${key}`}
+            aria-selected={activeKey === key}
+            aria-controls={`canvas-panel-${key}`}
+            tabIndex={activeKey === key ? 0 : -1}
             onClick={() => setActiveKey(key)}
+            onKeyDown={(e) => {
+              const keys = available.map((a) => a.key);
+              const idx = keys.indexOf(key);
+              if (e.key === "ArrowRight") { e.preventDefault(); setActiveKey(keys[(idx + 1) % keys.length]); }
+              else if (e.key === "ArrowLeft") { e.preventDefault(); setActiveKey(keys[(idx - 1 + keys.length) % keys.length]); }
+              else if (e.key === "Home") { e.preventDefault(); setActiveKey(keys[0]); }
+              else if (e.key === "End") { e.preventDefault(); setActiveKey(keys[keys.length - 1]); }
+            }}
             className={[
-              "mr-1 rounded-t px-3 py-1.5 text-xs font-medium transition-colors",
+              "mr-1 rounded-t px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent-blue,#0072B1)]",
               activeKey === key
                 ? "bg-[var(--surface-default)] text-[var(--text-default)] border border-b-transparent border-[var(--surface-border)]"
                 : "text-[var(--text-caption)] hover:text-[var(--text-default)]",
@@ -110,7 +128,12 @@ export function DocumentCanvas({
 
       {/* Split editor / preview */}
       {activeKey && (
-        <div className="flex min-h-0 flex-1 gap-px bg-[var(--surface-border)]">
+        <div
+          id={`canvas-panel-${activeKey}`}
+          role="tabpanel"
+          aria-labelledby={`canvas-tab-${activeKey}`}
+          className="flex min-h-0 flex-1 gap-px bg-[var(--surface-border)]"
+        >
           {/* Editor pane */}
           <div className="flex min-w-0 flex-1 flex-col bg-[var(--surface-default)]">
             <p className="shrink-0 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-caption)]">
@@ -141,16 +164,18 @@ export function DocumentCanvas({
 
       {/* Footer save bar */}
       <div className="flex shrink-0 items-center justify-between border-t border-[var(--surface-border)] px-3 py-2">
-        {saveState === "saved" && (
-          <span className="text-xs text-[var(--success,#16a34a)]">Saved</span>
-        )}
-        {saveState === "error" && (
-          <span className="text-xs text-[var(--error)]">Save failed — try again</span>
-        )}
-        {(saveState === "idle" || saveState === "saving") && <span />}
+        <span role="status" aria-live="polite" aria-atomic="true" className="text-xs">
+          {saveState === "saved" && (
+            <span className="text-[var(--success,#16a34a)]">Saved</span>
+          )}
+          {saveState === "error" && (
+            <span className="text-[var(--error)]">Save failed — try again</span>
+          )}
+        </span>
         <Button
           onClick={handleSave}
           disabled={!isDirty || saveState === "saving"}
+          aria-busy={saveState === "saving"}
           variant="primary"
         >
           {saveState === "saving" ? "Saving…" : "Save"}

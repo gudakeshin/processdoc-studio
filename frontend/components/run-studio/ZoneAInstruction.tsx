@@ -895,6 +895,7 @@ export function ZoneAInstruction({
             value={chatInput}
             onChange={(e) => setChatInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            aria-label="Chat message — Enter to send, Shift+Enter for newline"
             placeholder="Chat with Sheldon… (Enter to send · Shift+Enter for newline)"
             disabled={chatBusy}
             className="flex-1 resize-none text-xs"

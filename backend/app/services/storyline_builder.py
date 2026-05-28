@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -177,7 +178,7 @@ def save_agreed_arc(
     arc_rationale: str = "",
 ) -> None:
     """Persist the agreed narrative arc as a MemoryItem (type=decision)."""
-    value = json.dumps({"arc": arc_key, "rationale": arc_rationale, "agreed_at": datetime.utcnow().isoformat()})
+    value = json.dumps({"arc": arc_key, "rationale": arc_rationale, "agreed_at": datetime.now(IST).isoformat()})
     existing = (
         db.query(MemoryItem)
         .filter(
@@ -190,7 +191,7 @@ def save_agreed_arc(
     )
     if existing:
         existing.value = value
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = datetime.now(IST).replace(tzinfo=None)
     else:
         db.add(
             MemoryItem(

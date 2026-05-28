@@ -8,7 +8,8 @@ import hashlib
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 
 from app.core.config import settings
 
@@ -121,7 +122,7 @@ def _extract_relationships(
                     "confidence": "EXPLICIT",
                     "confidence_score": 1.0,
                     "source_location": f"L{content[:match.start()].count(chr(10)) + 1}",
-                    "created_at": datetime.now(UTC).isoformat(),
+                    "created_at": datetime.now(IST).isoformat(),
                 })
 
         # Extract inferred links: page title mentions
@@ -146,7 +147,7 @@ def _extract_relationships(
                         "confidence": "INFERRED",
                         "confidence_score": confidence_score,
                         "source_location": f"L{content[:matches[0].start()].count(chr(10)) + 1}",
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(IST).isoformat(),
                     })
     except Exception as e:
         _LOG.warning(f"Error extracting relationships from {source_page_id}: {e}")
@@ -207,7 +208,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
             })
 
         # Pattern for cross-project wiki links
@@ -227,7 +228,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
             })
 
     except Exception as e:
@@ -306,7 +307,7 @@ def _build_cross_wiki_relationships(
             "lp_to_projects": lp_to_projects,
             "projects_to_lp": projects_to_lp,
             "total_links": len(lp_to_projects) + len(projects_to_lp),
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         _LOG.info(f"Built cross-wiki relationships: {len(lp_to_projects)} LP refs, {len(projects_to_lp)} Project refs")
@@ -432,7 +433,7 @@ def _save_persistent_graph(
             "metadata": {
                 "node_count": G.number_of_nodes(),
                 "edge_count": G.number_of_edges(),
-                "last_updated": datetime.now(UTC).isoformat(),
+                "last_updated": datetime.now(IST).isoformat(),
             }
         }), indent=2))
 
@@ -557,7 +558,7 @@ def _build_and_persist_relationships(
         relationships_file.write_text(json.dumps(_envelope({
             "total": len(all_relationships),
             "relationships": all_relationships,
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }), indent=2))
 
         # Detect communities from the relationship graph
@@ -855,7 +856,7 @@ def _build_relationships_incremental(
         (meta_dir / "relationships.json").write_text(json.dumps(_envelope({
             "total": len(all_relationships),
             "relationships": all_relationships,
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
             "incremental_update": True,
             "changed_pages_count": len(changed_pages),
         }), indent=2))
@@ -893,13 +894,13 @@ def _build_relationships_incremental(
             manifest["pages"][page_id] = {
                 "hash": page_data["hash"],
                 "title": page_data["title"],
-                "updated_at": datetime.now(UTC).isoformat(),
+                "updated_at": datetime.now(IST).isoformat(),
             }
         # Remove deleted pages from manifest
         for page_id in deleted_pages:
             manifest["pages"].pop(page_id, None)
 
-        manifest["last_full_rebuild"] = datetime.now(UTC).isoformat()
+        manifest["last_full_rebuild"] = datetime.now(IST).isoformat()
         manifest["relationships_version"] = manifest.get("relationships_version", 0) + 1
         _save_page_manifest(wiki_type, project_id, manifest)
 

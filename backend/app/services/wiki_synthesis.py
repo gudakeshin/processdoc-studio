@@ -14,7 +14,8 @@ import json
 import logging
 import re
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -290,7 +291,7 @@ class SynthesisEngine:
                     page_info.append({"id": page_id, "title": title, "body": body[:600]})
 
             synthesis_title = f"Synthesis: {', '.join(cluster_concepts[:2])}"
-            now = datetime.now(UTC).isoformat()
+            now = datetime.now(IST).isoformat()
             linked_entities = "\n".join(f"  - {pid}" for pid in cluster_pages[:5])
 
             frontmatter = (
@@ -425,7 +426,7 @@ class SynthesisEngine:
         return {
             "status": "success",
             "wiki_type": self.wiki_type,
-            "analysis_date": datetime.now(UTC).isoformat(),
+            "analysis_date": datetime.now(IST).isoformat(),
             "synthesis_clusters": self.find_synthesis_clusters(),
             "contradictions": self.detect_contradictions(),
             "principles": self.find_pattern_principles(),

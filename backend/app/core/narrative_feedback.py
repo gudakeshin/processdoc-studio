@@ -14,7 +14,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +71,7 @@ def extract_narrative_signals(
         return signals
 
     allowed = {str(x).strip().lower() for x in output_types}
-    now_iso = datetime.now(UTC).isoformat()
+    now_iso = datetime.now(IST).isoformat()
 
     for output_type, report in unified_quality_reports.items():
         key = str(output_type).strip().lower()
@@ -133,7 +134,7 @@ def persist_narrative_signals(run_dir: Path, signals: dict[str, dict[str, Any]])
                 current = {}
         current.update(signals)
         current["_meta"] = {
-            "generated_at": datetime.now(UTC).isoformat(),
+            "generated_at": datetime.now(IST).isoformat(),
             "output_types": sorted(set(k for k in current if not k.startswith("_"))),
         }
         path.write_text(json.dumps(current, indent=2, sort_keys=True), encoding="utf-8")

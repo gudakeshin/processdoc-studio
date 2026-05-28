@@ -234,14 +234,14 @@ function ActivityTab({ skillGroups }: { skillGroups: SkillGroup[] }) {
           <div key={group.key} className="border-l-2 border-[#E0E0E0] pl-3">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <p className="text-sm font-semibold text-[#1a1a1a]">{group.skillName}</p>
+                <h3 className="text-sm font-semibold text-[#1a1a1a]">{group.skillName}</h3>
               </div>
               <StatusBadge status={group.status} />
             </div>
             {group.tools.length > 0 && (
               <div className="mt-2 space-y-1">
                 {group.tools.map((tool, idx) => (
-                  <div key={idx} className="text-xs">
+                  <div key={`${group.key}-tool-${tool.name}-${idx}`} className="text-xs">
                     <p className="font-medium text-[#333]">{tool.name}</p>
                     <p className="text-[#666] mt-0.5">{tool.summary}</p>
                   </div>
@@ -263,7 +263,7 @@ function ArtifactsTab({ artifacts }: { artifacts: any[] }) {
         <p className="text-xs text-[#999] px-3 py-2">No artifacts ready yet.</p>
       ) : (
         readyArtifacts.map((artifact, idx) => (
-          <div key={idx} className="border border-[#E0E0E0] rounded p-2">
+          <div key={artifact.name ?? `artifact-${idx}`} className="border border-[#E0E0E0] rounded p-2">
             <p className="text-xs font-semibold text-[#1a1a1a]">{artifact.name}</p>
             <p className="text-2xs text-[#666] mt-1">{artifact.type || "File"}</p>
             {artifact.size && <p className="text-2xs text-[#999] mt-1">{Math.round(artifact.size / 1024)} KB</p>}
@@ -282,10 +282,10 @@ function ContextTab({ contextMetadata }: { contextMetadata?: any }) {
     <div className="space-y-4">
       {leadingPractices.length > 0 && (
         <div>
-          <p className="text-xs font-semibold text-[#1a1a1a] mb-2">Leading Practices</p>
+          <h3 className="text-xs font-semibold text-[#1a1a1a] mb-2">Leading Practices</h3>
           <div className="space-y-1">
             {leadingPractices.map((lp: string, idx: number) => (
-              <p key={idx} className="text-2xs text-[#666] leading-relaxed">
+              <p key={`lp-${idx}-${lp.slice(0, 20)}`} className="text-2xs text-[#666] leading-relaxed">
                 {lp}
               </p>
             ))}
@@ -295,10 +295,10 @@ function ContextTab({ contextMetadata }: { contextMetadata?: any }) {
 
       {nonNegotiables.length > 0 && (
         <div>
-          <p className="text-xs font-semibold text-[#1a1a1a] mb-2">Non-Negotiables</p>
+          <h3 className="text-xs font-semibold text-[#1a1a1a] mb-2">Non-Negotiables</h3>
           <div className="space-y-1">
             {nonNegotiables.map((nn: string, idx: number) => (
-              <p key={idx} className="text-2xs text-[#666] leading-relaxed">
+              <p key={`nn-${idx}-${nn.slice(0, 20)}`} className="text-2xs text-[#666] leading-relaxed">
                 {nn}
               </p>
             ))}
@@ -321,9 +321,9 @@ function GovernanceTab({ permissionStages }: { permissionStages?: any[] }) {
         <p className="text-xs text-[#999] px-3 py-2">No governance checks available.</p>
       ) : (
         stages.map((stage, idx) => (
-          <div key={idx} className="border border-[#E0E0E0] rounded p-2">
+          <div key={stage.name ?? `stage-${idx}`} className="border border-[#E0E0E0] rounded p-2">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-semibold text-[#1a1a1a]">{stage.name}</p>
+              <h3 className="text-xs font-semibold text-[#1a1a1a]">{stage.name}</h3>
               <span
                 className={`text-2xs font-semibold px-2 py-1 rounded ${
                   stage.status === "approved" ? "bg-[#E8F5E9] text-[#2D7A3B]" : stage.status === "blocked" ? "bg-[#FFEBEE] text-[#B23C3C]" : "bg-[#FEF3E2] text-[#B8651A]"
@@ -393,18 +393,29 @@ export function ActivityFeedRedesigned({
       aria-label="Activity feed sidebar"
     >
       {/* Tab bar */}
-      <div className="flex border-b border-[#E0E0E0] bg-white">
+      <div className="flex border-b border-[#E0E0E0] bg-white" role="tablist" aria-label="Activity feed sections">
         {(["activity", "artifacts", "context", "governance"] as TabType[]).map((tab) => (
           <button
             key={tab}
+            id={`activity-feed-tab-${tab}`}
+            role="tab"
+            aria-selected={activeTab === tab}
+            aria-controls={`activity-feed-panel-${tab}`}
+            tabIndex={activeTab === tab ? 0 : -1}
             onClick={() => setActiveTab(tab)}
+            onKeyDown={(e) => {
+              const tabs: TabType[] = ["activity", "artifacts", "context", "governance"];
+              const idx = tabs.indexOf(tab);
+              if (e.key === "ArrowRight") { e.preventDefault(); setActiveTab(tabs[(idx + 1) % tabs.length]); }
+              else if (e.key === "ArrowLeft") { e.preventDefault(); setActiveTab(tabs[(idx - 1 + tabs.length) % tabs.length]); }
+              else if (e.key === "Home") { e.preventDefault(); setActiveTab(tabs[0]); }
+              else if (e.key === "End") { e.preventDefault(); setActiveTab(tabs[tabs.length - 1]); }
+            }}
             className={`flex-1 px-3 py-2 text-xs font-semibold uppercase transition-colors ${
               activeTab === tab
                 ? "border-b-2 border-[#0072B1] text-[#0072B1] bg-[#F0F7FF]"
                 : "text-[#666] hover:text-[#1a1a1a]"
             }`}
-            aria-selected={activeTab === tab}
-            role="tab"
           >
             {tabLabels[tab]}
           </button>
@@ -412,7 +423,12 @@ export function ActivityFeedRedesigned({
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto p-3">
+      <div
+        id={`activity-feed-panel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={`activity-feed-tab-${activeTab}`}
+        className="flex-1 overflow-y-auto p-3"
+      >
         {activeTab === "activity" && <ActivityTab skillGroups={skillGroups} />}
         {activeTab === "artifacts" && <ArtifactsTab artifacts={artifacts} />}
         {activeTab === "context" && <ContextTab contextMetadata={contextMetadata} />}

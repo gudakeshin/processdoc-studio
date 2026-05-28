@@ -7,15 +7,17 @@ Provides REST API for wiki operations with automatic retry, auto-correction, and
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_project_role
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.db.models import User
 from app.db.session import get_db
 from app.services.wiki_analytics import get_wiki_recommender
@@ -109,7 +111,9 @@ router = APIRouter(prefix="/api/wiki", tags=["wiki"])
 # ===== Ingest Operations =====
 
 @router.post("/{wiki_type}/ingest")
+@limiter.limit("10/minute")
 async def ingest_source(
+    request: Request,
     wiki_type: str,
     source_type: str,
     source_data: dict[str, Any],
@@ -176,7 +180,9 @@ async def ingest_source(
 
 
 @router.post("/{wiki_type}/ingest/from-memory")
+@limiter.limit("10/minute")
 async def ingest_memory_item(
+    request: Request,
     wiki_type: str,
     memory_item: dict[str, Any],
     project_id: str | None = None,
@@ -998,7 +1004,7 @@ async def get_page_preview(
     pages_linking = int(rc.get("inbound", 0) or 0)
     outbound_links_count = int(rc.get("outbound", 0) or 0)
     updated_ts = page_path.stat().st_mtime
-    updated_at = datetime.fromtimestamp(updated_ts, tz=UTC).isoformat()
+    updated_at = datetime.fromtimestamp(updated_ts, tz=IST).isoformat()
 
     return {
         "status": "success",
@@ -1173,8 +1179,8 @@ async def get_page(
         confidence = frontmatter.get("confidence") or "medium"
 
         stat = md_file.stat()
-        updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
-        created_at = datetime.fromtimestamp(stat.st_ctime, tz=UTC).isoformat()
+        updated_at = datetime.fromtimestamp(stat.st_mtime, tz=IST).isoformat()
+        created_at = datetime.fromtimestamp(stat.st_ctime, tz=IST).isoformat()
 
         # Resolve same-wiki inbound / outbound links from relationships.json.
         title_by_id: dict[str, str] = {}
@@ -1338,7 +1344,7 @@ async def search_pages(
                     snippet = body.strip()[:200]
 
                 stat = md_file.stat()
-                updated_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+                updated_at = datetime.fromtimestamp(stat.st_mtime, tz=IST).isoformat()
 
                 results.append({
                     "id": md_file.stem,
@@ -2028,7 +2034,7 @@ async def get_wiki_stats(
 
         # Read wiki pages
         if wiki_dir.exists():
-            now = datetime.now(UTC)
+            now = datetime.now(IST)
             week_ago = now - timedelta(days=7)
 
             for md_file in wiki_dir.glob("*.md"):
@@ -2038,7 +2044,7 @@ async def get_wiki_stats(
 
                 try:
                     content = md_file.read_text(encoding="utf-8")
-                    mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=UTC)
+                    mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=IST)
 
                     # Parse frontmatter
                     category = "artifact"
@@ -2162,7 +2168,7 @@ async def get_wiki_health_scorecard(
         maintenance_log = wiki_dir / "maintenance.log"
         maintenance_updated_at = None
         if maintenance_log.exists():
-            maintenance_updated_at = datetime.fromtimestamp(maintenance_log.stat().st_mtime, tz=UTC).isoformat()
+            maintenance_updated_at = datetime.fromtimestamp(maintenance_log.stat().st_mtime, tz=IST).isoformat()
         return {
             "status": "success",
             "scorecard": {
@@ -2594,7 +2600,7 @@ async def record_page_view(
         return {
             "status": "success",
             "page_id": page_id,
-            "recorded_at": datetime.now(UTC).isoformat(),
+            "recorded_at": datetime.now(IST).isoformat(),
         }
 
     except Exception as e:
@@ -2641,7 +2647,7 @@ async def record_search(
         return {
             "status": "success",
             "query": query,
-            "recorded_at": datetime.now(UTC).isoformat(),
+            "recorded_at": datetime.now(IST).isoformat(),
         }
 
     except Exception as e:
@@ -2865,7 +2871,7 @@ async def update_analytics_from_wiki(
             "status": "success",
             "pages_indexed": len(pages),
             "relationships_loaded": len(relationships),
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(IST).isoformat(),
         }
 
     except Exception as e:
@@ -3087,7 +3093,7 @@ async def save_storyline_draft(
         "schema_version": 1,
         "data": {
             **draft,
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(IST).isoformat(),
             "updated_by": user.id,
         },
     }

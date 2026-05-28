@@ -71,6 +71,7 @@ export function SystemBanner({
       className={`${bgColor} ${borderColor} px-4 py-3 flex items-start gap-3 ${dismissible ? "pr-10" : ""}`}
       role="alert"
       aria-live={type === "error" ? "assertive" : "polite"}
+      aria-atomic="true"
     >
       {/* Icon */}
       <IconComponent className={`h-5 w-5 shrink-0 mt-0.5 ${iconColor}`} aria-hidden />

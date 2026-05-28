@@ -59,6 +59,7 @@ export function ApprovalBannerRedesigned({ state }: { state: ApprovalBannerState
       className={`sticky bottom-0 z-20 border-t-2 ${statusConfig.bgColor} ${statusConfig.borderColor} px-4 py-4 shadow-[0_-2px_12px_rgba(0,0,0,0.08)]`}
       role="status"
       aria-live="assertive"
+      aria-atomic="true"
       aria-label={`${state.type} approval state`}
     >
       <div className="flex items-start gap-3">

@@ -4,6 +4,7 @@ import re
 import shutil
 import uuid
 from datetime import datetime, timedelta
+from app.core.tz import IST
 from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -428,7 +429,7 @@ def _execute_plan_now(
             metadata_json=json.dumps({"kind": "auto_execute_skipped", "run_id": existing_run.id}),
         )
         db.add(assistant_msg)
-        conv.updated_at = datetime.utcnow()
+        conv.updated_at = datetime.now(IST).replace(tzinfo=None)
         db.commit()
         return {
             "conversation_id": conv.id,
@@ -454,7 +455,7 @@ def _execute_plan_now(
             "output_type_representations": output_type_representations,
             "content_skill_targets": content_skill_targets,
             "regeneration_directive": str(plan_meta.get("regeneration_directive") or "").strip(),
-            "confirmed_at": datetime.utcnow().isoformat(),
+            "confirmed_at": datetime.now(IST).isoformat(),
             "decision_answers": da,
             "strategy_dossier": dossier,
             "selected_strategy": selected_strategy,
@@ -523,7 +524,7 @@ def _execute_plan_now(
             }),
         )
         db.add(assistant_msg)
-        conv.updated_at = datetime.utcnow()
+        conv.updated_at = datetime.now(IST).replace(tzinfo=None)
         db.commit()
         return {
             "conversation_id": conv.id,
@@ -535,7 +536,7 @@ def _execute_plan_now(
 
     # Create Run directly in 'approved' status (skip plan_ready → approve cycle).
     run_id = f"run_{uuid.uuid4().hex[:10]}"
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     run = Run(
         id=run_id,
         project_id=pid,
@@ -598,7 +599,7 @@ def _execute_plan_now(
         }),
     )
     db.add(assistant_msg)
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
 
     return {
@@ -1029,7 +1030,7 @@ def _propose_discovery_questions(
         metadata_json=json.dumps({"kind": "discovery_questions", "discovery_questions": questions}),
     )
     db.add(msg)
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {
         "conversation_id": conv.id,
@@ -2396,7 +2397,7 @@ def _persist_assistant_plan_message(
         metadata_json=json.dumps(metadata_obj),
     )
     db.add(assistant_msg)
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {
         "conversation_id": conv.id,
@@ -2751,7 +2752,7 @@ def _handle_collaborative_building(
             metadata_json=json.dumps(proposal["metadata"]),
         )
         db.add(msg)
-        conv.updated_at = datetime.utcnow()
+        conv.updated_at = datetime.now(IST).replace(tzinfo=None)
         db.commit()
         return {
             "conversation_id": conv.id,
@@ -2812,7 +2813,7 @@ def _handle_collaborative_building(
                 }),
             )
             db.add(msg)
-            conv.updated_at = datetime.utcnow()
+            conv.updated_at = datetime.now(IST).replace(tzinfo=None)
             db.commit()
             return {
                 "conversation_id": conv.id,
@@ -2907,7 +2908,7 @@ def _handle_collaborative_building(
                     }),
                 )
                 db.add(msg)
-                conv.updated_at = datetime.utcnow()
+                conv.updated_at = datetime.now(IST).replace(tzinfo=None)
                 db.commit()
                 return {
                     "conversation_id": conv.id,
@@ -2936,7 +2937,7 @@ def _handle_collaborative_building(
                 metadata_json=json.dumps(slide_result["metadata"]),
             )
             db.add(msg)
-            conv.updated_at = datetime.utcnow()
+            conv.updated_at = datetime.now(IST).replace(tzinfo=None)
             db.commit()
             return {
                 "conversation_id": conv.id,
@@ -2966,7 +2967,7 @@ def _handle_collaborative_building(
             metadata_json=json.dumps(slide_result["metadata"]),
         )
         db.add(msg)
-        conv.updated_at = datetime.utcnow()
+        conv.updated_at = datetime.now(IST).replace(tzinfo=None)
         db.commit()
         return {
             "conversation_id": conv.id,
@@ -3765,7 +3766,7 @@ def post_project_conversation_outline(
     metadata["discovery"] = updated_discovery
     metadata["plan_hash"] = new_hash
     row.metadata_json = json.dumps(metadata)
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
 
     return {
@@ -3870,7 +3871,7 @@ def confirm_project_conversation_plan(
                 if isinstance(plan_meta.get("content_skill_targets"), dict)
                 else {},
                 "regeneration_directive": str(plan_meta.get("regeneration_directive") or ""),
-                "confirmed_at": datetime.utcnow().isoformat(),
+                "confirmed_at": datetime.now(IST).isoformat(),
                 "decision_answers": da,
                 "strategy_dossier": dossier,
                 "selected_strategy": selected_strategy,
@@ -3888,7 +3889,7 @@ def confirm_project_conversation_plan(
         ),
     )
     db.add(confirm_msg)
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {
         "conversation_id": conv.id,
@@ -3976,7 +3977,7 @@ def patch_my_project_preferences(
                 continue
         base["learning_signals"] = merged
     payload = json.dumps(base, sort_keys=True)
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     if row is None:
         row = UserProjectPreference(user_id=user.id, project_id=pid, preferences_json=payload, updated_at=now)
         db.add(row)
@@ -4085,7 +4086,7 @@ def create_scheduled_task(
         retry_limit=max(0, int(body.retry_limit or 3)),
         status="active",
     )
-    task.next_run_at = task.run_at if task.trigger_type == "once" else (datetime.utcnow() + timedelta(minutes=task.cadence_minutes))
+    task.next_run_at = task.run_at if task.trigger_type == "once" else (datetime.now(IST).replace(tzinfo=None) + timedelta(minutes=task.cadence_minutes))
     db.add(task)
     db.commit()
     return {"project_id": pid, "task_id": task.id, "status": "created"}
@@ -4125,10 +4126,10 @@ def update_scheduled_task(
         row.status = body.status
     if body.run_at is not None:
         row.run_at = datetime.fromisoformat(body.run_at.replace("Z", "+00:00")).replace(tzinfo=None) if body.run_at else None
-    row.next_run_at = row.run_at if row.trigger_type == "once" else (datetime.utcnow() + timedelta(minutes=row.cadence_minutes))
+    row.next_run_at = row.run_at if row.trigger_type == "once" else (datetime.now(IST).replace(tzinfo=None) + timedelta(minutes=row.cadence_minutes))
     if row.status != "active":
         row.next_run_at = None
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"project_id": pid, "task_id": task_id, "status": "updated"}
 
@@ -4146,7 +4147,7 @@ def pause_scheduled_task(
         raise HTTPException(status_code=404, detail="Task not found")
     row.status = "paused"
     row.next_run_at = None
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"project_id": pid, "task_id": task_id, "status": "paused"}
 
@@ -4163,8 +4164,8 @@ def resume_scheduled_task(
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")
     row.status = "active"
-    row.next_run_at = row.run_at if row.trigger_type == "once" else (datetime.utcnow() + timedelta(minutes=row.cadence_minutes))
-    row.updated_at = datetime.utcnow()
+    row.next_run_at = row.run_at if row.trigger_type == "once" else (datetime.now(IST).replace(tzinfo=None) + timedelta(minutes=row.cadence_minutes))
+    row.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"project_id": pid, "task_id": task_id, "status": "active"}
 
@@ -4210,9 +4211,9 @@ def run_scheduled_task_now(
             message="Run-now created and awaiting approval",
         )
     )
-    row.last_run_at = datetime.utcnow()
+    row.last_run_at = datetime.now(IST).replace(tzinfo=None)
     row.last_run_status = "queued"
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"project_id": pid, "task_id": task_id, "run_id": run_id, "status": "plan_ready"}
 

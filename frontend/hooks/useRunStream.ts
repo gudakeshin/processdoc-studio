@@ -29,8 +29,12 @@ export function useRunStream(pid: string, rid: string) {
   const [pollMode, setPollMode] = useState(false);
   const [parsedEvents, setParsedEvents] = useState<ParsedRunEvent[]>([]);
   const lastEventIdRef = useRef(0);
+  const seenEventIdsRef = useRef<Set<number>>(new Set()); // M6: dedup SSE + poll events
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortRef = useRef<AbortController | null>(null); // H7: cancel in-flight fetches
+  const retryCountRef = useRef(0);
+  const connectRef = useRef<(() => void) | null>(null); // H1: allow retryLive to reconnect
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -39,94 +43,151 @@ export function useRunStream(pid: string, rid: string) {
     }
   }, []);
 
+  // H7: abort any in-flight fetch and issue a new controller
+  const resetAbort = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    return abortRef.current.signal;
+  }, []);
+
   const hydrate = useCallback(async () => {
-    const res = await api(`/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/events?after_event_id=0`);
-    const { data: parsedJson, rawText } = await parseResponseBodyLoose(res);
-    if (!res.ok) {
-      const errPayload = parsedJson && typeof parsedJson === "object" ? parsedJson : {};
-      setError(extractApiErrorMessage(errPayload, rawText || "Failed to load run events"));
-      return;
-    }
-    if (parsedJson === null || typeof parsedJson !== "object") {
-      setError(
-        rawText
-          ? humanizePlainUpstreamError(rawText.slice(0, 300))
-          : "Run events response was not valid JSON",
+    const signal = resetAbort();
+    try {
+      const res = await api(
+        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/events?after_event_id=0`,
+        { signal }
       );
-      return;
+      if (signal.aborted) return;
+      const { data: parsedJson, rawText } = await parseResponseBodyLoose(res);
+      if (signal.aborted) return;
+      if (!res.ok) {
+        const errPayload = parsedJson && typeof parsedJson === "object" ? parsedJson : {};
+        setError(extractApiErrorMessage(errPayload, rawText || "Failed to load run events"));
+        return;
+      }
+      if (parsedJson === null || typeof parsedJson !== "object") {
+        setError(
+          rawText
+            ? humanizePlainUpstreamError(rawText.slice(0, 300))
+            : "Run events response was not valid JSON",
+        );
+        return;
+      }
+      const validated = runEventsResponseSchema.safeParse(parsedJson);
+      if (!validated.success) {
+        setError("Run events payload validation failed");
+        return;
+      }
+      setError(null);
+      const data = validated.data as unknown as EventsResponse;
+      const seen = new Set<number>();
+      const lines: string[] = [];
+      const parsed: ParsedRunEvent[] = [];
+      let max = 0;
+      for (const it of data.items) {
+        seen.add(it.id);
+        max = Math.max(max, it.id);
+        const line = eventItemToLine(it);
+        lines.push(line);
+        const p = parseEventLine(line);
+        if (p) parsed.push(p);
+      }
+      seenEventIdsRef.current = seen;
+      lastEventIdRef.current = max;
+      setStatus(data.status);
+      setEvents(lines);
+      setParsedEvents(parsed);
+      if (TERMINAL_RUN_STATES.has(data.status)) {
+        stopPolling();
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
+      setError("Failed to load run events");
     }
-    const validated = runEventsResponseSchema.safeParse(parsedJson);
-    if (!validated.success) {
-      setError("Run events payload validation failed");
-      return;
-    }
-    setError(null);
-    const data = validated.data as unknown as EventsResponse;
-    const lines = data.items.map(eventItemToLine);
-    const parsed = lines.map((line) => parseEventLine(line)).filter((x): x is ParsedRunEvent => Boolean(x));
-    const max = data.items.reduce((acc, it) => Math.max(acc, it.id), 0);
-    lastEventIdRef.current = max;
-    setStatus(data.status);
-    setEvents(lines);
-    setParsedEvents(parsed);
-    if (TERMINAL_RUN_STATES.has(data.status)) {
-      stopPolling();
-    }
-  }, [api, pid, rid, stopPolling]);
+  }, [api, pid, rid, stopPolling, resetAbort]);
 
   const pollOnce = useCallback(async () => {
-    const res = await api(
-      `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/events?after_event_id=${lastEventIdRef.current}`
-    );
-    const { data: parsedJson, rawText } = await parseResponseBodyLoose(res);
-    if (!res.ok) {
-      const errPayload = parsedJson && typeof parsedJson === "object" ? parsedJson : {};
-      setError(extractApiErrorMessage(errPayload, rawText || "Failed to poll run events"));
-      return;
-    }
-    if (parsedJson === null || typeof parsedJson !== "object") {
-      setError(
-        rawText
-          ? humanizePlainUpstreamError(rawText.slice(0, 300))
-          : "Run events response was not valid JSON",
+    if (!abortRef.current || abortRef.current.signal.aborted) return;
+    const signal = abortRef.current.signal;
+    try {
+      const res = await api(
+        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/events?after_event_id=${lastEventIdRef.current}`,
+        { signal }
       );
-      return;
-    }
-    const validated = runEventsResponseSchema.safeParse(parsedJson);
-    if (!validated.success) {
-      setError("Run events payload validation failed");
-      return;
-    }
-    setError(null);
-    const data = validated.data as unknown as EventsResponse;
-    const lines = data.items.map(eventItemToLine);
-    const parsed = lines.map((line) => parseEventLine(line)).filter((x): x is ParsedRunEvent => Boolean(x));
-    if (data.items.length) {
-      lastEventIdRef.current = Math.max(...data.items.map((x) => x.id), lastEventIdRef.current);
-      setEvents((prev) => [...prev, ...lines]);
-      setParsedEvents((prev) => [...prev, ...parsed]);
-    }
-    setStatus(data.status);
-    if (TERMINAL_RUN_STATES.has(data.status)) {
-      stopPolling();
+      if (signal.aborted) return;
+      const { data: parsedJson, rawText } = await parseResponseBodyLoose(res);
+      if (signal.aborted) return;
+      if (!res.ok) {
+        const errPayload = parsedJson && typeof parsedJson === "object" ? parsedJson : {};
+        setError(extractApiErrorMessage(errPayload, rawText || "Failed to poll run events"));
+        return;
+      }
+      if (parsedJson === null || typeof parsedJson !== "object") {
+        setError(
+          rawText
+            ? humanizePlainUpstreamError(rawText.slice(0, 300))
+            : "Run events response was not valid JSON",
+        );
+        return;
+      }
+      const validated = runEventsResponseSchema.safeParse(parsedJson);
+      if (!validated.success) {
+        setError("Run events payload validation failed");
+        return;
+      }
+      setError(null);
+      const data = validated.data as unknown as EventsResponse;
+      // M6: deduplicate against events already received via SSE
+      const newItems = data.items.filter((it) => !seenEventIdsRef.current.has(it.id));
+      if (newItems.length) {
+        const max = Math.max(...newItems.map((x) => x.id), lastEventIdRef.current);
+        lastEventIdRef.current = max;
+        for (const it of newItems) seenEventIdsRef.current.add(it.id);
+        const lines = newItems.map(eventItemToLine);
+        const parsed = lines.map((line) => parseEventLine(line)).filter((x): x is ParsedRunEvent => Boolean(x));
+        setEvents((prev) => [...prev, ...lines]);
+        setParsedEvents((prev) => [...prev, ...parsed]);
+      }
+      setStatus(data.status);
+      if (TERMINAL_RUN_STATES.has(data.status)) {
+        stopPolling();
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return;
     }
   }, [api, pid, rid, stopPolling]);
 
   useEffect(() => {
     if (!token || !pid || !rid) return;
-    let retryCount = 0;
+
+    // Reset dedup state for new run
+    seenEventIdsRef.current = new Set();
+    lastEventIdRef.current = 0;
+    retryCountRef.current = 0;
+
+    // Initialise an AbortController for this effect instance
+    abortRef.current = new AbortController();
+
     const hydrateTimer = window.setTimeout(() => {
       void hydrate();
     }, 0);
 
     const connect = () => {
+      esRef.current?.close();
       const url = `${getApiBase()}/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/stream?token=${encodeURIComponent(token)}&after_event_id=${lastEventIdRef.current}`;
       const es = new EventSource(url);
       esRef.current = es;
+
       const on = (name: string) =>
         es.addEventListener(name, (event) => {
           const ev = event as MessageEvent;
-          if (ev.lastEventId) lastEventIdRef.current = Math.max(lastEventIdRef.current, Number(ev.lastEventId) || 0);
+          const numId = Number(ev.lastEventId) || 0;
+          if (ev.lastEventId) {
+            // M6: skip events already delivered via polling fallback
+            if (seenEventIdsRef.current.has(numId)) return;
+            seenEventIdsRef.current.add(numId);
+            lastEventIdRef.current = Math.max(lastEventIdRef.current, numId);
+          }
           const line = `${name}: ${ev.data}`;
           setEvents((prev) => [...prev, line]);
           const parsed = parseEventLine(line);
@@ -138,6 +199,7 @@ export function useRunStream(pid: string, rid: string) {
             setStatus(name);
           }
         });
+
       [
         "message.start",
         "message.token",
@@ -186,32 +248,59 @@ export function useRunStream(pid: string, rid: string) {
       ].forEach(on);
 
       es.onopen = () => {
-        retryCount = 0;
+        retryCountRef.current = 0;
         setError(null);
+        // H1: if we reconnected successfully after poll mode, exit poll mode
+        if (pollRef.current) {
+          stopPolling();
+          setPollMode(false);
+        }
       };
       es.onerror = () => {
         es.close();
-        retryCount += 1;
-        if (retryCount >= 3) {
+        retryCountRef.current += 1;
+        if (retryCountRef.current >= 3) {
           setPollMode(true);
           setError(
             "Live stream reconnecting failed; using periodic refresh for run updates (execution may still proceed).",
           );
           void pollOnce();
-          pollRef.current = setInterval(() => void pollOnce(), 1500);
+          if (!pollRef.current) {
+            pollRef.current = setInterval(() => void pollOnce(), 1500);
+          }
+          // H1: schedule SSE retry after 60 s so poll mode doesn't persist indefinitely
+          setTimeout(() => {
+            if (pollRef.current) {
+              retryCountRef.current = 0;
+              connect();
+            }
+          }, 60_000);
           return;
         }
-        setTimeout(connect, 1000 * retryCount);
+        setTimeout(connect, 1000 * retryCountRef.current);
       };
     };
+
+    // Expose connect so retryLive can call it
+    connectRef.current = connect;
     connect();
 
     return () => {
       window.clearTimeout(hydrateTimer);
       esRef.current?.close();
       stopPolling();
+      abortRef.current?.abort(); // H7: cancel any pending fetch
     };
-  }, [token, pid, rid, hydrate, pollOnce, stopPolling]);
+  }, [token, pid, rid, hydrate, pollOnce, stopPolling, resetAbort]);
 
-  return { events, parsedEvents, status, error, pollMode, retryLive: hydrate };
+  // H1: retryLive restarts SSE (not just a one-shot hydrate)
+  const retryLive = useCallback(() => {
+    stopPolling();
+    setPollMode(false);
+    setError(null);
+    retryCountRef.current = 0;
+    connectRef.current?.();
+  }, [stopPolling]);
+
+  return { events, parsedEvents, status, error, pollMode, retryLive };
 }

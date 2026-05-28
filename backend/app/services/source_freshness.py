@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from app.core.tz import IST
 import json
 
 from app.db.models import ConversationMessage
@@ -37,9 +38,8 @@ def _coerce_source_type(message: ConversationMessage) -> str:
     return _KIND_TO_SOURCE_TYPE.get(kind, "chat_turn")
 
 
-def _utc_now_naive() -> datetime:
-    # DB rows are currently stored as naive UTC datetimes.
-    return datetime.utcnow()
+def _ist_now_naive() -> datetime:
+    return datetime.now(IST).replace(tzinfo=None)
 
 
 def freshness_for_message(
@@ -58,7 +58,7 @@ def freshness_for_message(
             prefix="",
         )
 
-    now_dt = now or _utc_now_naive()
+    now_dt = now or _ist_now_naive()
     ttl = max(60, int(ttl_seconds))
     freshness_at = getattr(message, "source_freshness_at", None)
     if not isinstance(freshness_at, datetime):

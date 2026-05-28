@@ -11,7 +11,8 @@ Implements:
 
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class PageAnalytics:
             user_id: Optional user ID for behavior tracking
         """
         self.views[page_id] += 1
-        self.view_history[page_id].append(datetime.now(UTC).isoformat())
+        self.view_history[page_id].append(datetime.now(IST).isoformat())
 
         if user_id:
             self.user_pages[user_id].add(page_id)

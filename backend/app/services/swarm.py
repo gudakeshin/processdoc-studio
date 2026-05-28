@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -173,7 +174,7 @@ def ensure_swarm_team(session: Session, *, project_id: str, run_id: str) -> Swar
         project_id=project_id,
         name="default",
         status="active",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(IST).replace(tzinfo=None),
     )
     session.add(team)
     session.flush()
@@ -185,7 +186,7 @@ def ensure_swarm_team(session: Session, *, project_id: str, run_id: str) -> Swar
                 teammate_id=slug,
                 role="worker" if i else "lead",
                 status="idle",
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(IST).replace(tzinfo=None),
             )
         )
     session.flush()
@@ -223,7 +224,7 @@ def send_swarm_message(
         to_teammate=to_teammate,
         body=body[:16000],
         correlation_id=correlation_id,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(IST).replace(tzinfo=None),
         read_at=None,
     )
     session.add(msg)

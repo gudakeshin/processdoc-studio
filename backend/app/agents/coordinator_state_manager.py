@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -198,7 +199,7 @@ class CoordinatorStateManager:
                 "depends_on": depends_map.get(task_id, []),
                 "phase": milestone.get("phase", "unknown"),
                 "output_type": milestone.get("output_type"),
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
                 "attempts": 0,
                 "error": None,
             }
@@ -302,7 +303,7 @@ class CoordinatorStateManager:
             "tasks": self.task_board,
             "ready_tasks": self.get_ready_task_ids(),
             "replanning_count": self.replanning_count,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(IST).isoformat(),
         }
 
     def as_todo_snapshot(self) -> list[dict[str, str]]:
@@ -361,7 +362,7 @@ class CoordinatorStateManager:
             "teammate_rotation": self.teammate_rotation,
             "failure_context": self.failure_context,
             "replanning_count": self.replanning_count,
-            "checkpoint_timestamp": datetime.utcnow().isoformat(),
+            "checkpoint_timestamp": datetime.now(IST).isoformat(),
         }
 
     @classmethod

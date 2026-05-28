@@ -1,6 +1,7 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from app.core.tz import IST
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -149,20 +150,41 @@ def create_memory_item(
     db: Session = Depends(get_db),
 ) -> dict:
     require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    mem_type = (body.memory_type or "fact").strip()[:32]
+    key = (body.key or "").strip()[:128]
+    value = (body.value or "").strip()[:5000]
+    if not key or not value:
+        raise HTTPException(status_code=400, detail="key and value are required")
+    existing = db.scalar(
+        select(MemoryItem).where(
+            MemoryItem.project_id == project_id,
+            MemoryItem.memory_type == mem_type,
+            MemoryItem.key == key,
+        )
+    )
+    if existing:
+        existing.value = value
+        existing.confidence = (body.confidence or existing.confidence).strip()[:16]
+        existing.source = (body.source or existing.source).strip()[:64]
+        existing.consent_state = (body.consent_state or existing.consent_state).strip()[:16]
+        if body.principal_id is not None:
+            existing.principal_id = body.principal_id.strip()[:128] or None
+        existing.is_archived = bool(body.is_archived)
+        existing.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+        return {"project_id": project_id, "id": existing.id, "status": "updated"}
     item = MemoryItem(
         id=f"mem_{uuid.uuid4().hex[:10]}",
         project_id=project_id,
-        memory_type=(body.memory_type or "fact").strip()[:32],
-        key=(body.key or "").strip()[:128],
-        value=(body.value or "").strip()[:5000],
+        memory_type=mem_type,
+        key=key,
+        value=value,
         confidence=(body.confidence or "medium").strip()[:16],
         source=(body.source or "chat").strip()[:64],
         consent_state=(body.consent_state or "allowed").strip()[:16],
         principal_id=(body.principal_id.strip()[:128] if body.principal_id else None),
         is_archived=bool(body.is_archived),
     )
-    if not item.key or not item.value:
-        raise HTTPException(status_code=400, detail="key and value are required")
     db.add(item)
     db.commit()
     return {"project_id": project_id, "id": item.id, "status": "created"}
@@ -181,26 +203,55 @@ def create_memory_items_batch(
     if not body.items:
         raise HTTPException(status_code=400, detail="items must not be empty")
     created: list[str] = []
+    updated: list[str] = []
     for entry in body.items:
-        item = MemoryItem(
-            id=f"mem_{uuid.uuid4().hex[:10]}",
-            project_id=project_id,
-            memory_type=(entry.memory_type or "fact").strip()[:32],
-            key=(entry.key or "").strip()[:128],
-            value=(entry.value or "").strip()[:5000],
-            confidence=(entry.confidence or "medium").strip()[:16],
-            source=(entry.source or "batch").strip()[:64],
-            consent_state=(entry.consent_state or "allowed").strip()[:16],
-            principal_id=(entry.principal_id.strip()[:128] if entry.principal_id else None),
-            is_archived=False,
-        )
-        if not item.key or not item.value:
+        mem_type = (entry.memory_type or "fact").strip()[:32]
+        key = (entry.key or "").strip()[:128]
+        value = (entry.value or "").strip()[:5000]
+        if not key or not value:
             raise HTTPException(status_code=400, detail="each item requires key and value")
-        db.add(item)
-        created.append(item.id)
+        existing = db.scalar(
+            select(MemoryItem).where(
+                MemoryItem.project_id == project_id,
+                MemoryItem.memory_type == mem_type,
+                MemoryItem.key == key,
+            )
+        )
+        if existing:
+            existing.value = value
+            existing.confidence = (entry.confidence or existing.confidence).strip()[:16]
+            existing.source = (entry.source or existing.source).strip()[:64]
+            existing.consent_state = (entry.consent_state or existing.consent_state).strip()[:16]
+            if entry.principal_id is not None:
+                existing.principal_id = entry.principal_id.strip()[:128] or None
+            existing.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            updated.append(existing.id)
+        else:
+            item = MemoryItem(
+                id=f"mem_{uuid.uuid4().hex[:10]}",
+                project_id=project_id,
+                memory_type=mem_type,
+                key=key,
+                value=value,
+                confidence=(entry.confidence or "medium").strip()[:16],
+                source=(entry.source or "batch").strip()[:64],
+                consent_state=(entry.consent_state or "allowed").strip()[:16],
+                principal_id=(entry.principal_id.strip()[:128] if entry.principal_id else None),
+                is_archived=False,
+            )
+            db.add(item)
+            created.append(item.id)
     db.commit()
+    all_ids = created + updated
     increment("memory_batch_create_total", len(created))
-    return {"project_id": project_id, "ids": created, "count": len(created), "status": "created"}
+    return {
+        "project_id": project_id,
+        "ids": all_ids,
+        "count": len(all_ids),
+        "created": len(created),
+        "updated": len(updated),
+        "status": "ok",
+    }
 
 
 @router.patch("/{project_id}/{item_id}")
@@ -224,7 +275,7 @@ def update_memory_item(
     if body.principal_id is not None:
         row.principal_id = body.principal_id.strip()[:128] or None
     row.is_archived = bool(body.is_archived)
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"project_id": project_id, "id": item_id, "status": "updated"}
 

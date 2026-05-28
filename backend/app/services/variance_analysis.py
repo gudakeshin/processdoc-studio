@@ -1,13 +1,14 @@
 """Variance analysis service for budget vs actual analysis and drill-down."""
 
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from enum import Enum
 from typing import Any
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 class VarianceSeverity(Enum):

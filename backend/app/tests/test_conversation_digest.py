@@ -1,7 +1,7 @@
 """Conversation digest for HITL continuity."""
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from app.db.models import Conversation, ConversationMessage, Project, User
 from app.db.session import SessionLocal, init_db
@@ -132,7 +132,7 @@ def test_build_conversation_digest_excludes_stale_sources(monkeypatch: pytest.Mo
         session.add(User(id=uid, email="digest4@test.local", hashed_password="x"))
         session.add(Project(id=pid, name="P4", created_by=uid))
         session.add(Conversation(id=cid, project_id=pid, user_id=uid))
-        stale_at = datetime.utcnow() - timedelta(hours=2)
+        stale_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=2)
         session.add(
             ConversationMessage(
                 conversation_id=cid,

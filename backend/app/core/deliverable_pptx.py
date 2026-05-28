@@ -4,7 +4,8 @@ import contextlib
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -418,7 +419,7 @@ class PPTXDeliverable(IDeliverable):
             cp.keywords = keywords[:255]
             cp.last_modified_by = "ProcessDoc Studio"
             if getattr(cp, "created", None) is None:
-                cp.created = datetime.now(UTC)
+                cp.created = datetime.now(IST)
         except Exception as exc:
             logger.debug("Core properties skipped: %s", exc)
 

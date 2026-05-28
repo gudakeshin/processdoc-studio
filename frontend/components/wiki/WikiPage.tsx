@@ -57,49 +57,51 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
   const [relatedLoading, setRelatedLoading] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    const ac = new AbortController();
     const fetchPage = async () => {
       try {
         setLoading(true);
         setError(null);
         const params = new URLSearchParams();
         if (projectId) params.append('project_id', projectId);
-        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}?${params}`);
+        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}?${params}`, { signal: ac.signal });
         if (!res.ok) throw new Error(res.status === 404 ? 'Page not found' : `Failed to load page (${res.status})`);
         const data = await res.json();
-        if (!cancelled) setPage(data.page);
+        setPage(data.page);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Unknown error');
+        if (e instanceof Error && e.name === 'AbortError') return;
+        setError(e instanceof Error ? e.message : 'Unknown error');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!ac.signal.aborted) setLoading(false);
       }
     };
     fetchPage();
-    return () => { cancelled = true; };
+    return () => { ac.abort(); };
   }, [wikiType, pageId, projectId, api]);
 
   // Fetch related pages when the "related" tab is opened
   useEffect(() => {
     if (activeTab !== 'related' || !pageId || relatedPages !== null) return;
 
-    let cancelled = false;
+    const ac = new AbortController();
     const fetchRelated = async () => {
       try {
         setRelatedLoading(true);
         const params = new URLSearchParams();
         if (projectId) params.append('project_id', projectId);
-        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}/related?${params}`);
+        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}/related?${params}`, { signal: ac.signal });
         if (!res.ok) throw new Error(`Failed to load related pages (${res.status})`);
         const data = await res.json();
-        if (!cancelled) setRelatedPages(data.related_pages || []);
+        setRelatedPages(data.related_pages || []);
       } catch (e) {
-        if (!cancelled) console.warn('Failed to load related pages:', e);
+        if (e instanceof Error && e.name === 'AbortError') return;
+        console.warn('Failed to load related pages:', e);
       } finally {
-        if (!cancelled) setRelatedLoading(false);
+        if (!ac.signal.aborted) setRelatedLoading(false);
       }
     };
     fetchRelated();
-    return () => { cancelled = true; };
+    return () => { ac.abort(); };
   }, [activeTab, pageId, projectId, api, relatedPages]);
 
   if (loading) return (
@@ -254,16 +256,14 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
                 const items = relatedPages.filter(p => p.source === source);
                 if (items.length === 0) return null;
 
-                const sourceLabel = {
-                  relationship: '🔗 Typed Relationships',
-                  community: '🏘️ Community Peers',
-                  synthesis: '✨ Synthesis Pages',
-                }[source as keyof typeof sourceLabel] || source;
+                const sourceEmoji = { relationship: '🔗', community: '🏘️', synthesis: '✨' }[source as 'relationship' | 'community' | 'synthesis'] ?? '';
+                const sourceText = { relationship: 'Typed Relationships', community: 'Community Peers', synthesis: 'Synthesis Pages' }[source as 'relationship' | 'community' | 'synthesis'] ?? source;
+                const sourceLabel = sourceText;
 
                 return (
                   <div key={source}>
                     <p className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide mb-2">
-                      {sourceLabel}
+                      <span aria-hidden="true">{sourceEmoji} </span>{sourceLabel}
                     </p>
                     <div className="space-y-1">
                       {items.map((rel) => (

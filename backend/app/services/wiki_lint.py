@@ -7,7 +7,8 @@ contradictions, coverage gaps, staleness, and overall wiki QA evaluation.
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 
 try:
     import yaml
@@ -474,7 +475,7 @@ def _check_staleness(pages: list) -> list:
             return []
 
         issues = []
-        now = datetime.now(UTC)
+        now = datetime.now(IST)
         staleness_threshold = now - timedelta(days=30)
 
         for page in pages:
@@ -810,7 +811,7 @@ def _check_source_freshness(wiki_type: str, project_id: str | None) -> list:
                     last_refreshed_dt = datetime.fromisoformat(
                         last_refreshed.replace("Z", "+00:00")
                     )
-                    now = datetime.now(UTC)
+                    now = datetime.now(IST)
 
                     # If page sources track metadata, check for changes
                     source_metadata_file = wiki_dir / ".meta" / f"{page_id}_sources.json"
@@ -865,7 +866,7 @@ def _get_temporal_metrics(wiki_type: str, project_id: str | None) -> dict:
         if not wiki_dir.exists():
             return {}
 
-        now = datetime.now(UTC)
+        now = datetime.now(IST)
         metrics = {
             "total_pages": 0,
             "average_age_days": 0,

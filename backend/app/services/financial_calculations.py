@@ -1,6 +1,7 @@
 """Financial calculation engine for NPV, IRR, DCF, and sensitivity analysis."""
 
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from scipy import optimize
@@ -8,7 +9,7 @@ from scipy import optimize
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def calculate_npv(cash_flows: list[float], discount_rate: float) -> dict[str, Any]:

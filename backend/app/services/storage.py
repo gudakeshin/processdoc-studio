@@ -2,7 +2,8 @@ import json
 import os
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +103,7 @@ def create_run(project_id: str, output_types: list[str]) -> dict:
         "project_id": project_id,
         "status": "plan_ready",
         "output_types": output_types,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(IST).isoformat(),
     }
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest

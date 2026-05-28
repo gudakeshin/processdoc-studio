@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -206,7 +207,7 @@ def save_agreed_slide(
     key = f"slide_{slide_num}"
     # strip display-only fields before persisting so they don't leak into the render payload
     _render_fields = {k: v for k, v in slide.items() if k not in ("slide_type_label", "sheldon_view")}
-    value = json.dumps({**_render_fields, "agreed": True, "agreed_at": datetime.utcnow().isoformat()})
+    value = json.dumps({**_render_fields, "agreed": True, "agreed_at": datetime.now(IST).isoformat()})
 
     existing = (
         db.query(MemoryItem)
@@ -220,7 +221,7 @@ def save_agreed_slide(
     )
     if existing:
         existing.value = value
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = datetime.now(IST).replace(tzinfo=None)
     else:
         db.add(
             MemoryItem(

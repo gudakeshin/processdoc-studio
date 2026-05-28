@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -10,7 +11,7 @@ HIGH_RISK_TYPES = {"type_mismatch", "formula_changed", "structural_shift"}
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:

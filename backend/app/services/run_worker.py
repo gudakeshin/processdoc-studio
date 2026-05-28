@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta
+from app.core.tz import IST
 from time import perf_counter
 from typing import Any
 
@@ -203,7 +204,7 @@ def _persist_pptx_visual_critic_signals(run_dir: Any, visual_qa_report: dict[str
         "summary": str(pptx.get("summary") or "").strip(),
         "per_slide_findings": pptx.get("per_slide_findings") if isinstance(pptx.get("per_slide_findings"), list) else [],
         "remediation_hints": pptx.get("remediation_hints") if isinstance(pptx.get("remediation_hints"), list) else [],
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(IST).isoformat() + "Z",
     }
     path = run_dir / "pptx_render_signals.json"
     try:
@@ -336,11 +337,17 @@ def _project_retention_days(project_id: str) -> int:
     return default_days
 
 
+# Track last prune time per project to avoid a DELETE on every single event write.
+# Pruning is idempotent, so running it once per hour per project is sufficient.
+_prune_last_run: dict[str, float] = {}
+_PRUNE_MIN_INTERVAL_S = 3600
+
+
 def _prune_old_memory_events(session: Session, *, project_id: str) -> None:
     retention_days = _project_retention_days(project_id)
     if retention_days <= 0:
         return
-    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    cutoff = datetime.now(IST).replace(tzinfo=None) - timedelta(days=retention_days)
     result = session.execute(
         delete(MemoryEvent).where(
             MemoryEvent.project_id == project_id,
@@ -387,7 +394,10 @@ def append_memory_event(
     )
     session.add(ev)
     session.flush()
-    _prune_old_memory_events(session, project_id=project_id)
+    now = time.time()
+    if now - _prune_last_run.get(project_id, 0.0) >= _PRUNE_MIN_INTERVAL_S:
+        _prune_old_memory_events(session, project_id=project_id)
+        _prune_last_run[project_id] = now
     increment("memory_events_written_total")
     return ev
 
@@ -431,7 +441,7 @@ def _bump_learning_runs_completed(session: Session, user_id: str, project_id: st
     ls["runs_completed"] = min(n, 1_000_000)
     base["learning_signals"] = ls
     payload = json.dumps(base, sort_keys=True)
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     if row is None:
         session.add(
             UserProjectPreference(

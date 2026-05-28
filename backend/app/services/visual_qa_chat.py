@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from sqlalchemy import select
@@ -131,5 +132,5 @@ def persist_visual_qa_assistant_message(
         metadata_json=json.dumps(meta),
     )
     db.add(msg)
-    conv.updated_at = datetime.utcnow()
+    conv.updated_at = datetime.now(IST).replace(tzinfo=None)
     return True

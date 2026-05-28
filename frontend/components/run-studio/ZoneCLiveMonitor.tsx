@@ -468,6 +468,14 @@ export function ZoneCLiveMonitor({
               tabIndex={activeTab === tab.id ? 0 : -1}
               className={`min-h-11 rounded px-3 py-2 text-xs ${activeTab === tab.id ? "bg-[var(--primary-900)] text-white" : "border border-[var(--surface-border)] bg-[var(--surface-muted)] text-[var(--text-muted)]"}`}
               onClick={() => setActiveTab(tab.id)}
+              onKeyDown={(e) => {
+                const ids = tabItems.map((t) => t.id);
+                const idx = ids.indexOf(tab.id);
+                if (e.key === "ArrowRight") { e.preventDefault(); setActiveTab(ids[(idx + 1) % ids.length]); }
+                else if (e.key === "ArrowLeft") { e.preventDefault(); setActiveTab(ids[(idx - 1 + ids.length) % ids.length]); }
+                else if (e.key === "Home") { e.preventDefault(); setActiveTab(ids[0]); }
+                else if (e.key === "End") { e.preventDefault(); setActiveTab(ids[ids.length - 1]); }
+              }}
             >
               {tab.label} ({tab.count})
             </button>

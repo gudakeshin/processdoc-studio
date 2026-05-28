@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 
 import redis
@@ -1020,7 +1021,7 @@ def approve_run(
         raise HTTPException(status_code=409, detail="Run is not awaiting approval")
     run.status = "approved"
     run.approved_by = user.id
-    run.approved_at = datetime.utcnow()
+    run.approved_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     append_run_event(
         db,
@@ -1245,7 +1246,7 @@ def apply_run_task_action(
         if task.status in {"completed", "skipped"}:
             raise HTTPException(status_code=409, detail="Task is already terminal")
         task.status = "skipped"
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now(IST).replace(tzinfo=None)
         append_run_event(db, run_id, "task.skipped", {"task_id": task.id, "title": task.title, "phase": task.phase, "reason": reason})
     elif action == "approve":
         task.requires_approval = False
@@ -1257,7 +1258,7 @@ def apply_run_task_action(
         append_run_event(db, run_id, "task.intervention_applied", {"action": "modify", **payload})
     else:
         raise HTTPException(status_code=400, detail="Unsupported action")
-    task.updated_at = datetime.utcnow()
+    task.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"run_id": run_id, "project_id": project_id, "task": serialize_run_task(task)}
 
@@ -1688,7 +1689,7 @@ def regenerate_run_slide(
             "element_path": element_path or None,
             "instruction": instruction[:1000],
             "requested_by": str(user.id),
-            "requested_at": datetime.utcnow().isoformat() + "Z",
+            "requested_at": datetime.now(IST).isoformat() + "Z",
         }
     )
     plan_payload["pptx_inline_comments"] = inline_comments[-200:]

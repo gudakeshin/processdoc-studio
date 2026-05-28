@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+_LOG = logging.getLogger(__name__)
 
 from app.agents.agent_types import AgentContext, AgentOutput
 from app.agents.prompt_hygiene import (
@@ -538,6 +541,41 @@ def _build_system_from_skill(
     )
 
 
+def _recover_latest_draft(project_id: str, run_id: str, agent_id: str) -> str | None:
+    """
+    Fallback: return the content of the most recently modified draft saved by
+    ``save_draft`` for this agent/run combination.  Used when the tool loop's
+    final text is chatter rather than a document.
+    """
+    try:
+        from app.services.storage import workspace_path
+
+        base = workspace_path(project_id)
+        candidates: list[Any] = []
+        for draft_dir in [
+            base / "runs" / run_id / "drafts" if run_id else None,
+            base / "drafts",
+        ]:
+            if draft_dir is None or not draft_dir.is_dir():
+                continue
+            for f in draft_dir.glob(f"{agent_id}_*.md"):
+                candidates.append(f)
+            # Also accept drafts where the agent prefixed differently (model can
+            # supply its own agent_id to save_draft); pick any .md in the run drafts
+            # dir if nothing matched the exact prefix.
+            if not candidates and draft_dir == base / "runs" / run_id / "drafts":
+                candidates = list(draft_dir.glob("*.md"))
+        if not candidates:
+            return None
+        # Prefer the lexicographically last key so v2 > v1, final > v2, etc.
+        candidates.sort(key=lambda p: p.name)
+        latest = candidates[-1]
+        content = latest.read_text(encoding="utf-8").strip()
+        return content if content.lstrip().startswith("#") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _run_subagent_tool_loop_text(
     ctx: AgentContext,
     *,
@@ -600,6 +638,18 @@ def _run_subagent_tool_loop_text(
             max_rounds=max_rounds,  # None → global default from settings
         )
         text = (out.get("text") or "").strip()
+        # Guard: if the final text is not a document (doesn't start with a '#' heading),
+        # the agent finished with status chatter instead of content.  Fall back to the
+        # most recently saved draft so the deliverable is never corrupted by inner monologue.
+        if text and not text.lstrip().startswith("#"):
+            recovered = _recover_latest_draft(pid, str(ctx.run_id or ""), agent_id)
+            if recovered:
+                _LOG.warning(
+                    "subagent %r final text is not a document (starts: %r); "
+                    "recovering from latest draft",
+                    agent_id, text[:80],
+                )
+                text = recovered
         return text if text else None
     except Exception:  # noqa: BLE001
         return None
@@ -905,7 +955,12 @@ _TOOL_USAGE_POLICY = (
     "(document_builder / table_builder / diagram_builder / outline_validator) and fix issues.\n"
     "6. AFTER revision: call cross_reference_checker to verify roles and step names match the ProcessModel.\n"
     "7. Use format_table for tabular output rather than building rows manually.\n"
-    "8. Reserve web_search for external standards not in the project context."
+    "8. Reserve web_search for external standards not in the project context.\n"
+    "9. FINAL STEP (mandatory): after all tool calls are complete, output the full final document "
+    "as your last response text. Do NOT end with a status summary, validation report, or commentary — "
+    "your final message MUST be the complete document content starting with a '# ' heading. "
+    "The system captures your final text response as the deliverable; if you output anything other "
+    "than the document itself, the deliverable will be empty or corrupted."
 )
 
 

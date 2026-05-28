@@ -49,20 +49,20 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
         try:
             def _extract_zip():
                 import io
-                zf = zipfile.ZipFile(io.BytesIO(content))
                 text_parts: list[str] = []
-                for name in zf.namelist():
-                    if lower.endswith(".docx") and not name.startswith("word/"):
-                        continue
-                    if lower.endswith(".pptx") and not name.startswith("ppt/"):
-                        continue
-                    if not name.endswith(".xml"):
-                        continue
-                    raw = zf.read(name).decode("utf-8", errors="ignore")
-                    cleaned = re.sub(r"<[^>]+>", " ", raw)
-                    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-                    if cleaned:
-                        text_parts.append(cleaned)
+                with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                    for name in zf.namelist():
+                        if lower.endswith(".docx") and not name.startswith("word/"):
+                            continue
+                        if lower.endswith(".pptx") and not name.startswith("ppt/"):
+                            continue
+                        if not name.endswith(".xml"):
+                            continue
+                        raw = zf.read(name).decode("utf-8", errors="ignore")
+                        cleaned = re.sub(r"<[^>]+>", " ", raw)
+                        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+                        if cleaned:
+                            text_parts.append(cleaned)
                 return "\n".join(text_parts)
 
             text = await asyncio.wait_for(

@@ -1,7 +1,8 @@
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
@@ -152,7 +153,7 @@ def _emit_model_event(pid: str, mid: str, event_type: str, payload: dict[str, An
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 class ModelCreateRequest(BaseModel):
@@ -362,7 +363,7 @@ def _write_json(path: Path, payload: Any) -> None:
 def _snapshot_version(project_id: str, model_id: str, reason: str) -> dict[str, Any]:
     mdir = _model_dir(project_id, model_id)
     meta = _read_json(_meta_path(project_id, model_id), {})
-    version_id = f"{model_id}_v_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+    version_id = f"{model_id}_v_{datetime.now(IST).strftime('%Y%m%d_%H%M%S')}"
     payload = {
         "version_id": version_id,
         "created_at": _now_iso(),
@@ -788,7 +789,7 @@ def excel_export(
         # Save with timestamp
         export_dir = _model_dir(pid, mid) / "excel"
         export_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"export_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.xlsx"
+        fname = f"export_{datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.xlsx"
         out_path = export_dir / fname
 
         try:

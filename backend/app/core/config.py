@@ -388,9 +388,9 @@ class Settings(BaseSettings):
         secret_raw = (self.jwt_secret or "").strip()
         secret_lower = secret_raw.lower()
         bad = ("", "change-me", "changeme")
-        if secret_lower in bad or len(secret_raw) < 16:
+        if secret_lower in bad or len(secret_raw) < 32:
             raise ValueError(
-                "JWT_SECRET must be set to a strong secret (minimum 16 characters, not 'change-me'). "
+                "JWT_SECRET must be set to a strong secret (minimum 32 characters, not 'change-me'). "
                 "For local development run `make dev.secret` or: "
                 "python -c \"import secrets; print(secrets.token_urlsafe(32))\" and add JWT_SECRET to .env"
             )
@@ -448,6 +448,21 @@ def log_memory_config_warnings() -> None:
             "MEMORY_COMPACTION_V1_ENABLED is true but MEMORY_V2_RETRIEVAL_ENABLED is false: "
             "MemoryItem rows from the Memory page are not merged into assembled_context; "
             "memory events and project profile still apply."
+        )
+
+
+def log_wiki_config_warnings() -> None:
+    """Warn when LP wiki is writable by any authenticated user due to missing allowlist."""
+    import logging
+
+    log = logging.getLogger("processdoc.config")
+    raw = (getattr(settings, "wiki_lp_admin_emails", None) or "").strip()
+    env = (getattr(settings, "processdoc_env", "development") or "development").strip().lower()
+    if not raw and env == "development":
+        log.warning(
+            "WIKI_LP_ADMIN_EMAILS is not configured: any authenticated user can mutate the "
+            "shared leading-practice wiki (development mode). Set WIKI_LP_ADMIN_EMAILS or "
+            "PROCESSDOC_ENV != development before deploying to staging/production."
         )
 
 

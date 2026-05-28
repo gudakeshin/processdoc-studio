@@ -4,7 +4,8 @@ import asyncio
 import json
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from app.core.config import settings
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _events_path(excel_dir: Path) -> Path:

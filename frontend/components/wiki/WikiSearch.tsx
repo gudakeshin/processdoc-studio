@@ -71,6 +71,7 @@ export const WikiSearch: React.FC<WikiSearchProps> = ({ wikiType, projectId }) =
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search wiki pages"
           placeholder="Search wiki pages…"
           className="flex-1 px-3 py-2 text-sm border border-[var(--surface-border)] bg-white text-[var(--text-default)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-blue)]"
         />

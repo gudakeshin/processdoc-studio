@@ -165,24 +165,24 @@ export function EnhancedConflictResolution({
       <div className="grid gap-3 sm:grid-cols-3">
         <Card className="bg-white">
           <div className="p-4">
-            <p className="text-xs text-[#4C4C4C]">Total Conflicts</p>
-            <p className="mt-2 text-2xl font-bold text-[#0F0B0B]">
+            <p className="text-xs text-[#4C4C4C]" id="stat-total-label">Total Conflicts</p>
+            <p className="mt-2 text-2xl font-bold text-[#0F0B0B]" aria-labelledby="stat-total-label">
               {filteredConflicts.length}
             </p>
           </div>
         </Card>
         <Card className="bg-white border-l-4 border-orange-500">
           <div className="p-4">
-            <p className="text-xs text-[#4C4C4C]">Unresolved</p>
-            <p className="mt-2 text-2xl font-bold text-orange-600">
+            <p className="text-xs text-[#4C4C4C]" id="stat-unresolved-label">Unresolved</p>
+            <p className="mt-2 text-2xl font-bold text-orange-600" aria-labelledby="stat-unresolved-label">
               {unresolvedCount}
             </p>
           </div>
         </Card>
         <Card className="bg-white border-l-4 border-[#86BC24]">
           <div className="p-4">
-            <p className="text-xs text-[#4C4C4C]">Resolved</p>
-            <p className="mt-2 text-2xl font-bold text-[#86BC24]">
+            <p className="text-xs text-[#4C4C4C]" id="stat-resolved-label">Resolved</p>
+            <p className="mt-2 text-2xl font-bold text-[#86BC24]" aria-labelledby="stat-resolved-label">
               {filteredConflicts.filter((c) => c.status === "resolved").length}
             </p>
           </div>

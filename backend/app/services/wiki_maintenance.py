@@ -14,7 +14,8 @@ that continuously refines and evolves the wiki without user intervention.
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +96,7 @@ class WikiMaintenanceManager:
         """Log maintenance action."""
         try:
             log_entry = {
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now(IST).isoformat(),
                 "action": action,
                 "details": details,
             }
@@ -131,7 +132,7 @@ class WikiMaintenanceManager:
         _LOG.info(f"Starting maintenance for {self.wiki_type} wiki")
 
         results = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(IST).isoformat(),
             "wiki_type": self.wiki_type,
             "project_id": self.project_id,
             "checks": {},
@@ -302,7 +303,7 @@ class WikiMaintenanceManager:
         """Detect pages that haven't been updated in a while."""
         try:
             stale_pages = []
-            now = datetime.now(UTC)
+            now = datetime.now(IST)
             stale_threshold = now - timedelta(days=self.config["stale_days"])
 
             for md_file in self.wiki_dir.glob("*.md"):
