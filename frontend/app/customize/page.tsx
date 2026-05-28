@@ -191,8 +191,9 @@ export default function CustomizePage() {
         <ProjectPicker value={projectId} onChange={setProjectId} />
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Domain filter</label>
+            <label htmlFor="customize-domain-filter" className="mb-1 block text-xs font-medium text-slate-600">Domain filter</label>
             <select
+              id="customize-domain-filter"
               className="rounded border border-slate-200 px-2 py-2 text-sm"
               value={domainFilter}
               onChange={(e) => setDomainFilter(e.target.value)}

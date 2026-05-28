@@ -1038,10 +1038,11 @@ export function ToolActivityFeed({
             <p className="mt-1 text-2xs text-[var(--text-muted)]">
               Press <kbd>Esc</kbd> to cancel, <kbd>Cmd/Ctrl+Enter</kbd> to queue.
             </p>
-            <label className="mt-3 block text-2xs font-medium text-[var(--text-default)]">
+            <label htmlFor="slide-instruction" className="mt-3 block text-2xs font-medium text-[var(--text-default)]">
               Instruction
             </label>
             <textarea
+              id="slide-instruction"
               value={slideInstruction}
               onChange={(e) => setSlideInstruction(e.target.value)}
               rows={5}

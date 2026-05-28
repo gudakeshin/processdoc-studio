@@ -384,8 +384,9 @@ export default function MemoryPage() {
         <ProjectPicker value={projectId} onChange={setProjectId} />
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Filter type</label>
+            <label htmlFor="mem-filter-type" className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Filter type</label>
             <select
+              id="mem-filter-type"
               className="input-select-base w-full min-h-11"
               value={filterType}
               onChange={(e) => setFilterType(e.target.value)}
@@ -400,8 +401,9 @@ export default function MemoryPage() {
             </select>
           </div>
           <div className="min-w-[140px] flex-1">
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Search key/value</label>
+            <label htmlFor="mem-search" className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Search key/value</label>
             <Input
+              id="mem-search"
               placeholder="Substring…"
               value={searchQ}
               onChange={(e) => setSearchQ(e.target.value)}

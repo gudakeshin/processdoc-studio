@@ -397,6 +397,7 @@ export function ZoneAInstruction({
     }));
     setOutlineDraft(normalized);
     setOutlineDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed to plan_hash only; outlineSlides excluded to avoid feedback loops
   }, [latestAssistantMeta?.plan_hash]);
 
   // Auto-scroll to bottom when messages change or thinking indicator appears
@@ -672,7 +673,10 @@ export function ZoneAInstruction({
                       }`}
                     >
                       <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-2xs font-semibold text-[var(--text-default)]">
+                        <p
+                          id={`decision-prompt-${prompt.id}-label`}
+                          className="text-2xs font-semibold text-[var(--text-default)]"
+                        >
                           {prompt.label}
                           {prompt.required ? (
                             <span className="ml-1 text-[var(--accent-blue)]">*</span>
@@ -688,6 +692,7 @@ export function ZoneAInstruction({
                         <p className="mt-0.5 text-2xs text-[var(--text-muted)]">{prompt.description}</p>
                       ) : null}
                       <select
+                        aria-labelledby={`decision-prompt-${prompt.id}-label`}
                         className="mt-1.5 w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-xs text-[var(--text-default)]"
                         value={selectedValue}
                         onChange={(e) => {
@@ -713,6 +718,7 @@ export function ZoneAInstruction({
                           <input
                             type="text"
                             value={customValue}
+                            aria-labelledby={`decision-prompt-${prompt.id}-label`}
                             placeholder={prompt.custom_placeholder || "Or type your own answer…"}
                             className="w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-2xs text-[var(--text-default)]"
                             onChange={(e) => {

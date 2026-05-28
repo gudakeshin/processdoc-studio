@@ -208,10 +208,11 @@ const CreateWikiPageModal: React.FC<CreateWikiPageModalProps> = ({
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="wiki-page-title" className="block text-sm font-medium text-gray-700 mb-2">
               Page Title
             </label>
             <input
+              id="wiki-page-title"
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -222,10 +223,11 @@ const CreateWikiPageModal: React.FC<CreateWikiPageModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label htmlFor="wiki-page-category" className="block text-sm font-medium text-gray-700 mb-2">
               Category
             </label>
             <select
+              id="wiki-page-category"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -239,9 +241,9 @@ const CreateWikiPageModal: React.FC<CreateWikiPageModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <p className="block text-sm font-medium text-gray-700 mb-2">
               Source Content Preview
-            </label>
+            </p>
             <div className="bg-gray-50 p-3 rounded text-sm text-gray-700 line-clamp-3">
               {defaultContent}
             </div>

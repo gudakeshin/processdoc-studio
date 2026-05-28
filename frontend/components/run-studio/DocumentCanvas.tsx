@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/apiClient";
 import { Button } from "@/components/ui/Button";
 
@@ -41,22 +41,23 @@ export function DocumentCanvas({
     if (available.length === 0) return;
     const first = available[0].key;
     if (!activeKey || !available.find((t) => t.key === activeKey)) {
-      setActiveKey(first);
+      setActiveKey(first); // eslint-disable-line react-hooks/set-state-in-effect
     }
   }, [available.map((a) => a.key).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load content when tab switches
+  // Load content when tab switches — setState inside effect is intentional here:
+  // we need to reset editor content synchronously with the selected tab/artifact.
   useEffect(() => {
     if (!activeKey) return;
     const content = (artifacts?.[activeKey] as string | undefined) ?? "";
-    setEdited(content);
+    setEdited(content); // eslint-disable-line react-hooks/set-state-in-effect
     setOriginal(content);
     setSaveState("idle");
   }, [activeKey, artifacts]);
 
   const isDirty = edited !== original;
 
-  const handleSave = useCallback(async () => {
+  const handleSave = async () => {
     if (!activeKey || !isDirty) return;
     // Capture the value being saved before the await so that edits typed
     // during the in-flight request are not silently discarded.
@@ -80,7 +81,7 @@ export function DocumentCanvas({
       setSaveState("error");
       setTimeout(() => setSaveState("idle"), 4000);
     }
-  }, [activeKey, edited, isDirty, projectId, runId]);
+  };
 
   if (available.length === 0) {
     return (

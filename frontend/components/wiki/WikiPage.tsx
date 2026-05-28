@@ -102,7 +102,7 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
     };
     fetchRelated();
     return () => { ac.abort(); };
-  }, [activeTab, pageId, projectId, api, relatedPages]);
+  }, [activeTab, pageId, projectId, api, relatedPages, wikiType]);
 
   if (loading) return (
     <div className="space-y-3">

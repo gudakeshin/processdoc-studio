@@ -334,7 +334,9 @@ export default function DrawioCollabEditor({
       </div>
 
       {/* diagrams.net iframe */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a frame lifecycle event, not a user interaction; needed to push initial XML once the editor boots */}
       <iframe
+        title="Diagram editor"
         key={canEdit ? "drawio-edit" : "drawio-readonly"}
         ref={iframeRef}
         src={iframeSrc}

@@ -100,14 +100,14 @@ export function DeckTabPanel({
       className={className || "flex h-full min-h-0 flex-col gap-3 md:flex-row"}
       role="region"
       aria-label="Deck preview"
-      tabIndex={0}
-      onKeyDown={handleKeyDown}
     >
       <div
         ref={railRef}
         role="listbox"
         aria-label="Slide thumbnails"
         aria-activedescendant={`deck-thumb-${focusIdx}`}
+        tabIndex={0}
+        onKeyDown={handleKeyDown}
         className="flex max-h-[480px] w-full shrink-0 flex-col gap-1 overflow-auto rounded border border-[var(--surface-border)] bg-white p-1 md:max-h-[560px] md:w-48"
       >
         {normalized.map((slide, idx) => {

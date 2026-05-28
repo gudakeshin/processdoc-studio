@@ -172,10 +172,11 @@ export function AuditLogViewer({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="block text-xs font-medium text-[#4C4C4C]">
+              <label htmlFor="audit-from-date" className="block text-xs font-medium text-[#4C4C4C]">
                 From Date
               </label>
               <Input
+                id="audit-from-date"
                 type="datetime-local"
                 value={dateRange.from}
                 onChange={(e) =>
@@ -185,10 +186,11 @@ export function AuditLogViewer({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-[#4C4C4C]">
+              <label htmlFor="audit-to-date" className="block text-xs font-medium text-[#4C4C4C]">
                 To Date
               </label>
               <Input
+                id="audit-to-date"
                 type="datetime-local"
                 value={dateRange.to}
                 onChange={(e) =>

@@ -87,10 +87,11 @@ export function FinancialReportGenerator({
           <Card className="bg-white">
             <div className="space-y-4 p-4">
               <div>
-                <label className="block text-sm font-medium text-[#0F0B0B]">
+                <label htmlFor="frg-report-type" className="block text-sm font-medium text-[#0F0B0B]">
                   Report Type
                 </label>
                 <Select
+                  id="frg-report-type"
                   value={state.reportType}
                   onChange={(e) =>
                     setState({ ...state, reportType: e.target.value as ReportType })
@@ -114,10 +115,11 @@ export function FinancialReportGenerator({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-[#0F0B0B]">
+                <label htmlFor="frg-title" className="block text-sm font-medium text-[#0F0B0B]">
                   Report Title
                 </label>
                 <Input
+                  id="frg-title"
                   type="text"
                   value={state.title}
                   onChange={(e) => setState({ ...state, title: e.target.value })}
@@ -127,10 +129,10 @@ export function FinancialReportGenerator({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-[#0F0B0B]">
+                <span id="frg-export-format-label" className="block text-sm font-medium text-[#0F0B0B]">
                   Export Format
-                </label>
-                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                </span>
+                <div role="group" aria-labelledby="frg-export-format-label" className="mt-2 grid gap-2 sm:grid-cols-3">
                   {(Object.entries(formatInfo) as [ReportFormat, typeof formatInfo.xlsx][]).map(
                     ([format, info]) => (
                       <button
@@ -184,10 +186,11 @@ export function FinancialReportGenerator({
               </div>
 
               <div className="border-t border-[#f0f0f0] pt-4">
-                <label className="block text-sm font-medium text-[#0F0B0B]">
+                <label htmlFor="frg-recipients" className="block text-sm font-medium text-[#0F0B0B]">
                   Email Recipients (Optional)
                 </label>
                 <Input
+                  id="frg-recipients"
                   type="text"
                   value={state.recipients}
                   onChange={(e) =>
