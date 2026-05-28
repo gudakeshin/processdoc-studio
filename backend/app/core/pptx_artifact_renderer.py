@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +18,11 @@ from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
 
+from app.core.config import settings
 from app.core.pptx_qa import validate_pptx_against_slides
 from app.core.evidence_validator import validate_pptx_slides_evidence
 
@@ -43,6 +48,26 @@ GUTTER = 0.15     # space between elements
 # Fill tokens that require white/inverse text for contrast
 _DARK_FILLS = {"dark", "mid_dark", "green", "dark_green"}
 
+_TOPIC_PALETTES: list[tuple[tuple[str, ...], dict[str, str]]] = [
+    (("finance", "cfo", "audit", "tax", "treasury", "accounting", "close", "record"),
+     {"primary_color": "#990011", "accent_light": "#FCF6F5", "accent_dark": "#7A0010"}),
+    (("technology", "digital", "data", "ai", "cloud", "cyber", "it ", "iot", "platform"),
+     {"primary_color": "#065A82", "accent_light": "#C6E2F0", "accent_dark": "#1C7293"}),
+    (("people", "hr", "talent", "culture", "workforce", "learning", "change"),
+     {"primary_color": "#6D2E46", "accent_light": "#ECE2D0", "accent_dark": "#A26769"}),
+    (("sustainability", "esg", "environment", "climate", "green", "carbon", "energy"),
+     {"primary_color": "#2C5F2D", "accent_light": "#D8EED8", "accent_dark": "#97BC62"}),
+]
+
+_SEMANTIC_STEP_ICON_MAP: list[tuple[tuple[str, ...], str]] = [
+    (("assess", "discover", "diagnose", "baseline"), "\u2699"),
+    (("design", "blueprint", "architect", "model"), "\u270D"),
+    (("implement", "build", "deploy", "execute"), "\u2692"),
+    (("test", "validate", "verify", "pilot"), "\u2713"),
+    (("stabilize", "optimize", "scale", "improve"), "\u2605"),
+    (("govern", "control", "monitor", "assure"), "\u2696"),
+]
+
 
 def _hex_to_rgb(raw: str) -> RGBColor:
     """Convert hex color to RGBColor."""
@@ -55,6 +80,30 @@ def _hex_to_rgb(raw: str) -> RGBColor:
     return RGBColor(0x86, 0xBC, 0x25)  # Deloitte green
 
 
+def _pick_topic_palette(process_name: str) -> dict[str, str]:
+    lowered = (process_name or "").lower()
+    best_overrides: dict[str, str] = {}
+    best_count = 0
+    for keywords, overrides in _TOPIC_PALETTES:
+        count = sum(
+            1 for kw in keywords if re.search(r"\b" + re.escape(kw.strip()) + r"\b", lowered)
+        )
+        if count > best_count:
+            best_count = count
+            best_overrides = overrides
+    return best_overrides
+
+
+def _icon_for_step_label(step_label: str, fallback: str = "\u25CF") -> str:
+    label = str(step_label or "").strip().lower()
+    if not label:
+        return fallback
+    for keywords, icon in _SEMANTIC_STEP_ICON_MAP:
+        if any(kw in label for kw in keywords):
+            return icon
+    return fallback
+
+
 class SlideComposer:
     """Composition-based slide builder using grid/row/column abstractions."""
 
@@ -65,6 +114,7 @@ class SlideComposer:
         self.font = str(branding.get("font_family", "Calibri"))
         self.header_font = str(branding.get("font_family_header", self.font))
         self.footer_text = self._get_footer(branding)
+        self.logo_url = str(branding.get("logo_url") or "").strip()
 
     def _build_colors(self, b: dict[str, Any]) -> dict[str, RGBColor]:
         """Build color palette from branding."""
@@ -104,11 +154,96 @@ class SlideComposer:
             return RGBColor(0xF3, 0xF4, 0xF6), self.colors["text_primary"]
         return self.colors["accent_light"], self.colors["text_primary"]
 
+    def _apply_shape_gradient(self, shape: Any, color_a: RGBColor, color_b: RGBColor) -> None:
+        """Best-effort linear gradient fill for hero/section shapes."""
+        try:
+            fill = shape.fill
+            fill.gradient()
+            try:
+                fill.gradient_angle = 35
+            except Exception:
+                pass
+            stops = list(fill.gradient_stops)
+            if len(stops) >= 2:
+                stops[0].color.rgb = color_a
+                stops[1].color.rgb = color_b
+        except Exception:
+            # Fail-open: fall back to solid fill.
+            try:
+                shape.fill.solid()
+                shape.fill.fore_color.rgb = color_a
+            except Exception:
+                pass
+
+    def _apply_soft_shadow(self, shape: Any) -> None:
+        """Best-effort subtle shadow for visual depth."""
+        try:
+            shadow = shape.shadow
+            shadow.inherit = False
+            shadow.visible = True
+        except Exception:
+            pass
+
+    def _chart_series_palette(self) -> list[RGBColor]:
+        return [
+            self.colors["primary"],
+            self.colors["accent_dark"],
+            RGBColor(0x37, 0x41, 0x51),
+            self.colors["secondary"],
+            RGBColor(0x9C, 0xA3, 0xAF),
+        ]
+
+    def _style_chart_series(self, chart: Any, chart_type_str: str) -> None:
+        """Apply per-series styling polish for line/column families."""
+        palette = self._chart_series_palette()
+        line_like = {"line"}
+        column_like = {"column", "bar", "column_stacked"}
+        for idx, series in enumerate(chart.series):
+            base = palette[idx % len(palette)]
+            alt = palette[(idx + 1) % len(palette)]
+            # Series line style (works for line, and line border for bars/columns).
+            with contextlib.suppress(Exception):
+                series.format.line.fill.solid()
+                series.format.line.fill.fore_color.rgb = base
+                series.format.line.width = Pt(2.0)
+            if chart_type_str in line_like:
+                with contextlib.suppress(Exception):
+                    series.marker.style = 2  # circle marker
+                    series.marker.size = 8
+                    series.marker.format.fill.solid()
+                    series.marker.format.fill.fore_color.rgb = base
+                    series.marker.format.line.fill.solid()
+                    series.marker.format.line.fill.fore_color.rgb = alt
+                continue
+            if chart_type_str in column_like:
+                # Prefer gradient for column/bar fills when available.
+                with contextlib.suppress(Exception):
+                    series.format.fill.gradient()
+                    stops = list(series.format.fill.gradient_stops)
+                    if len(stops) >= 2:
+                        stops[0].color.rgb = base
+                        stops[1].color.rgb = alt
+                # Fallback to solid fill if gradient path is unsupported.
+                with contextlib.suppress(Exception):
+                    series.format.fill.solid()
+                    series.format.fill.fore_color.rgb = base
+
     def compose_title_slide(self, slide_dict: dict[str, Any]) -> None:
         """Compose a title/cover slide."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])  # blank layout
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = self.colors["primary"]
+        # Hero backdrop with gradient and subtle shadow for visual depth.
+        hero = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            Inches(0.7),
+            Inches(1.45),
+            Inches(SLIDE_W - 1.4),
+            Inches(3.2),
+        )
+        self._apply_shape_gradient(hero, self.colors["primary"], self.colors["accent_dark"])
+        hero.line.fill.background()
+        self._apply_soft_shadow(hero)
 
         # Title (centered, large)
         title_box = slide.shapes.add_textbox(
@@ -140,6 +275,26 @@ class SlideComposer:
             subtitle_frame.paragraphs[0].font.color.rgb = self.colors["accent_light"]
             subtitle_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
             subtitle_frame.word_wrap = True
+        # Icon-style glyph badge as a visual anchor.
+        badge = slide.shapes.add_shape(
+            MSO_SHAPE.OVAL,
+            Inches(MARGIN_H),
+            Inches(0.45),
+            Inches(0.45),
+            Inches(0.45),
+        )
+        badge.fill.solid()
+        badge.fill.fore_color.rgb = self.colors["accent_light"]
+        badge.line.fill.background()
+        badge_tf = badge.text_frame
+        badge_tf.text = "\u2699"
+        badge_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        badge_tf.paragraphs[0].font.size = Pt(14)
+        badge_tf.paragraphs[0].font.bold = True
+        badge_tf.paragraphs[0].font.color.rgb = self.colors["primary"]
+
+        # Brand logo (best-effort, non-fatal)
+        self._add_logo(slide)
 
         # Footer
         footer_box = slide.shapes.add_textbox(
@@ -152,6 +307,31 @@ class SlideComposer:
         footer_frame.text = self.footer_text
         footer_frame.paragraphs[0].font.size = Pt(10)
         footer_frame.paragraphs[0].font.color.rgb = self.colors["text_inverse"]
+
+    def _add_logo(self, slide: Any) -> None:
+        if not self.logo_url:
+            return
+        source: str | None = None
+        if self.logo_url.startswith(("http://", "https://")):
+            try:
+                suffix = Path(self.logo_url.split("?")[0]).suffix or ".png"
+                with urllib.request.urlopen(self.logo_url, timeout=8) as resp:
+                    data = resp.read()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(data)
+                    source = tmp.name
+            except Exception as exc:
+                logger.warning("Failed to download branding logo_url %s: %s", self.logo_url, exc)
+        else:
+            p = Path(self.logo_url)
+            if p.exists() and p.is_file():
+                source = str(p)
+        if not source:
+            return
+        try:
+            slide.shapes.add_picture(source, Inches(SLIDE_W - 2.1), Inches(0.35), width=Inches(1.6))
+        except Exception as exc:
+            logger.warning("Failed to render branding logo: %s", exc)
 
     def compose_content_slide(
         self,
@@ -514,6 +694,7 @@ class SlideComposer:
             # Style chart
             if hasattr(chart_shape, "has_legend"):
                 chart_shape.has_legend = True
+            self._style_chart_series(chart_shape, chart_type_str)
         except Exception as e:
             logger.warning("Failed to add chart: %s", e)
             # Render a visible fallback so the blank space is not silent
@@ -542,6 +723,34 @@ class SlideComposer:
             bg_color, _ = self._resolve_fill(fill_token)
             slide.background.fill.solid()
             slide.background.fill.fore_color.rgb = bg_color
+        # Hero card with gradient + shadow treatment.
+        hero = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            Inches(MARGIN_H + 0.3),
+            Inches(y + 0.35),
+            Inches(CONTENT_W - 0.6),
+            Inches(h * 0.72),
+        )
+        self._apply_shape_gradient(hero, self.colors["primary"], self.colors["accent_dark"])
+        hero.line.fill.background()
+        self._apply_soft_shadow(hero)
+        # Icon marker (symbol font style).
+        icon_shape = slide.shapes.add_shape(
+            MSO_SHAPE.OVAL,
+            Inches(MARGIN_H + 0.6),
+            Inches(y + 0.55),
+            Inches(0.42),
+            Inches(0.42),
+        )
+        icon_shape.fill.solid()
+        icon_shape.fill.fore_color.rgb = self.colors["accent_light"]
+        icon_shape.line.fill.background()
+        itf = icon_shape.text_frame
+        itf.text = "\u25B2"
+        itf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        itf.paragraphs[0].font.size = Pt(12)
+        itf.paragraphs[0].font.bold = True
+        itf.paragraphs[0].font.color.rgb = self.colors["primary"]
 
         # Large stat
         stat_box = slide.shapes.add_textbox(
@@ -576,13 +785,24 @@ class SlideComposer:
 
     def _compose_process_flow(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
         """Compose 5-step process flow."""
-        steps = slide_dict.get("process_flow", [])
+        raw_flow = slide_dict.get("process_flow", [])
+        if isinstance(raw_flow, dict):
+            steps = raw_flow.get("steps", [])
+        else:
+            steps = raw_flow
         if not steps:
             return
 
         steps = steps[:5]
         step_w = (CONTENT_W - ((len(steps) - 1) * GUTTER)) / len(steps)
         step_h = h * 0.6
+        shape_cycle = [
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            MSO_SHAPE.CHEVRON,
+            MSO_SHAPE.HEXAGON,
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            MSO_SHAPE.CHEVRON,
+        ]
 
         for idx, step in enumerate(steps):
             x = MARGIN_H + idx * (step_w + GUTTER)
@@ -591,7 +811,7 @@ class SlideComposer:
             fill_token = step.get("fill")
             bg_color, text_color = self._resolve_fill(fill_token)
             shape = slide.shapes.add_shape(
-                1,  # rectangle
+                shape_cycle[idx % len(shape_cycle)],
                 Inches(x),
                 Inches(y),
                 Inches(step_w),
@@ -600,6 +820,7 @@ class SlideComposer:
             shape.fill.solid()
             shape.fill.fore_color.rgb = bg_color
             shape.line.color.rgb = self.colors["primary"] if fill_token not in _DARK_FILLS else bg_color
+            self._apply_soft_shadow(shape)
 
             # Step number
             num_box = slide.shapes.add_textbox(
@@ -615,6 +836,24 @@ class SlideComposer:
             num_frame.paragraphs[0].font.color.rgb = (
                 text_color if fill_token in _DARK_FILLS else self.colors["primary"]
             )
+            # Icon marker inside each step.
+            icon_bubble = slide.shapes.add_shape(
+                MSO_SHAPE.OVAL,
+                Inches(x + step_w - 0.35),
+                Inches(y + 0.08),
+                Inches(0.24),
+                Inches(0.24),
+            )
+            icon_bubble.fill.solid()
+            icon_bubble.fill.fore_color.rgb = self.colors["accent_light"]
+            icon_bubble.line.fill.background()
+            ibf = icon_bubble.text_frame
+            label = str(step.get("label") or "")
+            ibf.text = str(step.get("icon") or _icon_for_step_label(label, fallback="\u25CF"))
+            ibf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            ibf.paragraphs[0].font.size = Pt(9)
+            ibf.paragraphs[0].font.bold = True
+            ibf.paragraphs[0].font.color.rgb = self.colors["primary"]
 
             # Label
             label = str(step.get("label", ""))
@@ -634,7 +873,7 @@ class SlideComposer:
             if idx < len(steps) - 1:
                 arrow_x = x + step_w + GUTTER * 0.5
                 arrow = slide.shapes.add_shape(
-                    33,  # right arrow
+                    MSO_SHAPE.RIGHT_ARROW,
                     Inches(arrow_x),
                     Inches(y + step_h * 0.35),
                     Inches(GUTTER * 0.5),
@@ -707,6 +946,27 @@ class SlideComposer:
         # Override background
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = self.colors["neutral_dark"]
+        # Hero ribbon with gradient and a diamond accent.
+        ribbon = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            Inches(MARGIN_H),
+            Inches(SLIDE_H * 0.28),
+            Inches(CONTENT_W),
+            Inches(SLIDE_H * 0.38),
+        )
+        self._apply_shape_gradient(ribbon, self.colors["primary"], self.colors["accent_dark"])
+        ribbon.line.fill.background()
+        self._apply_soft_shadow(ribbon)
+        diamond = slide.shapes.add_shape(
+            MSO_SHAPE.DIAMOND,
+            Inches(SLIDE_W * 0.47),
+            Inches(SLIDE_H * 0.18),
+            Inches(0.35),
+            Inches(0.35),
+        )
+        diamond.fill.solid()
+        diamond.fill.fore_color.rgb = self.colors["accent_light"]
+        diamond.line.fill.background()
 
         # Large title
         title = slide_dict.get("title", "")
@@ -745,6 +1005,12 @@ def render_pptx_with_artifact_tool(
     try:
         # Prepare branding
         branding_dict = _merge_branding_dict(branding) if branding else {}
+        if str(branding_dict.get("primary_color", "")).upper() == "#86BC25":
+            pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
+            process_name = str(pm.get("process_name") or "")
+            topic_overrides = _pick_topic_palette(process_name)
+            if topic_overrides:
+                branding_dict.update(topic_overrides)
 
         # Create presentation
         prs = Presentation()
@@ -796,18 +1062,27 @@ def render_pptx_with_artifact_tool(
         # Run QA validation
         qa_report = validate_pptx_against_slides(output_path, pptx_slides)
 
-        # Run evidence validation (advisory only, does not block rendering)
+        # Run evidence validation
         process_model = payload.get("process_model")
         evidence_report = validate_pptx_slides_evidence(pptx_slides, process_model)
         qa_report["evidence"] = evidence_report
 
-        # Log unsupported claims as warnings (advisory)
-        if evidence_report.get("unsupported_claims_count", 0) > 0:
+        unsupported_claims = int(evidence_report.get("unsupported_claims_count", 0) or 0)
+        if unsupported_claims > 0:
             logger.warning(
-                "Evidence validation: %d unsupported claims found (advisory only). %s",
-                evidence_report["unsupported_claims_count"],
+                "Evidence validation: %d unsupported claims found. %s",
+                unsupported_claims,
                 evidence_report.get("summary", "")
             )
+            # Optional hard gate: treat unsupported claims as render-quality failure.
+            if settings.pptx_evidence_hard_fail_enabled:
+                qa_report["status"] = "fail"
+                qa_report.setdefault("issues", []).append(
+                    f"Evidence validation failed: {unsupported_claims} unsupported claim(s)."
+                )
+                qa_report.setdefault("remediation", []).append(
+                    "Replace unsupported numeric claims with sourced evidence or remove the claim."
+                )
 
         # Store QA report
         qa_path = run_dir / "pptx_render_quality.json"
@@ -855,6 +1130,22 @@ def _merge_branding_dict(branding: Any) -> dict[str, Any]:
             "neutral_dark": str(branding.get("neutral_dark", "#1A1A1A")),
             "text_primary": str(branding.get("text_primary", "#1A1A1A")),
             "text_inverse": str(branding.get("text_inverse", "#FFFFFF")),
+            "logo_url": str(branding.get("logo_url", "")),
         }
     # Fallback for dataclass-like objects
-    return {}
+    pal = getattr(branding, "palette", None)
+    return {
+        "primary_color": str(getattr(branding, "primary_color", "#86BC25")),
+        "secondary_color": str(getattr(pal, "complementary", "#E8007C") if pal is not None else "#E8007C"),
+        "accent_light": str(getattr(pal, "accent_light", "#EBF5D3") if pal is not None else "#EBF5D3"),
+        "accent_dark": str(getattr(pal, "accent_dark", "#5A8A00") if pal is not None else "#5A8A00"),
+        "font_family": str(getattr(branding, "font_family", "Calibri")),
+        "font_family_header": str(getattr(branding, "font_family_header", "Calibri Light")),
+        "company_name": str(getattr(branding, "company_name", "Deloitte")),
+        "footer_text": getattr(branding, "custom_footer_text", None),
+        "neutral_light": str(getattr(pal, "neutral_light", "#AAAAAA") if pal is not None else "#AAAAAA"),
+        "neutral_dark": str(getattr(pal, "neutral_dark", "#1A1A1A") if pal is not None else "#1A1A1A"),
+        "text_primary": str(getattr(pal, "text_primary", "#1A1A1A") if pal is not None else "#1A1A1A"),
+        "text_inverse": str(getattr(pal, "text_inverse", "#FFFFFF") if pal is not None else "#FFFFFF"),
+        "logo_url": str(getattr(branding, "logo_url", "") or ""),
+    }

@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Process Doc - Competitive Analysis Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --success: #16a34a;
+            --warning: #ea580c;
+            --danger: #dc2626;
+            --secondary: #64748b;
+            --border: #e2e8f0;
+            --bg-light: #f8fafc;
+            --text-dark: #0f172a;
+            --text-light: #64748b;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f8fafc;
+            color: var(--text-dark);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        header {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            margin-bottom: 32px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+            color: var(--text-dark);
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: var(--text-light);
+        }
+
+        .controls {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        .tab-group {
+            display: flex;
+            gap: 8px;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .tab {
+            padding: 12px 16px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-light);
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .tab:hover {
+            color: var(--text-dark);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .card h3 {
+            font-size: 16px;
+            margin-bottom: 16px;
+            color: var(--text-dark);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-bottom: 16px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        thead {
+            background: var(--bg-light);
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            padding: 12px 8px;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text-dark);
+        }
+
+        td {
+            padding: 10px 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .score {
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        .score.high {
+            color: var(--success);
+        }
+
+        .score.medium {
+            color: var(--warning);
+        }
+
+        .score.low {
+            color: var(--danger);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .badge.strength {
+            background: rgba(22, 163, 74, 0.1);
+            color: var(--success);
+        }
+
+        .badge.weakness {
+            background: rgba(220, 38, 38, 0.1);
+            color: var(--danger);
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .metric:last-child {
+            border-bottom: none;
+        }
+
+        .metric-label {
+            font-size: 14px;
+            color: var(--text-light);
+        }
+
+        .metric-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        .bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 8px 0;
+        }
+
+        .bar-label {
+            min-width: 120px;
+            font-size: 13px;
+            color: var(--text-light);
+        }
+
+        .bar-value {
+            flex-grow: 1;
+            height: 24px;
+            background: linear-gradient(90deg, var(--primary) 0%, var(--primary) 100%);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 8px;
+            color: white;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .comparison-row {
+            display: grid;
+            grid-template-columns: 150px repeat(6, 1fr);
+            gap: 12px;
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            align-items: center;
+        }
+
+        .comparison-row:first-child {
+            background: var(--bg-light);
+            font-weight: 600;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .comparison-cell {
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .comparison-label {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-dark);
+        }
+
+        .score-5 { color: var(--success); font-weight: 600; }
+        .score-4 { color: var(--success); font-weight: 600; }
+        .score-3 { color: var(--warning); font-weight: 600; }
+        .score-2 { color: var(--danger); font-weight: 600; }
+        .score-0 { color: var(--text-light); }
+
+        .recommendation {
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.05), rgba(37, 99, 235, 0.02));
+            border-left: 4px solid var(--primary);
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 16px;
+        }
+
+        .recommendation h4 {
+            color: var(--primary);
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .recommendation p {
+            font-size: 13px;
+            color: var(--text-dark);
+            line-height: 1.5;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        @media (max-width: 768px) {
+            .grid, .grid-2 {
+                grid-template-columns: 1fr;
+            }
+
+            .two-col {
+                grid-template-columns: 1fr;
+            }
+
+            .comparison-row {
+                grid-template-columns: 1fr;
+                gap: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Process Doc: Competitive Analysis Dashboard</h1>
+            <p class="subtitle">Enterprise document automation & AI-assisted deliverables | May 2026</p>
+            <div class="controls">
+                <div class="tab-group">
+                    <button class="tab active" onclick="switchTab('overview')">Overview</button>
+                    <button class="tab" onclick="switchTab('features')">Feature Comparison</button>
+                    <button class="tab" onclick="switchTab('roi')">Build vs. Buy ROI</button>
+                    <button class="tab" onclick="switchTab('pricing')">External Pricing</button>
+                    <button class="tab" onclick="switchTab('recommendations')">Recommendations</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- OVERVIEW TAB -->
+        <div id="overview" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h3>Market Size & Opportunity</h3>
+                    <div class="metric">
+                        <span class="metric-label">Addressable Market (Global)</span>
+                        <span class="metric-value">$8.5B</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Professional Services TAM</span>
+                        <span class="metric-value">$1.2B</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Growth Rate (CAGR)</span>
+                        <span class="metric-value">22-28%</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Target Segment</span>
+                        <span class="metric-value">Deloitte-like firms</span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Process Doc Value Prop (Internal)</h3>
+                    <div class="metric">
+                        <span class="metric-label">Hours Saved/Document</span>
+                        <span class="metric-value">5 hrs</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Annual Value (Deloitte)</span>
+                        <span class="metric-value">$7.5M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">3-Year NPV</span>
+                        <span class="metric-value">$16.1M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Payback Period</span>
+                        <span class="metric-value">~8 months</span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Competitive Position</h3>
+                    <div class="metric">
+                        <span class="metric-label">Overall Score vs. Best Competitor</span>
+                        <span class="metric-value">4.1 / 5.0</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Security & Compliance</span>
+                        <span class="metric-value">5.0 ⭐</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Data Analysis Capability</span>
+                        <span class="metric-value">3.8 (Best in Class)</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Time to Market</span>
+                        <span class="metric-value">16-18 mo</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <h3>Competitive Strengths</h3>
+                    <div style="margin-top: 12px;">
+                        <div><span class="badge strength">✓ Context-Aware</span> Leverages client data, brand, history</div><br>
+                        <div><span class="badge strength">✓ Enterprise-Ready</span> SOC 2, HIPAA, GDPR compliant</div><br>
+                        <div><span class="badge strength">✓ Data-Intelligent</span> Unique SQL + analytics integration</div><br>
+                        <div><span class="badge strength">✓ Professional Services-Focused</span> Not horizontal, not generic</div><br>
+                        <div><span class="badge strength">✓ Multi-Format Output</span> Docs, slides, PDFs, dashboards</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Development Roadmap</h3>
+                    <div class="metric">
+                        <span class="metric-label">Phase 1: Stabilize (Months 1-3)</span>
+                        <span class="metric-value">5K users</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Phase 2: Partner Pilots (Mo 4-9)</span>
+                        <span class="metric-value">EY, KPMG, Accenture</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Phase 3: Beta (Mo 10-18)</span>
+                        <span class="metric-value">Public launch</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Phase 4: GA (Mo 18-24)</span>
+                        <span class="metric-value">Full commercial</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- FEATURES TAB -->
+        <div id="features" class="tab-content hidden">
+            <div class="card">
+                <h3>Capability Comparison Matrix (Scoring: 0-5)</h3>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Capability</th>
+                                <th>Process Doc</th>
+                                <th>Microsoft 365</th>
+                                <th>Notion</th>
+                                <th>Gamma</th>
+                                <th>Canva</th>
+                                <th>Claude Cowork</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="background: var(--bg-light); font-weight: 600;">
+                                <td colspan="7">DOCUMENT CREATION & AUTOMATION</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">AI-assisted generation</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-3">3</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-3">3</td>
+                                <td class="comparison-cell score score-4">4</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">Brand consistency</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-3">3</td>
+                                <td class="comparison-cell score score-2">2</td>
+                                <td class="comparison-cell score score-2">2</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-2">2</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">Batch generation</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-2">2</td>
+                                <td class="comparison-cell score score-0">1</td>
+                                <td class="comparison-cell score score-0">1</td>
+                                <td class="comparison-cell score score-2">2</td>
+                                <td class="comparison-cell score score-0">1</td>
+                            </tr>
+                            <tr style="background: var(--bg-light); font-weight: 600;">
+                                <td colspan="7">DATA ANALYSIS & VISUALIZATION</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">Data ingestion</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-2">2</td>
+                                <td class="comparison-cell score score-2">2</td>
+                                <td class="comparison-cell score score-0">1</td>
+                                <td class="comparison-cell score score-0">1</td>
+                                <td class="comparison-cell score score-3">3</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">SQL generation</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-0">1</td>
+                                <td class="comparison-cell score score-0">0</td>
+                                <td class="comparison-cell score score-0">0</td>
+                                <td class="comparison-cell score score-0">0</td>
+                                <td class="comparison-cell score score-2">2</td>
+                            </tr>
+                            <tr style="background: var(--bg-light); font-weight: 600;">
+                                <td colspan="7">KNOWLEDGE MANAGEMENT</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">Wiki engine</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-2">2</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-0">0</td>
+                                <td class="comparison-cell score score-0">0</td>
+                                <td class="comparison-cell score score-3">3</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">Document ingestion</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-3">3</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-0">0</td>
+                                <td class="comparison-cell score score-0">1</td>
+                                <td class="comparison-cell score score-4">4</td>
+                            </tr>
+                            <tr style="background: var(--bg-light); font-weight: 600;">
+                                <td colspan="7">SECURITY & COMPLIANCE</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">SOC 2 / ISO 27001</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-0">1</td>
+                                <td class="comparison-cell score score-4">4</td>
+                                <td class="comparison-cell score score-4">4</td>
+                            </tr>
+                            <tr>
+                                <td class="comparison-label">Data residency</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-5">5</td>
+                                <td class="comparison-cell score score-3">3</td>
+                                <td class="comparison-cell score score-0">1</td>
+                                <td class="comparison-cell score score-2">2</td>
+                                <td class="comparison-cell score score-4">4</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ROI TAB -->
+        <div id="roi" class="tab-content hidden">
+            <div class="two-col">
+                <div class="card">
+                    <h3>Build (Internal Development)</h3>
+                    <div class="metric">
+                        <span class="metric-label">Initial Investment (Y1)</span>
+                        <span class="metric-value">$4.0M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Annual Ops (Y2-3)</span>
+                        <span class="metric-value">$1.2M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">3-Year Total Cost</span>
+                        <span class="metric-value">$6.4M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Time to MVP</span>
+                        <span class="metric-value">16-18 months</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Differentiation</span>
+                        <span class="metric-value">High</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">3-Year NPV</span>
+                        <span class="metric-value">$16.1M ✓</span>
+                    </div>
+                    <div class="recommendation">
+                        <h4>✓ Recommended Approach</h4>
+                        <p>Build internally: Unique IP, strong ROI, strategic moat for Deloitte. Plan external licensing in 18-24 months.</p>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Buy (Notion Enterprise Base)</h3>
+                    <div class="metric">
+                        <span class="metric-label">Licensing (Y1-3)</span>
+                        <span class="metric-value">$1.5M/year</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Customization & Support</span>
+                        <span class="metric-value">$1M + $600K/yr</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">3-Year Total Cost</span>
+                        <span class="metric-value">$7.3M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Time to MVP</span>
+                        <span class="metric-value">4-6 months</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Differentiation</span>
+                        <span class="metric-value">Low</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">3-Year NPV</span>
+                        <span class="metric-value">$15.2M</span>
+                    </div>
+                    <div class="recommendation">
+                        <h4>⚠ Not Recommended</h4>
+                        <p>Faster to market but higher cost, lower differentiation, vendor lock-in risk. Competitors can replicate.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 24px;">
+                <h3>Hybrid Approach: Build Core + Integrate APIs (Recommended)</h3>
+                <div class="two-col">
+                    <div>
+                        <div class="metric">
+                            <span class="metric-label">Initial Investment (Y1)</span>
+                            <span class="metric-value">$2.0M</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Annual Ops (Y2-3)</span>
+                            <span class="metric-value">$1.0M</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">API Costs (Y2-3)</span>
+                            <span class="metric-value">$300K/year</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">3-Year Total Cost</span>
+                            <span class="metric-value">$5.3M</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="metric">
+                            <span class="metric-label">Time to MVP</span>
+                            <span class="metric-value">10-12 months</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Differentiation</span>
+                            <span class="metric-value">Medium-High</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Scalability</span>
+                            <span class="metric-value">High</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">3-Year NPV</span>
+                            <span class="metric-value">$17.2M ✓✓</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="recommendation" style="margin-top: 16px;">
+                    <h4>✓✓ OPTIMAL CHOICE</h4>
+                    <p><strong>Rationale:</strong> Lowest cost, balanced speed to market, maintains differentiation. Integrate Microsoft Copilot API for LLM, Slack for notifications, data warehouse APIs for analytics. Best balance of risk and reward.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- PRICING TAB -->
+        <div id="pricing" class="tab-content hidden">
+            <div class="grid">
+                <div class="card">
+                    <h3>Recommended Pricing Model</h3>
+                    <p style="font-size: 13px; color: var(--text-light); margin-bottom: 16px;">
+                        Hybrid Freemium + Enterprise Seat Pricing
+                    </p>
+                    <div class="metric">
+                        <span class="metric-label">Freemium Tier</span>
+                        <span class="metric-value">$0/mo</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Professional Tier</span>
+                        <span class="metric-value">$35/mo</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Team Tier (5-50 users)</span>
+                        <span class="metric-value">$80/user/mo</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Enterprise Tier (50+ users)</span>
+                        <span class="metric-value">$180-250/user/mo</span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Competitive Pricing Benchmarks</h3>
+                    <div class="metric">
+                        <span class="metric-label">Notion Business</span>
+                        <span class="metric-value">$10-13/mo</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Canva Teams</span>
+                        <span class="metric-value">$120/yr</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Microsoft Copilot Pro</span>
+                        <span class="metric-value">$20/mo</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Figma Enterprise</span>
+                        <span class="metric-value">$45/mo+</span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>5-Year Revenue Projection</h3>
+                    <div class="metric">
+                        <span class="metric-label">Year 1 ARR</span>
+                        <span class="metric-value">$10.8M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Year 2 ARR</span>
+                        <span class="metric-value">$32.4M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Year 3 ARR</span>
+                        <span class="metric-value">$64.8M</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Year 5 ARR</span>
+                        <span class="metric-value">$151.2M</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Market Entry Strategy (18-24 Month Roadmap)</h3>
+                <div style="margin-top: 16px;">
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 8px;">Phase 1: Deloitte Optimization (Months 1-3)</div>
+                        <div style="font-size: 13px; color: var(--text-light); margin-left: 16px;">
+                            • Stabilize for 5,000+ users<br>
+                            • Gather feedback from pilot teams<br>
+                            • Build brand story: "Created by Deloitte for professional services"
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 8px;">Phase 2: Partner Pilots (Months 4-9)</div>
+                        <div style="font-size: 13px; color: var(--text-light); margin-left: 16px;">
+                            • Close 3-5 strategic partnerships (EY, KPMG, Accenture)<br>
+                            • Generate case studies & testimonials<br>
+                            • Refine enterprise GTM
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 20px;">
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 8px;">Phase 3: Public Beta (Months 10-18)</div>
+                        <div style="font-size: 13px; color: var(--text-light); margin-left: 16px;">
+                            • Open to professional services firms<br>
+                            • Freemium viral loop on ProductHunt<br>
+                            • Enterprise sales team in place
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 8px;">Phase 4: General Availability (Months 18-24)</div>
+                        <div style="font-size: 13px; color: var(--text-light); margin-left: 16px;">
+                            • Full enterprise launch<br>
+                            • IPaaS integrations (Salesforce, HubSpot, Workday)<br>
+                            • Gartner / Forrester coverage
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RECOMMENDATIONS TAB -->
+        <div id="recommendations" class="tab-content hidden">
+            <div class="grid-2">
+                <div class="card">
+                    <h3>Strategic Recommendation</h3>
+                    <div style="background: linear-gradient(135deg, rgba(34, 197, 94, 0.05), rgba(34, 197, 94, 0.02)); border-left: 4px solid var(--success); padding: 16px; border-radius: 8px; margin-bottom: 16px;">
+                        <div style="color: var(--success); font-weight: 600; font-size: 16px; margin-bottom: 8px;">✓ PROCEED WITH BUILD</div>
+                        <div style="font-size: 13px; color: var(--text-dark);">Hybrid approach: Build core, integrate best-of-breed APIs (Copilot, Slack, data warehouse)</div>
+                    </div>
+                    <h4 style="color: var(--text-dark); font-weight: 600; margin: 16px 0 8px 0; font-size: 14px;">Why This Strategy Works:</h4>
+                    <div style="font-size: 13px; line-height: 1.6; color: var(--text-light);">
+                        <strong>For Deloitte (Internal):</strong>
+                        <ul style="margin: 8px 0 8px 16px;">
+                            <li>$7.5M/year value from 5 hours saved per deliverable</li>
+                            <li>Competitive advantage (clients notice quality lift)</li>
+                            <li>Capacity increase without headcount</li>
+                        </ul>
+                        <strong>For Market (External):</strong>
+                        <ul style="margin: 8px 0 0 16px;">
+                            <li>$1.2B serviceable market (professional services)</li>
+                            <li>First-mover advantage (18-24 month window)</li>
+                            <li>$150M+ ARR by year 5</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Competitive Advantages</h3>
+                    <div style="margin-bottom: 16px;">
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <span style="flex-shrink: 0; color: var(--success); font-weight: bold;">✓</span>
+                            <div>
+                                <div style="font-weight: 500; color: var(--text-dark); font-size: 13px;">Context-Aware</div>
+                                <div style="font-size: 12px; color: var(--text-light);">Leverages client data, brand, past work</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <span style="flex-shrink: 0; color: var(--success); font-weight: bold;">✓</span>
+                            <div>
+                                <div style="font-weight: 500; color: var(--text-dark); font-size: 13px;">Enterprise-Grade</div>
+                                <div style="font-size: 12px; color: var(--text-light);">SOC 2, HIPAA, GDPR, data residency</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <span style="flex-shrink: 0; color: var(--success); font-weight: bold;">✓</span>
+                            <div>
+                                <div style="font-weight: 500; color: var(--text-dark); font-size: 13px;">Data-Intelligent</div>
+                                <div style="font-size: 12px; color: var(--text-light);">SQL generation + analytics (unique)</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <span style="flex-shrink: 0; color: var(--success); font-weight: bold;">✓</span>
+                            <div>
+                                <div style="font-weight: 500; color: var(--text-dark); font-size: 13px;">Professional Services-Focused</div>
+                                <div style="font-size: 12px; color: var(--text-light);">Specialized, not horizontal</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <span style="flex-shrink: 0; color: var(--success); font-weight: bold;">✓</span>
+                            <div>
+                                <div style="font-weight: 500; color: var(--text-dark); font-size: 13px;">Deloitte Brand</div>
+                                <div style="font-size: 12px; color: var(--text-light);">Trust, credibility, early adopter advantage</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 24px;">
+                <h3>Immediate Priorities (Next 90 Days)</h3>
+                <div style="margin-top: 16px; display: grid; gap: 20px;">
+                    <div style="border-left: 3px solid var(--primary); padding-left: 16px;">
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 4px;">1. Secure Funding ($4M initial, $1.2M/year)</div>
+                        <div style="font-size: 13px; color: var(--text-light);">Board approval for build investment and 18-month roadmap</div>
+                    </div>
+                    <div style="border-left: 3px solid var(--primary); padding-left: 16px;">
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 4px;">2. Stabilize for Scale (500+ active users)</div>
+                        <div style="font-size: 13px; color: var(--text-light);">Performance, reliability, and UX for broad adoption</div>
+                    </div>
+                    <div style="border-left: 3px solid var(--primary); padding-left: 16px;">
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 4px;">3. Establish GTM Function</div>
+                        <div style="font-size: 13px; color: var(--text-light);">Hire product, partnership, and sales leadership for Phase 2</div>
+                    </div>
+                    <div style="border-left: 3px solid var(--primary); padding-left: 16px;">
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 4px;">4. Plan Partner Pilots</div>
+                        <div style="font-size: 13px; color: var(--text-light);">Identify and contract with 3-5 strategic partners (EY, KPMG, Accenture)</div>
+                    </div>
+                    <div style="border-left: 3px solid var(--primary); padding-left: 16px;">
+                        <div style="font-weight: 600; color: var(--primary); margin-bottom: 4px;">5. Compliance Roadmap</div>
+                        <div style="font-size: 13px; color: var(--text-light);">Start SOC 2, HIPAA, GDPR preparation for external release</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 24px;">
+                <h3>Success Metrics</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Year 1 Target</th>
+                            <th>Year 3 Target</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="comparison-label">Internal Adoption (Active Users)</td>
+                            <td class="comparison-cell">500+</td>
+                            <td class="comparison-cell">3,000+</td>
+                        </tr>
+                        <tr>
+                            <td class="comparison-label">Documents Created/Month</td>
+                            <td class="comparison-cell">1,000</td>
+                            <td class="comparison-cell">50,000</td>
+                        </tr>
+                        <tr>
+                            <td class="comparison-label">Avg Time Saved/Document</td>
+                            <td class="comparison-cell">4 hours</td>
+                            <td class="comparison-cell">6 hours</td>
+                        </tr>
+                        <tr>
+                            <td class="comparison-label">User Satisfaction (NPS)</td>
+                            <td class="comparison-cell">45+</td>
+                            <td class="comparison-cell">60+</td>
+                        </tr>
+                        <tr>
+                            <td class="comparison-label">External: Partner Firms</td>
+                            <td class="comparison-cell">3-5 pilots</td>
+                            <td class="comparison-cell">15+ contracted</td>
+                        </tr>
+                        <tr>
+                            <td class="comparison-label">External: Users</td>
+                            <td class="comparison-cell">2,000</td>
+                            <td class="comparison-cell">20,000+</td>
+                        </tr>
+                        <tr>
+                            <td class="comparison-label">External: ARR</td>
+                            <td class="comparison-cell">$2-5M</td>
+                            <td class="comparison-cell">$30-50M</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function switchTab(tabName) {
+            // Hide all tabs
+            const tabs = document.querySelectorAll('.tab-content');
+            tabs.forEach(tab => tab.classList.add('hidden'));
+
+            // Remove active class from all buttons
+            const buttons = document.querySelectorAll('.tab');
+            buttons.forEach(btn => btn.classList.remove('active'));
+
+            // Show selected tab
+            document.getElementById(tabName).classList.remove('hidden');
+
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }
+    </script>
+</body>
+</html>

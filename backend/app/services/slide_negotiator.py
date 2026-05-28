@@ -28,6 +28,8 @@ SLIDE_TYPE_LABELS: dict[str, str] = {
     "stack_layers": "Stacked layers / journey",
     "table": "Comparison table",
     "chart": "Chart / graph",
+    "big_number": "Big-number highlight",
+    "process_flow": "Process flow",
     "section_divider": "Section divider",
 }
 

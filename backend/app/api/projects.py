@@ -3707,7 +3707,18 @@ def post_project_conversation_outline(
     if not isinstance(body.slides, list) or len(body.slides) < 1:
         raise HTTPException(status_code=400, detail=_detail("slides_missing", "slides must include at least one slide"))
     normalized_slides: list[dict[str, str]] = []
-    allowed_types = {"title", "bullets", "stat_cards", "column_cards", "stack_layers", "table", "chart", "section_divider"}
+    allowed_types = {
+        "title",
+        "bullets",
+        "stat_cards",
+        "column_cards",
+        "stack_layers",
+        "table",
+        "chart",
+        "section_divider",
+        "big_number",
+        "process_flow",
+    }
     for slide in body.slides:
         title = str(slide.title or "").strip()
         slide_type = str(slide.slide_type or "").strip()

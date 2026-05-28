@@ -130,6 +130,38 @@ def _discovery_brief(discovery: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _storyline_arc_from_memory(
+    *,
+    db: "Session | None",
+    project_id: str | None,
+) -> str:
+    if db is None or not project_id:
+        return ""
+    try:
+        import json
+        from app.db.models import MemoryItem
+
+        row = (
+            db.query(MemoryItem)
+            .filter(
+                MemoryItem.project_id == project_id,
+                MemoryItem.memory_type == "decision",
+                MemoryItem.key == "storyline_arc",
+                MemoryItem.is_archived.is_(False),
+            )
+            .order_by(MemoryItem.updated_at.desc())
+            .first()
+        )
+        if not row:
+            return ""
+        payload = json.loads(row.value or "{}")
+        if isinstance(payload, dict):
+            return str(payload.get("arc") or "").strip().lower()
+    except Exception:
+        return ""
+    return ""
+
+
 def generate_deck_outline_preview(
     *,
     instruction: str,
@@ -178,6 +210,13 @@ def generate_deck_outline_preview(
     sections = contract.get("sections") or []
 
     brief = _discovery_brief(discovery)
+    discovery_arc = ""
+    if isinstance(discovery, dict):
+        discovery_arc = str(discovery.get("narrative_arc") or "").strip().lower()
+    if not discovery_arc:
+        mem_arc = _storyline_arc_from_memory(db=db, project_id=project_id)
+        if mem_arc:
+            brief["narrative_arc"] = mem_arc
     length_budget = brief["length_budget"]
     target_slides = int(length_budget.get("pptx")) if str(length_budget.get("pptx") or "").isdigit() else 10
     target_slides = max(6, min(target_slides, 20))
@@ -188,7 +227,7 @@ def generate_deck_outline_preview(
         "for a PowerPoint deck. Return JSON with keys:\n"
         "  slides: [{title: string, slide_type: string, purpose: string}]\n"
         "  rationale: string (1 sentence explaining the deck structure)\n"
-        "slide_type must be one of: title, bullets, stat_cards, column_cards, stack_layers, table, chart, section_divider.\n"
+        "slide_type must be one of: title, bullets, stat_cards, column_cards, stack_layers, table, chart, big_number, process_flow, section_divider.\n"
         "purpose: 1 sentence (≤20 words) describing what the slide communicates.\n"
         "Titles must be specific and reference the client or their context when available — "
         "avoid generic headers like 'Introduction' or 'Our Approach'.\n"

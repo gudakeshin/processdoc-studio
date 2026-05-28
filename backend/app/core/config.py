@@ -286,6 +286,9 @@ class Settings(BaseSettings):
     # Feature flag for new artifact-tool-based PPTX renderer (executive-quality slides with composed layouts).
     # When enabled, uses artifact-tool Presentation with compose-first layouts instead of fixed python-pptx templates.
     pptx_artifact_renderer_enabled: bool = True
+    # When True, unsupported numeric claims from PPTX evidence validation fail the render QA gate.
+    # When False, evidence signals remain advisory metadata.
+    pptx_evidence_hard_fail_enabled: bool = False
     # Feature flag for narrative-coherence LLM critique blend (fail-open when disabled or unavailable).
     # When enabled, a short LLM critique augments the deterministic issues list
     # before the narrative score is aggregated.
@@ -340,6 +343,7 @@ class Settings(BaseSettings):
         "enable_content_enrichment_engine",
         "pptx_visual_critic_enabled",
         "pptx_artifact_renderer_enabled",
+        "pptx_evidence_hard_fail_enabled",
         "narrative_llm_critique_enabled",
         "structured_logging_enabled",
         "run_queue_embed_redis_consumer",

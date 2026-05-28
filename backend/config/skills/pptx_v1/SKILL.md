@@ -105,7 +105,7 @@ keys whose values would be null.
   "process_flow": {
     "steps": [
       {"label": "string ≤4 words", "description": "string ≤12 words",
-       "fill": "green|dark|mid_dark|dark_green|mid"}
+       "fill": "green|dark|mid_dark|dark_green|mid", "icon": "string (optional)"}
     ]
   },
   "footer_note": "string — single-line band at slide bottom (use sparingly)"
@@ -171,6 +171,7 @@ Horizontal arrow chain for **sequential ordered steps** — use instead of `stac
 - `label`: ≤4 words (step name)
 - `description`: ≤12 words (what happens)
 - Rotate `fill` across steps: `"green"`, `"dark"`, `"mid_dark"`, `"dark_green"`, `"mid"`
+- `icon` is optional per step. If omitted, the renderer auto-selects a deterministic icon from the step label semantics (e.g., Assess, Design, Implement).
 
 ### `section_divider`
 Full-bleed dark slide for major section breaks. Include only `title` and optionally `subtitle`.

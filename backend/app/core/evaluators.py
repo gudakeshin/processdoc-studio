@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Any
 
+from app.services.claude import claude_generate_json, is_claude_enabled
 from app.core.quality_framework import EvaluatorKind
 
 logger = logging.getLogger(__name__)
@@ -132,29 +133,95 @@ class LLMCritiqueEvaluator(EvaluatorKind):
         Returns:
             (score: 0-1, metadata: dict with critique details)
         """
-        # For now, return a placeholder score
-        # In full implementation, this would call Claude API
         rubric = dimension_config.get("rubric", "Evaluate overall quality")
         dimensions = dimension_config.get("dimensions", ["clarity", "completeness"])
+        max_issues = int(dimension_config.get("max_issues", 6) or 6)
+        max_issues = max(1, min(max_issues, 12))
+        text_str = (text or "").strip()
 
-        logger.warning(
-            "LLMCritiqueEvaluator: Claude API call not yet implemented. "
-            "Returning placeholder score. Rubric: %s",
-            rubric,
+        if not text_str:
+            return (
+                0.0,
+                {
+                    "rubric": rubric,
+                    "dimensions": dimensions,
+                    "issues": ["Deliverable is empty."],
+                    "llm_used": False,
+                },
+            )
+
+        if not is_claude_enabled():
+            return (
+                0.7,
+                {
+                    "rubric": rubric,
+                    "dimensions": dimensions,
+                    "issues": ["LLM critique skipped because Claude is disabled."],
+                    "llm_used": False,
+                },
+            )
+
+        user = (
+            "Evaluate this deliverable against the rubric and return strict JSON only.\n\n"
+            "Schema:\n"
+            "{\n"
+            "  \"score\": number (0.0 to 1.0),\n"
+            "  \"issues\": [string],\n"
+            "  \"strengths\": [string]\n"
+            "}\n\n"
+            f"Rubric:\n{rubric}\n\n"
+            "Dimensions:\n"
+            + ", ".join(str(d) for d in dimensions)
+            + "\n\n"
+            "Deliverable:\n"
+            + text_str[:12000]
         )
+        try:
+            payload = claude_generate_json(
+                system="You are a strict quality evaluator. Return JSON only.",
+                user=user,
+                max_tokens=500,
+            )
+        except Exception as exc:
+            logger.warning("LLMCritiqueEvaluator call failed: %s", exc)
+            return (
+                0.7,
+                {
+                    "rubric": rubric,
+                    "dimensions": dimensions,
+                    "issues": ["LLM critique failed; used deterministic fallback score."],
+                    "llm_used": False,
+                },
+            )
 
-        # Placeholder: rate based on text length as proxy for completeness
-        text_len = len((text or "").strip())
-        score = min(1.0, text_len / 500)  # Score increases with content length up to 500 chars
+        if not isinstance(payload, dict):
+            return (
+                0.7,
+                {
+                    "rubric": rubric,
+                    "dimensions": dimensions,
+                    "issues": ["LLM critique returned invalid payload format."],
+                    "llm_used": False,
+                },
+            )
 
+        raw_score = payload.get("score", 0.7)
+        try:
+            score = max(0.0, min(1.0, float(raw_score)))
+        except (TypeError, ValueError):
+            score = 0.7
+        issues = payload.get("issues")
+        strengths = payload.get("strengths")
+        issues_out = [str(i).strip() for i in issues if str(i).strip()][:max_issues] if isinstance(issues, list) else []
+        strengths_out = [str(s).strip() for s in strengths if str(s).strip()][:max_issues] if isinstance(strengths, list) else []
         return (
             score,
             {
                 "rubric": rubric,
                 "dimensions": dimensions,
-                "text_length": text_len,
-                "placeholder_score": True,
-                "message": "LLMCritiqueEvaluator: Claude API not yet implemented",
+                "issues": issues_out,
+                "strengths": strengths_out,
+                "llm_used": True,
             },
         )
 

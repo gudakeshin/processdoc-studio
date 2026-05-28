@@ -4,6 +4,8 @@ import contextlib
 import json
 import logging
 import re
+import tempfile
+import urllib.request
 from datetime import datetime
 from app.core.tz import IST
 from pathlib import Path
@@ -97,6 +99,7 @@ def _merge_branding_dict(branding: Any) -> dict[str, Any]:
             "neutral_dark": str(branding.get("neutral_dark") or "#1A1A1A"),
             "text_primary": str(branding.get("text_primary") or "#1A1A1A"),
             "text_inverse": str(branding.get("text_inverse") or "#FFFFFF"),
+            "logo_url": str(branding.get("logo_url") or ""),
         }
     # BrandingContext or similar dataclass
     pal = getattr(branding, "palette", None)
@@ -117,6 +120,7 @@ def _merge_branding_dict(branding: Any) -> dict[str, Any]:
         "neutral_dark": str(getattr(pal, "neutral_dark", None) if pal is not None else None) or "#1A1A1A",
         "text_primary": str(getattr(pal, "text_primary", None) if pal is not None else None) or "#1A1A1A",
         "text_inverse": str(getattr(pal, "text_inverse", None) if pal is not None else None) or "#FFFFFF",
+        "logo_url": str(getattr(branding, "logo_url", None) or ""),
     }
 
 
@@ -542,6 +546,7 @@ class PPTXDeliverable(IDeliverable):
         self._add_text(slide, 0.60, 1.15, 8.80, 1.05, title_text, 44, "white", bold=True)
         subtitle = self._safe_text(item.get("subtitle"), "Executive Presentation")
         self._add_text(slide, 0.60, 2.48, 8.80, 0.55, subtitle, 18, "white")
+        self._add_brand_logo(slide)
         badges = item.get("badges") if isinstance(item.get("badges"), list) else []
         xs = [0.60, 3.80]
         y_start = 3.22
@@ -559,6 +564,37 @@ class PPTXDeliverable(IDeliverable):
             self._render_footer_note(slide, footer)
         notes = self._safe_text(item.get("notes"), "")
         self._set_slide_notes(slide, notes)
+
+    def _add_brand_logo(self, slide: Any) -> None:
+        logo_url = str(self._brand.get("logo_url") or "").strip()
+        if not logo_url:
+            return
+        source: str | None = None
+        if logo_url.startswith(("http://", "https://")):
+            try:
+                suffix = Path(logo_url.split("?")[0]).suffix or ".png"
+                with urllib.request.urlopen(logo_url, timeout=8) as resp:
+                    data = resp.read()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(data)
+                    source = tmp.name
+            except Exception as exc:
+                logger.warning("Failed to download branding logo_url %s: %s", logo_url, exc)
+        else:
+            p = Path(logo_url)
+            if p.exists() and p.is_file():
+                source = str(p)
+        if not source:
+            return
+        try:
+            slide.shapes.add_picture(
+                source,
+                Inches(self._ix(8.10)),
+                Inches(self._iy(0.35)),
+                width=Inches(self._ix(1.40)),
+            )
+        except Exception as exc:
+            logger.warning("Failed to render branding logo: %s", exc)
 
     def _render_content_slide(self, prs: Any, item: dict[str, Any], page_num: int, total: int, slide_type: str) -> None:
         renderers = {

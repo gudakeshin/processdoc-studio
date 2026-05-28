@@ -112,7 +112,7 @@ class VisualQualityRule(QualityRule):
 
         issues: list[str] = []
         allowed_stat_fills = {"dark", "mid_dark", "gray"}
-        allowed_column_accents = {"green", "dark", "gray"}
+        allowed_column_accents = {"green", "dark", "gray", "mid_dark", "mid", "dark_green"}
         allowed_layer_fills = {"green", "dark", "mid_dark", "gray", "mid", "dark_green"}
 
         for idx, raw_slide in enumerate(slides, start=1):
@@ -188,6 +188,14 @@ class VisualQualityRule(QualityRule):
 
             if density_words > 100:
                 issues.append(f"Slide {idx}: content density is high ({density_words} words); target ≤100 for readable executive slides.")
+
+        if len(slides) >= 10:
+            has_section_divider = any(
+                isinstance(s, dict) and str(s.get("slide_type") or "").strip().lower() == "section_divider"
+                for s in slides
+            )
+            if not has_section_divider:
+                issues.append("Deck has 10+ slides but no section_divider slide to mark narrative act transitions.")
 
         if not issues:
             return QualityResult(score=1.0, issues=[], remediation_hint=None)

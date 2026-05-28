@@ -120,10 +120,17 @@ def _storytelling_metrics(pptx_slides: list[dict[str, Any]], text_by_slide: dict
         rendered_chars = sum(len(t.strip()) for t in rendered_blocks if t and t.strip())
         bullet_count = len(slide.get("bullets", [])) if isinstance(slide.get("bullets"), list) else 0
         visual_payload = 0
-        for field in ("stat_cards", "column_cards", "stack_layers", "process_flow"):
+        for field in ("stat_cards", "column_cards", "stack_layers"):
             value = slide.get(field)
             if isinstance(value, list):
                 visual_payload += len(value)
+        flow = slide.get("process_flow")
+        if isinstance(flow, list):
+            visual_payload += len(flow)
+        elif isinstance(flow, dict):
+            steps = flow.get("steps")
+            if isinstance(steps, list):
+                visual_payload += len(steps)
         if isinstance(slide.get("table"), dict):
             visual_payload += len(slide["table"].get("rows", [])) if isinstance(slide["table"].get("rows"), list) else 0
         if isinstance(slide.get("chart"), dict):
@@ -364,14 +371,17 @@ def _extract_expected_text_from_slide(slide: dict[str, Any]) -> list[str]:
             if bn.get(k)
         )
 
-    if "process_flow" in slide and isinstance(slide["process_flow"], list):
-        for step in slide["process_flow"]:
-            if isinstance(step, dict):
-                expected.extend(
-                    str(step.get(k))
-                    for k in ("label", "description")
-                    if step.get(k)
-                )
+    if "process_flow" in slide:
+        flow = slide["process_flow"]
+        steps = flow.get("steps", []) if isinstance(flow, dict) else flow
+        if isinstance(steps, list):
+            for step in steps:
+                if isinstance(step, dict):
+                    expected.extend(
+                        str(step.get(k))
+                        for k in ("label", "description")
+                        if step.get(k)
+                    )
 
     if "footer" in slide and slide["footer"]:
         expected.append(str(slide["footer"]))
