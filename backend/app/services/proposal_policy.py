@@ -195,6 +195,11 @@ def generate_deck_outline_preview(
                     "output_type": output_type,
                     "skill_id": skill_id or PROPOSAL_SKILL_ID,
                     "source": "collaborative_decisions",
+                    "narrative_arc": str(
+                        (discovery or {}).get("narrative_arc")
+                        or _storyline_arc_from_memory(db=db, project_id=project_id)
+                        or ""
+                    ).strip().lower(),
                 }
         except Exception:
             pass  # Fall through to LLM generation on any error.
@@ -272,6 +277,7 @@ def generate_deck_outline_preview(
             "rationale": str(payload.get("rationale") or ""),
             "output_type": output_type,
             "skill_id": skill_id or PROPOSAL_SKILL_ID,
+            "narrative_arc": str(brief.get("narrative_arc") or "").strip().lower(),
         }
     except Exception:
         return None

@@ -292,7 +292,7 @@ class Settings(BaseSettings):
     # Feature flag for narrative-coherence LLM critique blend (fail-open when disabled or unavailable).
     # When enabled, a short LLM critique augments the deterministic issues list
     # before the narrative score is aggregated.
-    narrative_llm_critique_enabled: bool = False
+    narrative_llm_critique_enabled: bool = True
     # Maximum issues taken from the LLM critique blend per evaluation.
     narrative_llm_critique_max_issues: int = 4
 

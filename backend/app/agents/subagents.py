@@ -2695,6 +2695,13 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             ),
         )
         plan_discovery = (ctx.plan_payload or {}).get("discovery") if isinstance((ctx.plan_payload or {}).get("discovery"), dict) else {}
+        # Fill narrative_arc from deck_outline_preview when plan discovery omits it.
+        if not plan_discovery.get("narrative_arc"):
+            _outline_arc = str(
+                ((ctx.plan_payload or {}).get("deck_outline_preview") or {}).get("narrative_arc") or ""
+            ).strip().lower()
+            if _outline_arc:
+                plan_discovery = {**plan_discovery, "narrative_arc": _outline_arc}
         is_proposal_skill = bool(str(primary.get("id") or "").startswith("proposal_")) if isinstance(primary, dict) else False
         company_name = getattr(ctx.branding, "company_name", None) or "Deloitte"
         n_steps = len(pm.get("steps") or [])
@@ -3004,6 +3011,21 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 user = (
                     user
                     + f"\n\nVisual QA feedback from previous generation (must be addressed):\n{hints_text}"
+                )
+        pptx_narrative_fb: list[dict] = (ctx.plan_payload or {}).get("pptx_narrative_feedback") or []
+        if pptx_narrative_fb and isinstance(pptx_narrative_fb, list):
+            _narr_hints = "\n".join(
+                f"- {h.get('instruction', '')}"
+                for h in pptx_narrative_fb
+                if isinstance(h, dict) and h.get("instruction")
+            )
+            if _narr_hints:
+                user = (
+                    user
+                    + "\n\nNarrative coherence feedback from previous generation "
+                    "(address in slide titles and story arc — tighten transitions, "
+                    "eliminate topic drift, ensure every slide title asserts a specific claim):\n"
+                    + _narr_hints
                 )
         prior_slides_raw = (ctx.plan_payload or {}).get("prior_pptx_slides")
         prior_slides: list[dict[str, Any]] | None = None

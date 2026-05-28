@@ -111,6 +111,7 @@ _PLAN_KEYS_TO_CLEAR_AFTER_SUCCESSFUL_EVALUATOR: tuple[str, ...] = (
     "process_map_visual_feedback",
     "docx_narrative_feedback",
     "pdf_narrative_feedback",
+    "pptx_narrative_feedback",
 )
 
 
@@ -1675,6 +1676,23 @@ def _execute_run_job(
                                 narrative_key = f"{narrative_output}_narrative_feedback"
                                 retry_plan[narrative_key] = narrative_hints
                                 hints_injected[narrative_key] = len(narrative_hints)
+                            # Also surface narrative arc issues to the PPTX agent so it can
+                            # tighten slide titles and story flow on retry.
+                            _pptx_narrative_src = next(
+                                (
+                                    t for t in ("docx", "pdf")
+                                    if isinstance(narrative_signals.get(t), dict)
+                                    and not narrative_signals[t].get("passed")
+                                ),
+                                None,
+                            )
+                            if _pptx_narrative_src:
+                                _pptx_narrative_hints = build_narrative_feedback_hints(
+                                    narrative_signals, _pptx_narrative_src
+                                )
+                                if _pptx_narrative_hints:
+                                    retry_plan["pptx_narrative_feedback"] = _pptx_narrative_hints
+                                    hints_injected["pptx_narrative_feedback"] = len(_pptx_narrative_hints)
                         except Exception as narrative_exc:
                             _log.debug(
                                 "narrative_feedback retry injection skipped for run %s: %s",

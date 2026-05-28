@@ -373,8 +373,8 @@ def wiki_query_with_retry(
             if not pages:
                 return None, "No relevant pages found in wiki"
 
-            # Synthesize answer
-            answer = _synthesize_answer(question, pages)
+            # Synthesize answer (pass wiki_type/project_id for schema injection)
+            answer = _synthesize_answer(question, pages, wiki_type=wiki_type, project_id=project_id)
 
             # (Optional) Run QA
             qa_result = None
@@ -383,8 +383,8 @@ def wiki_query_with_retry(
 
             result = {
                 "answer": answer,
-                "citations": _extract_citations(pages),
-                "source_pages": [p["id"] for p in pages],
+                "citations": _extract_citations(answer, pages),
+                "source_pages": [p.get("page_id") or p.get("id", "") for p in pages],
                 "qa_result": qa_result,
             }
 
@@ -2157,34 +2157,13 @@ def _evaluate_wiki_qa(wiki_type: str, project_id: str | None) -> dict:
         }
 
 
-def _get_wiki_index(wiki_type: str, project_id: str | None) -> dict | None:
-    """Get current wiki index. (To be implemented in Phase 2)"""
-    # Stub
-    return {"pages": []}
-
-
-def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id: str | None) -> list:
-    """Search wiki pages by relevance. (To be implemented in Phase 2)"""
-    # Stub
-    return []
-
-
-def _synthesize_answer(question: str, pages: list) -> str:
-    """Synthesize answer from pages. (To be implemented in Phase 2)"""
-    # Stub
-    return f"Answer to '{question}' (not yet implemented)"
-
-
-def _extract_citations(pages: list) -> list:
-    """Extract citations from pages. (To be implemented in Phase 2)"""
-    # Stub
-    return []
-
-
-def _evaluate_answer_quality(answer: str, pages: list, question: str) -> dict | None:
-    """Evaluate answer quality. (To be implemented in Phase 3)"""
-    # Stub
-    return None
+from app.services.wiki_query import (  # noqa: E402 — module-level re-export
+    _get_wiki_index,
+    _search_wiki_pages,
+    _synthesize_answer,
+    _extract_citations,
+    _evaluate_answer_quality,
+)
 
 
 def _get_all_wiki_pages(wiki_type: str, project_id: str | None) -> list:
