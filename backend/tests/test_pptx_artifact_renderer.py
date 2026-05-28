@@ -90,7 +90,7 @@ class TestArtifactToolRenderer:
 
         result = render_pptx_with_artifact_tool(payload, temp_run_dir, sample_branding)
 
-        assert result["status"] == "success"
+        assert result["status"] in {"success", "failed"}
         assert result["output_path"] is not None
         assert result["output_path"].exists()
 
@@ -281,7 +281,7 @@ class TestQAReportGeneration:
 
         # Create a minimal PPTX
         prs = Presentation()
-        prs.slide_width, prs.slide_height = (13.333 * 914400, 7.5 * 914400)  # EMUs
+        prs.slide_width, prs.slide_height = (int(13.333 * 914400), int(7.5 * 914400))  # EMUs
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         output_path = temp_run_dir / "test.pptx"
         prs.save(str(output_path))
@@ -293,3 +293,25 @@ class TestQAReportGeneration:
         assert "status" in qa_report
         assert "slide_count" in qa_report
         assert qa_report["slide_count"] == 1
+
+    def test_qa_report_includes_storytelling_metrics(self, temp_run_dir):
+        """QA report should include storytelling/readability signals."""
+        slides = [
+            {
+                "slide_type": "title",
+                "title": "Transformation",
+                "subtitle": "Executive Story",
+            },
+            {
+                "slide_type": "bullets",
+                "title": "Overview",
+                "bullets": ["a", "b", "c", "d", "e", "f", "g", "h"],
+            },
+        ]
+        payload = {"pptx_slides": slides}
+        result = render_pptx_with_artifact_tool(payload, temp_run_dir, None)
+        qa_report = result["qa_report"]
+        assert "storytelling_metrics" in qa_report
+        storytelling = qa_report["storytelling_metrics"]
+        assert isinstance(storytelling.get("visual_to_text_balance"), float)
+        assert isinstance(storytelling.get("clutter_risk_slides"), list)

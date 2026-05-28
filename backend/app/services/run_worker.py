@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -154,6 +155,36 @@ def _load_pptx_render_signal_hints(run_dir: Any) -> tuple[list[dict[str, Any]], 
         title = str(item.get("title") or f"Slide {idx}").strip()
         hints.append({"slide_index": idx, "instruction": f"{title}: {reason}"})
         findings.append(f"[PPTX Render] Slide {idx} ({title}): {reason}")
+
+    qa_path = run_dir / "pptx_render_quality.json"
+    if qa_path.exists():
+        try:
+            qa_raw = json.loads(qa_path.read_text(encoding="utf-8"))
+        except Exception:
+            qa_raw = {}
+        storytelling = qa_raw.get("storytelling_metrics") if isinstance(qa_raw, dict) else None
+        if isinstance(storytelling, dict):
+            clutter = storytelling.get("clutter_risk_slides") if isinstance(storytelling.get("clutter_risk_slides"), list) else []
+            weak = storytelling.get("weak_slides") if isinstance(storytelling.get("weak_slides"), list) else []
+            transitions = storytelling.get("transition_issues") if isinstance(storytelling.get("transition_issues"), list) else []
+            for idx in clutter[:8]:
+                try:
+                    n = int(idx)
+                except Exception:
+                    continue
+                hints.append({"slide_index": n, "instruction": "Reduce text density and split long bullets into visual elements."})
+                findings.append(f"[PPTX Storytelling] Slide {n}: clutter/readability risk detected.")
+            for idx in weak[:8]:
+                try:
+                    n = int(idx)
+                except Exception:
+                    continue
+                hints.append({"slide_index": n, "instruction": "Strengthen storyline with a specific insight title and evidence-backed takeaway."})
+                findings.append(f"[PPTX Storytelling] Slide {n}: weak storytelling signal detected.")
+            if transitions:
+                findings.append(
+                    f"[PPTX Storytelling] Transition continuity risk near slides {transitions[:8]}."
+                )
     return hints, findings
 
 
@@ -1293,7 +1324,8 @@ def _execute_run_job(
                     except BaseException as exc:
                         err_holder["error"] = exc
 
-                t = threading.Thread(target=_runner, daemon=True)
+                _ctx_copy = contextvars.copy_context()
+                t = threading.Thread(target=_ctx_copy.run, args=(_runner,), daemon=True)
                 t.start()
                 t.join()
                 if "error" in err_holder:

@@ -871,11 +871,19 @@ def _run_pptx_post_processor(ctx: AgentContext, slides: list[dict[str, Any]]) ->
     if _primary_skill(ctx):
         return slides
 
+    _pp_company = getattr(ctx.branding, "company_name", None) or "Deloitte"
     system_parts: list[str] = [
         "You post-process a slide deck JSON blueprint for brand tone, clarity, and consistency.",
         "Input and output: one JSON object {\"slides\": [...]} only — no markdown fences or commentary.",
         "Preserve the same number of slides in the same order; do not change any slide_type value.",
         "Keep facts, numbers, and process names accurate; tighten titles, bullets, descriptions, and table cells.",
+        "HEADLINE QUALITY: Scan every slide title. Convert any topic label (a name that merely describes "
+        "content — e.g., 'Overview', 'Approach', 'Risks', 'Current State', 'Three Pillars') into an "
+        "assertion headline (a claim that states an insight — e.g., 'Manual Work Consumes 40% of Capacity', "
+        "'Four Failure Modes That Derail Programs Like This'). Preserve all facts and numbers.",
+        f"BRAND VOICE: This is a {_pp_company} executive deck. All titles and bullets must read as "
+        "confident, data-grounded points of view — no hedge words ('may', 'could potentially'), "
+        "no passive voice on impact claims.",
     ]
     for skill in post_processors:
         name = str(skill.get("display_name") or skill.get("id") or "Brand")
@@ -2624,20 +2632,42 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 "Return ONLY a JSON object with a single top-level key 'slides' containing an array. "
                 "No prose, no markdown fences, no explanation. The JSON must be parseable with json.loads().\n\n"
                 "CRITICAL: Always populate slides with actual data. Never generate empty arrays for stat_cards, column_cards, or table rows.\n\n"
+                "HEADLINE RULE: Every slide title MUST be an insight assertion — a claim a senior executive would quote. "
+                "Test: a good title completes 'This deck argues that ___.' "
+                "BAD: 'Risk Management' | GOOD: 'Four Failure Modes That Derail Programs Like This' "
+                "BAD: 'Current State Overview' | GOOD: 'Manual Reconciliation Consumes 40% of Finance Capacity' "
+                "BAD: 'Proposed Approach' | GOOD: 'A Five-Layer Operating Model That Eliminates the Bottleneck' "
+                "BAD: 'Process Scale & Scope' | GOOD: 'Manual Work Consumes 40% of Capacity' "
+                "BAD: 'Three Pillars' | GOOD: 'Three Levers That Collapse the Bottleneck' "
+                "BAD: 'Savings Opportunity' | GOOD: '$400M Left on the Table Annually'\n\n"
+                "VISUAL RHYTHM: Use fill values to signal slide purpose:\n"
+                "  'dark'     → heavyweight impact: economic reframe, proof trace, evidence\n"
+                "  'green'    → opportunity/action: solution pillars, win themes, calls-to-action\n"
+                "  'mid_dark' → evidence: delivery phases, secondary proof metrics, step boxes\n"
+                "  'gray'     → reference/detail: supporting tables, supplementary stats\n"
+                "Within stat_cards and column_cards, ALWAYS vary fills across cards "
+                "(e.g., dark/mid_dark/gray or dark/green/gray). "
+                "Never assign the same fill to all cards in one slide.\n\n"
+                "SECTION RHYTHM: For 10+ slide decks, insert slide_type='section_divider' "
+                "between major narrative acts (after slide 3 and after slide 7). "
+                "section_divider title = the act's governing question (e.g., 'Why Act Now?').\n\n"
+                "EYEBROW: Set the 'subtitle' field to a short ALL-CAPS context label "
+                "(2–4 words, e.g., 'THE CENTRAL INSIGHT', 'REDEFINING THE BOTTLENECK'). "
+                "This renders above the main title as visual hierarchy.\n\n"
                 "EXAMPLE — stat_cards slide (slide_type=\"stat_cards\"):\n"
-                '{"slide_type": "stat_cards", "title": "Process Scale & Scope", "stat_cards": [\n'
-                '  {"stat": "14", "label": "Process Steps", "description": "End-to-end procure-to-pay workflow", "fill": "dark"},\n'
-                '  {"stat": "5", "label": "Key Roles", "description": "Procurement, Finance, Stores, Treasury, Vendors", "fill": "mid_dark"},\n'
-                '  {"stat": "$450M", "label": "Annual Spend", "description": "High-volume P2P spanning organization", "fill": "gray"}\n'
+                '{"slide_type": "stat_cards", "title": "Manual Work Consumes 40% of Finance Capacity", "stat_cards": [\n'
+                '  {"stat": "14", "label": "Process Steps", "description": "Each a manual handoff that adds cycle time and error risk", "fill": "dark"},\n'
+                '  {"stat": "5", "label": "Key Roles", "description": "Procurement, Finance, Stores, Treasury, Vendors — all in silos", "fill": "mid_dark"},\n'
+                '  {"stat": "$450M", "label": "Annual Spend at Risk", "description": "High-volume P2P with no automated controls", "fill": "gray"}\n'
                 ']}\n\n'
                 "EXAMPLE — column_cards slide (slide_type=\"column_cards\"):\n"
-                '{"slide_type": "column_cards", "title": "Three Pillars", "column_cards": [\n'
-                '  {"heading": "Governance", "accent": "green", "body": "Centralize vendor master; enforce controls"},\n'
-                '  {"heading": "Quality", "accent": "dark", "body": "Activate QM module; block failures"},\n'
-                '  {"heading": "Automation", "accent": "gray", "body": "OCR invoices; DMEE payment integration"}\n'
+                '{"slide_type": "column_cards", "title": "Three Levers That Collapse the Bottleneck", "column_cards": [\n'
+                '  {"heading": "Governance", "accent": "green", "body": "Centralize vendor master; enforce controls before a single invoice is processed"},\n'
+                '  {"heading": "Quality Gates", "accent": "dark", "body": "Activate QM module; block failures at source, not after the fact"},\n'
+                '  {"heading": "End-to-End Automation", "accent": "gray", "body": "OCR invoices; DMEE payment integration — zero manual keying"}\n'
                 ']}\n\n'
                 "EXAMPLE — table slide (slide_type=\"table\"):\n"
-                '{"slide_type": "table", "title": "Workflow Steps", "table": {\n'
+                '{"slide_type": "table", "title": "The Handoff Map: Where Delays Compound", "table": {\n'
                 '  "headers": ["Step", "Owner", "Inputs → Outputs"],\n'
                 '  "rows": [\n'
                 '    ["1. Create PR", "Dept Head", "Material list → PR in ME51N"],\n'
@@ -2646,17 +2676,17 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 "  ]\n"
                 '}}\n\n'
                 "EXAMPLE — chart slide (slide_type=\"chart\"):\n"
-                '{"slide_type": "chart", "title": "Savings Trajectory", "chart": {\n'
+                '{"slide_type": "chart", "title": "Savings Accelerate After Month 6", "chart": {\n'
                 '  "type": "column", "categories": ["Q1","Q2","Q3","Q4"],\n'
                 '  "series": [{"name": "Cumulative Savings ($M)", "values": [15, 38, 65, 92]}],\n'
                 '  "subtitle": "Source: FY2024 management accounts"\n'
                 '}}\n\n'
                 "EXAMPLE — big_number slide (slide_type=\"big_number\"):\n"
-                '{"slide_type": "big_number", "title": "Savings Opportunity", "big_number": {\n'
+                '{"slide_type": "big_number", "title": "$400M Left on the Table Annually", "big_number": {\n'
                 '  "stat": "$400M–$600M", "label": "Annual Savings Run-Rate",\n'
                 '  "context": "Achievable by Month 18 with full $6B spendbase coverage.", "fill": "dark"}}\n\n'
                 "EXAMPLE — process_flow slide (slide_type=\"process_flow\"):\n"
-                '{"slide_type": "process_flow", "title": "End-to-End Workflow", "process_flow": {"steps": [\n'
+                '{"slide_type": "process_flow", "title": "Five Steps, One Owner at Each Gate", "process_flow": {"steps": [\n'
                 '  {"label": "Initiation", "description": "Request raised in ERP system", "fill": "dark"},\n'
                 '  {"label": "Review", "description": "Finance validates against approved budget", "fill": "green"},\n'
                 '  {"label": "Approval", "description": "CFO signs off digitally", "fill": "mid_dark"}\n'
@@ -2666,11 +2696,14 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
         )
         plan_discovery = (ctx.plan_payload or {}).get("discovery") if isinstance((ctx.plan_payload or {}).get("discovery"), dict) else {}
         is_proposal_skill = bool(str(primary.get("id") or "").startswith("proposal_")) if isinstance(primary, dict) else False
+        company_name = getattr(ctx.branding, "company_name", None) or "Deloitte"
         n_steps = len(pm.get("steps") or [])
         discovery_budget = (plan_discovery.get("length_budget") if isinstance(plan_discovery.get("length_budget"), dict) else {})
         budget_pptx = int(discovery_budget.get("pptx")) if str(discovery_budget.get("pptx") or "").isdigit() else None
         if is_proposal_skill and budget_pptx:
-            n_slides_guidance = f"{max(6, min(budget_pptx, 20))} slides"
+            n_slides_guidance = f"{max(10, min(budget_pptx, 16))} slides"
+        elif is_proposal_skill:
+            n_slides_guidance = "12–14 slides"
         elif n_steps <= 3:
             n_slides_guidance = "6 slides"
         elif n_steps <= 6:
@@ -2789,7 +2822,8 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             user_core = (
                 f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
                 "below (user instruction, assembled context, prior narrative/document drafts).\n"
-                "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
+                f"Use {company_name} visual conventions: varied slide types, not just bullets.\n"
+                f"Refer to the delivery firm as '{company_name}' throughout — never use generic 'the firm'.\n"
                 f"Presentation title (use exactly): \"{presentation_title}\"\n"
                 + data_for_slide_2 + data_for_slide_7 + "\n"
                 f"Slide ordering mandate (follow this sequence):\n{slide_mandate}\n\n"
@@ -2800,16 +2834,63 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             arc = str(plan_discovery.get("narrative_arc") or "").strip().lower()
             proposal_mandate = {
                 "scqa": (
-                    "1. Situation/Context\n2. Complication\n3. Key Question\n4. Answer/Hypothesis\n"
-                    "5. Evidence & Value\n6. Delivery approach\n7. Risks & mitigations\n8. Next actions"
+                    "1. slide_type=\"title\" — tagline = one-sentence deck thesis; badges = 3 quantified stakes (e.g., FTE count, annual spend, cycle time)\n"
+                    "2. slide_type=\"big_number\" or \"stat_cards\" — Situation/Complication: MUST quantify the cost of status quo "
+                    "in economic or competitive terms (e.g., '40% of capacity wasted on manual work', "
+                    "'peers automate at 1/10th your cost per transaction'); NO generic current-state description\n"
+                    "3. slide_type=\"column_cards\" or \"bullets\" — Key Question: frame as the board decision the audience must make; "
+                    "name the consequences of each path (transform now vs. defer); use 2–3 columns or bullets\n"
+                    "4. slide_type=\"stack_layers\" (3–5 layers) — Answer/Hypothesis: show the transformation architecture "
+                    "at three levels — (a) strategy/outcome, (b) platform/operating model, (c) interface/experience — "
+                    "NOT a flat feature list; each layer title must be an assertion\n"
+                    "5. slide_type=\"stat_cards\" or \"chart\" — Evidence & Value: 3 proof metrics with named source citation "
+                    "(e.g., 'Gartner 2024', 'Peer benchmark — F500 manufacturer'); benchmarks must be source-named, not generic\n"
+                    "6. slide_type=\"process_flow\" or \"stack_layers\" — Delivery Approach: show 3 deployment phases/paths "
+                    "with named milestones, timeline, and a named owner role at each gate\n"
+                    "7. slide_type=\"table\" or \"column_cards\" — Risks & Failure Modes: MUST name 3–5 specific failure modes "
+                    "with concrete consequence (time lost, money at risk, or control gap), then the mitigation for each; "
+                    "NO generic risk language like 'change management risk' — name the actual failure\n"
+                    "8. slide_type=\"big_number\" or \"stat_cards\" — Proof Trace: show a worked example, case outcome, or "
+                    "reference implementation with specific numbers (e.g., '$4.8M identified, 23 minutes, 85% confidence'); "
+                    "this is the concrete proof the approach works — not theoretical\n"
+                    "9. slide_type=\"chart\" or \"table\" — Commercial View: show investment vs. return trajectory with "
+                    "payback period; include Phase 1 cost estimate\n"
+                    "10. slide_type=\"bullets\" — Next Actions: exactly 3 numbered actions, each with a named owner role "
+                    "(not a person name), tied to a specific date or decision gate, ≤15 words each"
                 ),
                 "pyramid": (
-                    "1. Governing thought\n2-4. Supporting arguments\n5-6. Evidence and proof\n"
-                    "7. Implementation roadmap\n8. Decision ask and next actions"
+                    "1. slide_type=\"title\" — Governing thought as tagline: state the headline conclusion, not the process name\n"
+                    "2. slide_type=\"big_number\" or \"stat_cards\" — Supporting argument 1: the economic cost of the problem; "
+                    "quantify with a named metric (e.g., '$X wasted annually', 'Y% capacity absorbed by manual work')\n"
+                    "3. slide_type=\"column_cards\" — Supporting argument 2: the three structural causes of the problem; "
+                    "each column names a root cause, not a symptom\n"
+                    "4. slide_type=\"stack_layers\" — Supporting argument 3: the solution architecture at strategy → platform → "
+                    "operating model levels; each layer is an assertion\n"
+                    "5. slide_type=\"stat_cards\" — Evidence: 3 proof metrics from named external sources\n"
+                    "6. slide_type=\"chart\" or \"table\" — Proof: show trajectory or comparative data that validates the approach\n"
+                    "7. slide_type=\"process_flow\" or \"stack_layers\" — Implementation roadmap: phases with milestones, owners, dates\n"
+                    "8. slide_type=\"table\" — Risks & Failure Modes: 3–5 named failure modes with consequences and mitigations\n"
+                    "9. slide_type=\"chart\" — Commercial View: investment vs. return; payback timeline\n"
+                    "10. slide_type=\"bullets\" — Decision ask and next actions: 3 numbered items with owner roles and dates"
                 ),
                 "case_led": (
-                    "1. Client context\n2. Case for change\n3. Target outcomes\n4-5. Proposed approach\n"
-                    "6. Proof points\n7. Commercial view\n8. Next actions"
+                    "1. slide_type=\"title\" — Client context as tagline: name the client, the industry, and the headline challenge\n"
+                    "2. slide_type=\"big_number\" or \"stat_cards\" — Case for change: quantify the competitive or economic "
+                    "consequence of the status quo; reframe from 'we have a problem' to 'here is what it costs you annually'\n"
+                    "3. slide_type=\"column_cards\" — Target outcomes: 3 measurable outcomes the engagement will deliver "
+                    "(not activities — outcomes with numbers: '60% cycle time reduction', '$50M cost removal')\n"
+                    "4. slide_type=\"stack_layers\" — Proposed approach (part 1): transformation architecture at 3 levels — "
+                    "strategy, platform, operating model\n"
+                    "5. slide_type=\"process_flow\" or \"table\" — Proposed approach (part 2): phased delivery plan with "
+                    "milestones, owners, and timelines\n"
+                    "6. slide_type=\"stat_cards\" or \"chart\" — Proof points: 3 metrics from comparable engagements or "
+                    "industry benchmarks with source citations\n"
+                    "7. slide_type=\"table\" or \"column_cards\" — Risks & Failure Modes: 3–5 named failure modes with "
+                    "concrete consequences and mitigations\n"
+                    "8. slide_type=\"big_number\" or \"stat_cards\" — Proof Trace: concrete case outcome or worked example "
+                    "with specific numbers; shows the approach is proven\n"
+                    "9. slide_type=\"chart\" or \"table\" — Commercial view: investment vs. return; payback period\n"
+                    "10. slide_type=\"bullets\" — Next actions: 3 items with named owner roles and specific dates"
                 ),
                 "compare": (
                     "1. Decision context\n2. Option criteria\n3-5. Option comparison\n6. Recommended option\n"
@@ -2819,9 +2900,10 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             user_core = (
                 f"Create a {n_slides_guidance} executive presentation grounded in the ProcessModel AND any excerpts "
                 "below (user instruction, assembled context, prior narrative/document drafts).\n"
-                "Use Deloitte visual conventions: varied slide types, not just bullets.\n"
+                f"Use {company_name} visual conventions: varied slide types, not just bullets.\n"
+                f"Refer to the delivery firm as '{company_name}' throughout — never use generic 'the firm'.\n"
                 f"Presentation title (use exactly): \"{presentation_title}\"\n"
-                + data_for_slide_2 + data_for_slide_7 + "\n"
+                + (data_for_slide_2 if not is_proposal_skill else "") + data_for_slide_7 + "\n"
                 + (
                     f"Slide ordering mandate ({arc or 'default'}):\n{proposal_mandate}\n\n"
                     if is_proposal_skill and proposal_mandate
@@ -2878,6 +2960,19 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 discovery_lines.append(f"Tone: {tone}")
             if themes:
                 discovery_lines.append("Win themes: " + ", ".join(str(x) for x in themes[:5]))
+            # Synthesise a single thesis statement that anchors every slide title
+            primary_outcome = str(outcome.get("primary") or "").strip() if outcome else ""
+            first_theme = str(themes[0]).strip() if themes else ""
+            if primary_outcome:
+                deck_thesis = primary_outcome
+                if first_theme and first_theme.lower() not in primary_outcome.lower():
+                    deck_thesis = f"{primary_outcome}, anchored in {first_theme}"
+                discovery_lines.insert(0,
+                    f"DECK THESIS (every slide must reinforce this): \"{deck_thesis}\". "
+                    "State it explicitly on slide 2 as the economic reframe — quantify the cost of the status quo "
+                    "or the competitive gap in concrete numbers. "
+                    "Every subsequent slide title must be a specific argument FOR this thesis, not a topic label."
+                )
             if discovery_lines:
                 appendix = (
                     appendix

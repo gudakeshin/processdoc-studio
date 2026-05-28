@@ -59,3 +59,26 @@ def test_evaluate_pptx_fail_open_on_model_error(monkeypatch, tmp_path: Path) -> 
     out = _evaluate_pptx(pptx_path, "p1", "r1")
     assert out["status"] == "skip"
     assert "failed" in str(out["summary"]).lower()
+
+
+def test_evaluate_pptx_prompt_avoids_hardcoded_brand_bias(monkeypatch, tmp_path: Path) -> None:
+    pptx_path = tmp_path / "output.pptx"
+    pptx_path.write_bytes(b"placeholder")
+    monkeypatch.setattr(settings, "pptx_visual_critic_enabled", True, raising=False)
+    monkeypatch.setattr("app.services.visual_qa.is_claude_enabled", lambda: True)
+    monkeypatch.setattr(
+        "app.services.visual_qa._extract_pptx_metadata",
+        lambda _: {"slide_count": 1, "canvas_w_inches": 13.333, "canvas_h_inches": 7.5, "slides": []},
+    )
+
+    seen_user = {"text": ""}
+
+    def _ok(**kwargs: object) -> dict:
+        seen_user["text"] = str(kwargs.get("user") or "")
+        return {"status": "pass", "summary": "ok", "per_slide_findings": [], "remediation_hints": []}
+
+    monkeypatch.setattr("app.services.visual_qa.claude_generate_json", _ok)
+    out = _evaluate_pptx(pptx_path, "p1", "r1")
+    assert out["status"] == "pass"
+    assert "10.0" not in seen_user["text"]
+    assert "#86BC25" not in seen_user["text"]

@@ -136,10 +136,16 @@ def _extract_pptx_metadata(path: Path) -> dict[str, Any]:
                 # Fraction of canvas area that shapes collectively cover (proxy for density)
                 "content_density": round(min(1.0, covered / max(canvas_area, 0.01)), 3),
             })
+        fill_histogram: dict[str, int] = {}
+        for slide in slides_meta:
+            for fill in slide.get("fill_colors", []):
+                fill_histogram[str(fill)] = fill_histogram.get(str(fill), 0) + 1
+        dominant_fills = sorted(fill_histogram.items(), key=lambda kv: kv[1], reverse=True)[:5]
         return {
             "slide_count": len(slides_meta),
             "canvas_w_inches": round(W, 3),
             "canvas_h_inches": round(H, 3),
+            "dominant_fills": [{"rgb": rgb, "count": count} for rgb, count in dominant_fills],
             "slides": slides_meta,
         }
     except Exception as exc:
@@ -180,18 +186,13 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
         f"Project: {project_id} | Run: {run_id}\n\n"
         "Evaluate this PPTX deck using the structural metadata below.\n\n"
         "Design standard for this deck:\n"
-        "- Canvas must be 10.0\" × 5.625\"\n"
-        "- Every content slide (non-title) must carry brand chrome: #86BC25 green top bar "
-        "and #1A1A1A dark left stripe. Flag any content slide where has_green_chrome or "
-        "has_dark_chrome is false.\n"
-        "- stat_cards slides contain exactly 3 full-width columns across the canvas. "
-        "Expected content_density ≥ 0.45. Flag if below.\n"
-        "- bullets slides should have content_density that scales with bullet count. "
-        "Flag if a slide has very few text_blocks (≤ 2) and density < 0.15 — likely under-populated.\n"
-        "- column_cards slides: 3 balanced columns, content_density ≥ 0.45.\n"
-        "- stack_layers slides: horizontal rows, content_density ≥ 0.35.\n"
-        "- Any slide with shape_count < 4 is likely missing chrome — flag it.\n"
-        "- Infer the likely slide_type from the text_blocks and fill_colors present.\n\n"
+        "- Use the provided canvas dimensions as authoritative; do not assume a fixed canvas.\n"
+        "- Infer the active brand palette/chrome from dominant_fills and repeated fill_colors across slides.\n"
+        "- Flag only deviations from this deck's inferred style system (not from any hardcoded color).\n"
+        "- For content slides, assess consistency of title hierarchy, chrome repetition, and footer cadence.\n"
+        "- Assess visual storytelling quality by balancing text_blocks, shape_count, and content_density.\n"
+        "- Flag under-populated slides (very low density + sparse text) and cluttered slides (high density + long text_blocks).\n"
+        "- Infer likely slide_type from text_blocks/fill_colors and evaluate layout plausibility for that type.\n\n"
         "For each problematic slide include a concise instruction in remediation_hints that the "
         "PPTX generation agent can act on directly (e.g. 'Slide 2: stat_cards layout has low "
         "content_density 0.18 — ensure 3 full-width columns spanning the entire canvas width').\n\n"
