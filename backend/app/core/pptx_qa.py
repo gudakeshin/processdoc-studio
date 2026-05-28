@@ -94,6 +94,71 @@ def _check_for_placeholders(text: str) -> list[str]:
     return found
 
 
+def _storytelling_metrics(pptx_slides: list[dict[str, Any]], text_by_slide: dict[int, list[str]]) -> dict[str, Any]:
+    """Compute deterministic storytelling/readability signals from expected+rendered slides."""
+    total_slides = max(len(pptx_slides), len(text_by_slide))
+    if total_slides <= 0:
+        return {
+            "visual_to_text_balance": 0.0,
+            "clutter_risk_slides": [],
+            "weak_slides": [],
+            "transition_issues": [],
+        }
+
+    clutter_risk_slides: list[int] = []
+    weak_slides: list[int] = []
+    transition_issues: list[int] = []
+    slides_with_visual_primitives = 0
+
+    prev_section = ""
+    for idx, slide in enumerate(pptx_slides, start=1):
+        if not isinstance(slide, dict):
+            continue
+        slide_type = str(slide.get("slide_type") or "").strip().lower()
+        title = str(slide.get("title") or "").strip()
+        rendered_blocks = text_by_slide.get(idx - 1, [])
+        rendered_chars = sum(len(t.strip()) for t in rendered_blocks if t and t.strip())
+        bullet_count = len(slide.get("bullets", [])) if isinstance(slide.get("bullets"), list) else 0
+        visual_payload = 0
+        for field in ("stat_cards", "column_cards", "stack_layers", "process_flow"):
+            value = slide.get(field)
+            if isinstance(value, list):
+                visual_payload += len(value)
+        if isinstance(slide.get("table"), dict):
+            visual_payload += len(slide["table"].get("rows", [])) if isinstance(slide["table"].get("rows"), list) else 0
+        if isinstance(slide.get("chart"), dict):
+            visual_payload += 1
+        if isinstance(slide.get("big_number"), dict):
+            visual_payload += 1
+        if visual_payload > 0:
+            slides_with_visual_primitives += 1
+
+        if bullet_count >= 5 or rendered_chars > 600:
+            clutter_risk_slides.append(idx)
+        _FILLER_TITLES = {
+            "overview", "summary", "insights", "introduction", "background",
+            "next steps", "agenda", "takeaways", "appendix", "context",
+        }
+        if (not title or title.lower() in _FILLER_TITLES) and rendered_chars < 80 and visual_payload == 0 and bullet_count <= 2:
+            weak_slides.append(idx)
+
+        current_section = str(slide.get("subtitle") or "").strip().lower()
+        if idx > 1 and not current_section and not prev_section and title and len(title.split()) <= 2:
+            transition_issues.append(idx)
+        prev_section = current_section
+
+        if slide_type == "bullets" and bullet_count <= 2 and rendered_chars < 120:
+            weak_slides.append(idx)
+
+    visual_to_text_balance = round(slides_with_visual_primitives / max(1, len(pptx_slides)), 3)
+    return {
+        "visual_to_text_balance": visual_to_text_balance,
+        "clutter_risk_slides": sorted(set(clutter_risk_slides)),
+        "weak_slides": sorted(set(weak_slides)),
+        "transition_issues": sorted(set(transition_issues)),
+    }
+
+
 def validate_pptx_against_slides(
     pptx_path: Path,
     pptx_slides: list[dict[str, Any]]
@@ -184,6 +249,23 @@ def validate_pptx_against_slides(
             empty_slides.append(slide_idx + 1)
             issues.append(f"Slide {slide_idx + 1}: Very low text content")
 
+    storytelling = _storytelling_metrics(pptx_slides, text_by_slide)
+    if storytelling["clutter_risk_slides"]:
+        issues.append(f"Clutter/readability risk on slides {storytelling['clutter_risk_slides']}")
+        remediation.append(
+            f"Reduce text density on slides {storytelling['clutter_risk_slides']}; split dense bullets into visual cards."
+        )
+    if storytelling["weak_slides"]:
+        issues.append(f"Weak storytelling signal on slides {storytelling['weak_slides']}")
+        remediation.append(
+            f"Strengthen slide intent on slides {storytelling['weak_slides']} with concrete insight titles and evidence."
+        )
+    if storytelling["transition_issues"]:
+        issues.append(f"Section-transition continuity risk on slides {storytelling['transition_issues']}")
+        remediation.append(
+            "Add explicit section breadcrumbs/subtitles to improve narrative flow between adjacent slides."
+        )
+
     # Overall status
     status = "pass" if not issues else "fail"
 
@@ -210,6 +292,7 @@ def validate_pptx_against_slides(
         "truncations": list(set(truncations)),
         "placeholders": list(set(placeholders)),
         "empty_slides": empty_slides,
+        "storytelling_metrics": storytelling,
         "remediation": remediation,
         "pptx_path": str(pptx_path),
     }

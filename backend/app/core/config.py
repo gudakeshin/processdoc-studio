@@ -285,8 +285,7 @@ class Settings(BaseSettings):
     pptx_visual_critic_model: str = ""
     # Feature flag for new artifact-tool-based PPTX renderer (executive-quality slides with composed layouts).
     # When enabled, uses artifact-tool Presentation with compose-first layouts instead of fixed python-pptx templates.
-    # Defaults to false; enable for boardroom-standard decks with evidence validation and post-render QA.
-    pptx_artifact_renderer_enabled: bool = False
+    pptx_artifact_renderer_enabled: bool = True
     # Feature flag for narrative-coherence LLM critique blend (fail-open when disabled or unavailable).
     # When enabled, a short LLM critique augments the deterministic issues list
     # before the narrative score is aggregated.

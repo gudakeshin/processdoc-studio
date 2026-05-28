@@ -321,6 +321,82 @@ def _score_llm_critique(text: str, dim: dict[str, Any], *, project_id: str | Non
         return 0.7, {"error": True}
 
 
+def _parse_pptx_slides(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        return [s for s in raw if isinstance(s, dict)]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, dict) and isinstance(parsed.get("slides"), list):
+            return [s for s in parsed["slides"] if isinstance(s, dict)]
+        if isinstance(parsed, list):
+            return [s for s in parsed if isinstance(s, dict)]
+    return []
+
+
+def _score_pptx_storytelling(slides_raw: Any, dim: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+    slides = _parse_pptx_slides(slides_raw)
+    if not slides:
+        return 0.0, {"issues": ["No parseable slides for storytelling evaluation."]}
+    clutter: list[int] = []
+    weak: list[int] = []
+    transition_issues: list[int] = []
+    visual_rich = 0
+    for idx, slide in enumerate(slides, start=1):
+        title = str(slide.get("title") or "").strip()
+        bullets = slide.get("bullets", []) if isinstance(slide.get("bullets"), list) else []
+        has_visual = any(
+            isinstance(slide.get(k), list) and len(slide.get(k) or []) > 0
+            for k in ("stat_cards", "column_cards", "stack_layers", "process_flow")
+        ) or isinstance(slide.get("table"), dict) or isinstance(slide.get("chart"), dict) or isinstance(slide.get("big_number"), dict)
+        if has_visual:
+            visual_rich += 1
+        if len(bullets) >= int(dim.get("bullet_clutter_threshold") or 5):
+            clutter.append(idx)
+        _WEAK_TITLES = {
+            "overview", "summary", "insights", "introduction", "background",
+            "next steps", "agenda", "takeaways", "context",
+        }
+        title_is_filler = title.lower() in _WEAK_TITLES or len(title.split()) <= 2
+        if title_is_filler and not has_visual and len(bullets) <= 2:
+            weak.append(idx)
+        if idx > 1:
+            prior = slides[idx - 2]
+            prior_sub = str(prior.get("subtitle") or "").strip()
+            cur_sub = str(slide.get("subtitle") or "").strip()
+            if not prior_sub and not cur_sub and len(title.split()) <= 2:
+                transition_issues.append(idx)
+    visual_ratio = visual_rich / max(1, len(slides))
+    score = 1.0
+    score -= min(0.35, len(clutter) * 0.08)
+    score -= min(0.35, len(weak) * 0.1)
+    score -= min(0.2, len(transition_issues) * 0.05)
+    min_visual_ratio = float(dim.get("min_visual_ratio") or 0.50)
+    if visual_ratio < min_visual_ratio:
+        score -= min(0.25, (min_visual_ratio - visual_ratio) * 0.6)
+    score = max(0.0, min(1.0, score))
+    issues: list[str] = []
+    if clutter:
+        issues.append(f"Clutter risk on slides {clutter}.")
+    if weak:
+        issues.append(f"Weak storytelling on slides {weak}.")
+    if transition_issues:
+        issues.append(f"Narrative transitions weak near slides {transition_issues}.")
+    if visual_ratio < min_visual_ratio:
+        issues.append(
+            f"Visual storytelling density low ({visual_ratio:.2f}); target is >= {min_visual_ratio:.2f}."
+        )
+    return score, {
+        "clutter_slides": clutter,
+        "weak_slides": weak,
+        "transition_issues": transition_issues,
+        "visual_ratio": round(visual_ratio, 3),
+        "issues": issues,
+    }
+
+
 def _evaluate_one_output(
     output_key: str,
     raw_text: Any,
@@ -353,6 +429,8 @@ def _evaluate_one_output(
             score, meta = _score_citation_density(text, dim)
         elif kind == "llm_critique":
             score, meta = _score_llm_critique(text, dim, project_id=project_id)
+        elif kind == "pptx_storytelling":
+            score, meta = _score_pptx_storytelling(raw_text, dim)
         else:
             continue
         dimension_results.append({"id": did, "kind": kind, "weight": weight, "score": score, "meta": meta})
@@ -397,6 +475,15 @@ def _build_remediation(
             iss = meta.get("issues") if isinstance(meta.get("issues"), list) else []
             for i in iss[:5]:
                 actions.append(str(i))
+        elif kind == "pptx_storytelling":
+            for i in (meta.get("issues") if isinstance(meta.get("issues"), list) else [])[:5]:
+                actions.append(str(i))
+            clutter = meta.get("clutter_slides") if isinstance(meta.get("clutter_slides"), list) else []
+            if clutter:
+                actions.append(f"Reduce bullet density and split crowded content on slides {clutter[:8]}.")
+            weak = meta.get("weak_slides") if isinstance(meta.get("weak_slides"), list) else []
+            if weak:
+                actions.append(f"Rewrite slide titles/body on slides {weak[:8]} to make the key insight explicit.")
     if not actions:
         actions.append(f"Strengthen deliverable to exceed quality aggregate {threshold:.2f}.")
     return {

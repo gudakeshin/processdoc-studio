@@ -40,6 +40,9 @@ TITLE_H = 0.8
 FOOTER_H = 0.5
 GUTTER = 0.15     # space between elements
 
+# Fill tokens that require white/inverse text for contrast
+_DARK_FILLS = {"dark", "mid_dark", "green", "dark_green"}
+
 
 def _hex_to_rgb(raw: str) -> RGBColor:
     """Convert hex color to RGBColor."""
@@ -83,6 +86,23 @@ class SlideComposer:
             return str(ft).strip()
         cn = str(b.get("company_name", "Company")).strip()
         return f"{cn}." if not cn.endswith(".") else cn
+
+    def _resolve_fill(self, fill_token: str | None) -> tuple[RGBColor, RGBColor]:
+        """Map LLM fill token → (background_color, text_color)."""
+        token = (fill_token or "").lower().strip()
+        if token == "dark":
+            return self.colors["neutral_dark"], self.colors["text_inverse"]
+        if token == "mid_dark":
+            return RGBColor(0x37, 0x41, 0x51), self.colors["text_inverse"]
+        if token == "green":
+            return self.colors["primary"], self.colors["text_inverse"]
+        if token == "dark_green":
+            return self.colors["accent_dark"], self.colors["text_inverse"]
+        if token == "gray":
+            return self.colors["neutral_light"], self.colors["text_primary"]
+        if token == "mid":
+            return RGBColor(0xF3, 0xF4, 0xF6), self.colors["text_primary"]
+        return self.colors["accent_light"], self.colors["text_primary"]
 
     def compose_title_slide(self, slide_dict: dict[str, Any]) -> None:
         """Compose a title/cover slide."""
@@ -147,8 +167,8 @@ class SlideComposer:
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
-        # Title bar
-        self._add_title_bar(slide, slide_dict.get("title", ""))
+        # Title bar (with optional eyebrow label from subtitle field)
+        self._add_title_bar(slide, slide_dict.get("title", ""), slide_dict.get("subtitle", ""))
 
         # Content area (below title)
         content_y = MARGIN_V + TITLE_H + GUTTER
@@ -173,17 +193,38 @@ class SlideComposer:
         # Footer
         self._add_footer(slide, page_num, total_pages)
 
-    def _add_title_bar(self, slide: Any, title: str) -> None:
-        """Add primary title bar at top of slide."""
+    def _add_title_bar(self, slide: Any, title: str, eyebrow: str = "") -> None:
+        """Add primary title bar at top of slide, with optional ALL-CAPS eyebrow label above."""
+        if eyebrow:
+            eyebrow_box = slide.shapes.add_textbox(
+                Inches(MARGIN_H),
+                Inches(MARGIN_V),
+                Inches(CONTENT_W),
+                Inches(0.22)
+            )
+            ef = eyebrow_box.text_frame
+            ef.text = eyebrow.upper()
+            ef.paragraphs[0].font.size = Pt(11)
+            ef.paragraphs[0].font.bold = True
+            ef.paragraphs[0].font.color.rgb = self.colors["neutral_light"]
+            ef.paragraphs[0].alignment = PP_ALIGN.LEFT
+            title_y = MARGIN_V + 0.24
+            title_h = TITLE_H - 0.24
+            title_pt = Pt(28)
+        else:
+            title_y = MARGIN_V
+            title_h = TITLE_H
+            title_pt = Pt(40)
+
         title_box = slide.shapes.add_textbox(
             Inches(MARGIN_H),
-            Inches(MARGIN_V),
+            Inches(title_y),
             Inches(CONTENT_W),
-            Inches(TITLE_H)
+            Inches(title_h)
         )
         title_frame = title_box.text_frame
         title_frame.text = title
-        title_frame.paragraphs[0].font.size = Pt(40)
+        title_frame.paragraphs[0].font.size = title_pt
         title_frame.paragraphs[0].font.bold = True
         title_frame.paragraphs[0].font.color.rgb = self.colors["primary"]
         title_frame.paragraphs[0].alignment = PP_ALIGN.LEFT
@@ -219,18 +260,21 @@ class SlideComposer:
         text_frame = bullet_box.text_frame
         text_frame.word_wrap = True
 
-        for i, bullet in enumerate(bullets[:8]):  # max 8 bullets
+        bullets = bullets[:5]  # cap at 5 for executive decks
+        # Scale font size: fewer bullets = more breathing room
+        font_pt = Pt(18) if len(bullets) <= 3 else (Pt(15) if len(bullets) == 4 else Pt(13))
+        for i, bullet in enumerate(bullets):
             if i == 0:
                 p = text_frame.paragraphs[0]
             else:
                 p = text_frame.add_paragraph()
 
-            p.text = str(bullet)
-            p.font.size = Pt(18)
+            p.text = f"• {bullet}"
+            p.font.size = font_pt
             p.font.color.rgb = self.colors["text_primary"]
             p.level = 0
-            p.space_before = Pt(6)
-            p.space_after = Pt(6)
+            p.space_before = Pt(8)
+            p.space_after = Pt(4)
 
     def _compose_stat_cards(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
         """Compose 3-column stat cards layout."""
@@ -248,7 +292,9 @@ class SlideComposer:
             x = MARGIN_H + col * (card_w + 2 * GUTTER)
             card_y = y + row * (card_h + GUTTER)
 
-            # Card background
+            # Card background — honor fill token for visual rhythm
+            fill_token = card.get("fill")
+            bg_color, text_color = self._resolve_fill(fill_token)
             shape = slide.shapes.add_shape(
                 1,  # rectangle
                 Inches(x),
@@ -257,8 +303,8 @@ class SlideComposer:
                 Inches(card_h)
             )
             shape.fill.solid()
-            shape.fill.fore_color.rgb = self.colors["accent_light"]
-            shape.line.color.rgb = self.colors["accent_dark"]
+            shape.fill.fore_color.rgb = bg_color
+            shape.line.color.rgb = self.colors["accent_dark"] if fill_token not in _DARK_FILLS else bg_color
 
             # Stat value (large)
             stat = str(card.get("stat", ""))
@@ -272,7 +318,9 @@ class SlideComposer:
             stat_frame.text = stat
             stat_frame.paragraphs[0].font.size = Pt(32)
             stat_frame.paragraphs[0].font.bold = True
-            stat_frame.paragraphs[0].font.color.rgb = self.colors["primary"]
+            stat_frame.paragraphs[0].font.color.rgb = (
+                text_color if fill_token in _DARK_FILLS else self.colors["primary"]
+            )
             stat_frame.word_wrap = True
 
             # Label
@@ -287,7 +335,7 @@ class SlideComposer:
             label_frame.text = label
             label_frame.paragraphs[0].font.size = Pt(12)
             label_frame.paragraphs[0].font.bold = True
-            label_frame.paragraphs[0].font.color.rgb = self.colors["text_primary"]
+            label_frame.paragraphs[0].font.color.rgb = text_color
             label_frame.word_wrap = True
 
             # Description
@@ -302,7 +350,7 @@ class SlideComposer:
                 desc_frame = desc_box.text_frame
                 desc_frame.text = desc
                 desc_frame.paragraphs[0].font.size = Pt(10)
-                desc_frame.paragraphs[0].font.color.rgb = self.colors["neutral_dark"]
+                desc_frame.paragraphs[0].font.color.rgb = text_color
                 desc_frame.word_wrap = True
 
     def _compose_column_cards(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
@@ -318,7 +366,9 @@ class SlideComposer:
         for idx, card in enumerate(cards[:3]):
             x = MARGIN_H + idx * (card_w + GUTTER)
 
-            # Card background
+            # Card background — honor accent token for visual rhythm
+            accent_token = card.get("accent")
+            bg_color, text_color = self._resolve_fill(accent_token)
             shape = slide.shapes.add_shape(
                 1,  # rectangle
                 Inches(x),
@@ -327,8 +377,8 @@ class SlideComposer:
                 Inches(card_h)
             )
             shape.fill.solid()
-            shape.fill.fore_color.rgb = self.colors["accent_light"]
-            shape.line.color.rgb = self.colors["accent_dark"]
+            shape.fill.fore_color.rgb = bg_color
+            shape.line.color.rgb = self.colors["accent_dark"] if accent_token not in _DARK_FILLS else bg_color
 
             # Heading
             heading = str(card.get("heading", ""))
@@ -342,7 +392,9 @@ class SlideComposer:
             heading_frame.text = heading
             heading_frame.paragraphs[0].font.size = Pt(16)
             heading_frame.paragraphs[0].font.bold = True
-            heading_frame.paragraphs[0].font.color.rgb = self.colors["primary"]
+            heading_frame.paragraphs[0].font.color.rgb = (
+                text_color if accent_token in _DARK_FILLS else self.colors["primary"]
+            )
             heading_frame.word_wrap = True
 
             # Body
@@ -356,7 +408,7 @@ class SlideComposer:
             body_frame = body_box.text_frame
             body_frame.text = body
             body_frame.paragraphs[0].font.size = Pt(12)
-            body_frame.paragraphs[0].font.color.rgb = self.colors["text_primary"]
+            body_frame.paragraphs[0].font.color.rgb = text_color
             body_frame.word_wrap = True
 
     def _compose_table(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
@@ -387,16 +439,32 @@ class SlideComposer:
             Inches(h * 0.9)
         ).table
 
+        stripe_color = RGBColor(0xF3, 0xF4, 0xF6)  # light gray for alternating rows
         for row_idx, row in enumerate(all_rows):
+            is_header = row_idx == 0 and bool(headers)
+            is_even_data = not is_header and row_idx % 2 == 0
             for col_idx, cell_text in enumerate(row[:cols]):
                 cell = table_shape.cell(row_idx, col_idx)
                 cell.text = str(cell_text or "")
-                # Style header row
-                if row_idx == 0 and headers:
-                    cell.text_frame.paragraphs[0].font.bold = True
-                    cell.text_frame.paragraphs[0].font.color.rgb = self.colors["text_inverse"]
+                tf = cell.text_frame
+                tf.word_wrap = True
+                para = tf.paragraphs[0]
+                para.alignment = PP_ALIGN.LEFT
+                if is_header:
+                    para.font.bold = True
+                    para.font.size = Pt(11)
+                    para.font.color.rgb = self.colors["text_inverse"]
                     cell.fill.solid()
                     cell.fill.fore_color.rgb = self.colors["primary"]
+                else:
+                    para.font.size = Pt(10)
+                    para.font.color.rgb = self.colors["text_primary"]
+                    if is_even_data:
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = stripe_color
+                    else:
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
     def _compose_chart(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
         """Compose chart."""
@@ -448,6 +516,12 @@ class SlideComposer:
                 chart_shape.has_legend = True
         except Exception as e:
             logger.warning("Failed to add chart: %s", e)
+            # Render a visible fallback so the blank space is not silent
+            err_box = slide.shapes.add_textbox(x, y_pos, cx, Inches(0.5))
+            err_frame = err_box.text_frame
+            err_frame.text = f"[Chart could not be rendered: {chart_type_str}]"
+            err_frame.paragraphs[0].font.size = Pt(11)
+            err_frame.paragraphs[0].font.color.rgb = RGBColor(0xCC, 0x00, 0x00)
 
     def _compose_big_number(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
         """Compose big-number KPI display."""
@@ -461,6 +535,14 @@ class SlideComposer:
         if not stat:
             return
 
+        # Override slide background for dark fill tokens (proof trace, impact slides)
+        fill_token = big_number.get("fill")
+        _, text_color = self._resolve_fill(fill_token)
+        if fill_token in _DARK_FILLS:
+            bg_color, _ = self._resolve_fill(fill_token)
+            slide.background.fill.solid()
+            slide.background.fill.fore_color.rgb = bg_color
+
         # Large stat
         stat_box = slide.shapes.add_textbox(
             Inches(MARGIN_H + 0.5),
@@ -472,7 +554,9 @@ class SlideComposer:
         stat_frame.text = stat
         stat_frame.paragraphs[0].font.size = Pt(72)
         stat_frame.paragraphs[0].font.bold = True
-        stat_frame.paragraphs[0].font.color.rgb = self.colors["primary"]
+        stat_frame.paragraphs[0].font.color.rgb = (
+            text_color if fill_token in _DARK_FILLS else self.colors["primary"]
+        )
         stat_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
         stat_frame.word_wrap = True
 
@@ -487,7 +571,7 @@ class SlideComposer:
             label_frame = label_box.text_frame
             label_frame.text = label
             label_frame.paragraphs[0].font.size = Pt(24)
-            label_frame.paragraphs[0].font.color.rgb = self.colors["text_primary"]
+            label_frame.paragraphs[0].font.color.rgb = text_color
             label_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
 
     def _compose_process_flow(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
@@ -503,7 +587,9 @@ class SlideComposer:
         for idx, step in enumerate(steps):
             x = MARGIN_H + idx * (step_w + GUTTER)
 
-            # Step box
+            # Step box — honor fill token for visual rhythm
+            fill_token = step.get("fill")
+            bg_color, text_color = self._resolve_fill(fill_token)
             shape = slide.shapes.add_shape(
                 1,  # rectangle
                 Inches(x),
@@ -512,8 +598,8 @@ class SlideComposer:
                 Inches(step_h)
             )
             shape.fill.solid()
-            shape.fill.fore_color.rgb = self.colors["accent_light"]
-            shape.line.color.rgb = self.colors["primary"]
+            shape.fill.fore_color.rgb = bg_color
+            shape.line.color.rgb = self.colors["primary"] if fill_token not in _DARK_FILLS else bg_color
 
             # Step number
             num_box = slide.shapes.add_textbox(
@@ -526,7 +612,9 @@ class SlideComposer:
             num_frame.text = f"{idx + 1}"
             num_frame.paragraphs[0].font.size = Pt(18)
             num_frame.paragraphs[0].font.bold = True
-            num_frame.paragraphs[0].font.color.rgb = self.colors["primary"]
+            num_frame.paragraphs[0].font.color.rgb = (
+                text_color if fill_token in _DARK_FILLS else self.colors["primary"]
+            )
 
             # Label
             label = str(step.get("label", ""))
@@ -539,7 +627,7 @@ class SlideComposer:
             label_frame = label_box.text_frame
             label_frame.text = label
             label_frame.paragraphs[0].font.size = Pt(11)
-            label_frame.paragraphs[0].font.color.rgb = self.colors["text_primary"]
+            label_frame.paragraphs[0].font.color.rgb = text_color
             label_frame.word_wrap = True
 
             # Arrow connector (skip for last step)
@@ -568,7 +656,9 @@ class SlideComposer:
         for idx, layer in enumerate(layers):
             layer_y = y + idx * (layer_h + GUTTER)
 
-            # Layer background
+            # Layer background — honor fill token for visual rhythm
+            fill_token = layer.get("fill")
+            bg_color, text_color = self._resolve_fill(fill_token)
             shape = slide.shapes.add_shape(
                 1,  # rectangle
                 Inches(MARGIN_H),
@@ -577,8 +667,8 @@ class SlideComposer:
                 Inches(layer_h)
             )
             shape.fill.solid()
-            shape.fill.fore_color.rgb = self.colors["accent_light"]
-            shape.line.color.rgb = self.colors["accent_dark"]
+            shape.fill.fore_color.rgb = bg_color
+            shape.line.color.rgb = self.colors["accent_dark"] if fill_token not in _DARK_FILLS else bg_color
 
             # Label
             label = str(layer.get("label", ""))
@@ -592,7 +682,9 @@ class SlideComposer:
             label_frame.text = label
             label_frame.paragraphs[0].font.size = Pt(14)
             label_frame.paragraphs[0].font.bold = True
-            label_frame.paragraphs[0].font.color.rgb = self.colors["primary"]
+            label_frame.paragraphs[0].font.color.rgb = (
+                text_color if fill_token in _DARK_FILLS else self.colors["primary"]
+            )
             label_frame.vertical_anchor = 1  # top
 
             # Description
@@ -607,7 +699,7 @@ class SlideComposer:
                 desc_frame = desc_box.text_frame
                 desc_frame.text = desc
                 desc_frame.paragraphs[0].font.size = Pt(12)
-                desc_frame.paragraphs[0].font.color.rgb = self.colors["text_primary"]
+                desc_frame.paragraphs[0].font.color.rgb = text_color
                 desc_frame.word_wrap = True
 
     def _compose_section_divider(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
