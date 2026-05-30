@@ -25,6 +25,11 @@ from app.db.models import Conversation, ConversationMessage, MemoryEvent, Run, R
 from app.db.session import SessionLocal, get_db
 from app.schemas.common import RunSummary
 from app.services.claude import claude_generate_json, is_claude_enabled
+from app.services.output_format_detection import (
+    detect_deliverable_keyword_formats,
+    detect_explicit_output_formats,
+    resolve_output_formats,
+)
 from app.services.hooks import disable_hook, list_registered_hooks, sync_disabled_hooks_from_db, upsert_hook_control
 from app.services.observability import increment
 from app.services.permission_pipeline import evaluate_permission_pipeline
@@ -437,153 +442,15 @@ def _recommend_output_types(
         "Use proposal_operations for supply chain, logistics, manufacturing, quality. "
         "Use proposal_generic for proposals without a clear domain specialization."
     )
-    deliverable_keyword_map = {
-        # Maps deliverables to canonical output formats only.
-        "proposal": {"types": ["docx", "pptx"]},
-        "approach_note": {"types": ["docx", "pptx"]},
-        "process_flow": {"types": ["process_map", "docx"]},
-        "narrative": {"types": ["docx"]},
-        "raci": {"types": ["xlsx"]},
-        "sop": {"types": ["docx"]},
-        "brd": {"types": ["docx", "pptx"]},
-        "business_requirement_document": {"types": ["docx", "pptx"]},
-        "improvement_report": {"types": ["docx", "pptx"]},
-        "financial_model": {"types": ["xlsx"]},
-        "training_deck": {"types": ["pptx"]},
-    }
-
     lowered = (instruction or "").lower()
-    desired_types: list[str] = []
+    explicit_formats_requested = detect_explicit_output_formats(lowered)
+    desired_types = detect_deliverable_keyword_formats(lowered)
 
-    # ── Detect explicit output format constraints (user saying "only pptx", "just slides", etc.) ──
-    # These explicit constraints override the keyword-based recommendations.
-    explicit_output_constraints = {
-        "pptx": [
-            "only pptx",
-            "only slides",
-            "only slide",
-            "just pptx",
-            "just slides",
-            "pptx only",
-            "slides only",
-            "slide only",
-            "in pptx",
-            "in slides",
-            "in slide",
-            "presentation format",
-            "presentation only",
-            "ppt only",
-            "ppt format",
-            "powerpoint only",
-            "powerpoint format",
-            "in powerpoint",
-            "as ppt",
-            "as pptx",
-            "in ppt",
-        ],
-        "docx": [
-            "only docx",
-            "only word",
-            "only doc",
-            "just docx",
-            "just word",
-            "docx only",
-            "word only",
-            "doc only",
-            "in docx",
-            "in word",
-            "document format",
-            "document only",
-            "word format",
-            "word document only",
-            "as word",
-            "as docx",
-        ],
-        "xlsx": [
-            "only xlsx",
-            "only excel",
-            "only spreadsheet",
-            "just xlsx",
-            "just excel",
-            "xlsx only",
-            "excel only",
-            "spreadsheet only",
-            "in xlsx",
-            "in excel",
-            "spreadsheet format",
-            "excel format",
-            "as excel",
-            "as xlsx",
-        ],
-        "process_map": [
-            "only process map",
-            "only process_map",
-            "only diagram",
-            "just process map",
-            "process map only",
-            "diagram only",
-            "flowchart only",
-            "as process map",
-            "in drawio",
-        ],
-    }
-
-    explicit_formats_requested = []
-    for output_type, constraint_phrases in explicit_output_constraints.items():
-        for phrase in constraint_phrases:
-            if phrase in lowered:
-                explicit_formats_requested.append(output_type)
-                break
-
-    # If explicit output format constraints found, ONLY use those (override deliverable defaults)
-    if explicit_formats_requested:
-        desired_types = explicit_formats_requested
-    # Otherwise use keyword-based recommendations
-    else:
-        # Use specific phrases/keywords to avoid over-triggering the recommendation constraints.
-        if "proposal" in lowered:
-            desired_types.extend(deliverable_keyword_map["proposal"]["types"])
-        if "approach note" in lowered or "approach" in lowered and "note" in lowered:
-            desired_types.extend(deliverable_keyword_map["approach_note"]["types"])
-        if "process flow" in lowered:
-            desired_types.extend(deliverable_keyword_map["process_flow"]["types"])
-        if "narratives" in lowered or "narrative" in lowered:
-            desired_types.extend(deliverable_keyword_map["narrative"]["types"])
-        if "raci" in lowered:
-            desired_types.extend(deliverable_keyword_map["raci"]["types"])
-        if "sop" in lowered:
-            desired_types.extend(deliverable_keyword_map["sop"]["types"])
-        if "business requirement document" in lowered or "brd" in lowered:
-            desired_types.extend(deliverable_keyword_map["brd"]["types"])
-        if "improvement report" in lowered:
-            desired_types.extend(deliverable_keyword_map["improvement_report"]["types"])
-        if "financial model" in lowered:
-            desired_types.extend(deliverable_keyword_map["financial_model"]["types"])
-        if "training deck" in lowered:
-            desired_types.extend(deliverable_keyword_map["training_deck"]["types"])
-
-    # De-dup while preserving order.
-    desired_types = list(dict.fromkeys(desired_types))
-
-    # ── Short-circuit: explicit format fully determines the answer ──────────────
-    # When the user explicitly named an output format (e.g. "in PPT format", "pptx only"),
-    # we already know the answer — no need to call the LLM. Returning here eliminates
-    # LLM failures (timeout, invalid JSON, rate limit) as a source of false out-of-scope responses.
-    if explicit_formats_requested:
-        _catalog_ids = {str(item.get("output_type_id")) for item in catalog}
-        allowed_explicit = [t for t in explicit_formats_requested if t in _catalog_ids]
-        if allowed_explicit:
-            _FAST_PREF_REPR = {
-                "pptx": "pptx",
-                "docx": "docx",
-                "xlsx": "xlsx",
-                "process_map": "drawio_xml",
-                "pdf": "pdf",
-            }
-            fast_prefs: dict[str, str] = {
-                t: _FAST_PREF_REPR[t] for t in allowed_explicit if t in _FAST_PREF_REPR
-            }
-            return allowed_explicit, [], fast_prefs, "Explicit format constraint detected.", None
+    # ── Short-circuit: format intent fully determines the answer ──────────────
+    _catalog_ids = {str(item.get("output_type_id")) for item in catalog}
+    resolved_formats, resolved_reps, resolved_rationale = resolve_output_formats(instruction, _catalog_ids)
+    if resolved_formats:
+        return resolved_formats, [], resolved_reps, resolved_rationale, None
 
     deliverable_constraints_text = (
         "Deliverable intent -> preferred output types/representations:\n"

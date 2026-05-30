@@ -444,8 +444,11 @@ def test_process_flow_3_steps_renders() -> None:
     prs = _build_pptx(slides)
     text = _text_content(prs.slides[0])
     assert "Initiation" in text
+    assert "Request raised in system" in text
     assert "Review" in text
+    assert "Finance validates budget" in text
     assert "Approval" in text
+    assert "CFO signs off digitally" in text
 
 
 def test_process_flow_5_steps_renders() -> None:

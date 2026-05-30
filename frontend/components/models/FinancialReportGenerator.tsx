@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 
-type ReportFormat = "xlsx" | "pdf" | "png";
+type ReportFormat = "xlsx";
 type ReportType =
   | "variance"
   | "financial_statements"
@@ -33,7 +33,7 @@ export function FinancialReportGenerator({
 }) {
   const [state, setState] = useState<ReportGeneratorState>({
     reportType: "comprehensive",
-    format: "pdf",
+    format: "xlsx",
     title: "Financial Report",
     includeCharts: true,
     includeTables: true,
@@ -55,14 +55,6 @@ export function FinancialReportGenerator({
       xlsx: {
         label: "Excel",
         description: "Multi-sheet workbook with formulas",
-      },
-      pdf: {
-        label: "PDF",
-        description: "Formatted report with charts",
-      },
-      png: {
-        label: "Image",
-        description: "Charts as PNG files",
       },
     };
 
@@ -266,11 +258,11 @@ export function FinancialReportGenerator({
                 Quick Templates
               </p>
               {[
-                { label: "Monthly Review", type: "variance", format: "pdf" as const },
+                { label: "Monthly Review", type: "variance", format: "xlsx" as const },
                 {
                   label: "Board Presentation",
                   type: "comprehensive",
-                  format: "pdf" as const,
+                  format: "xlsx" as const,
                 },
                 { label: "Data Export", type: "financial_statements", format: "xlsx" as const },
               ].map((template) => (
@@ -334,9 +326,12 @@ export function FinancialReportGenerator({
               )}
 
               {state.recipients && (
-                <div className="rounded-lg bg-[#f0f8f0] px-3 py-2">
-                  <p className="font-semibold text-[#86BC24]">
-                    ✓ Will be sent to: {state.recipients}
+                <div className="rounded-lg bg-[#fff8e6] px-3 py-2">
+                  <p className="font-semibold text-[#8a6d00]">
+                    Delivery will be attempted to: {state.recipients}
+                  </p>
+                  <p className="text-[#8a6d00]">
+                    Requires email to be configured; you’ll get a confirmation after generating.
                   </p>
                 </div>
               )}

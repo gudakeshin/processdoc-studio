@@ -5,39 +5,38 @@ import { useParams } from "next/navigation";
 import { useState } from "react";
 
 import { useCreateModel, useModels } from "@/hooks/useModels";
+import { FinancialModelWizard } from "@/components/models/FinancialModelWizard";
 import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { Textarea } from "@/components/ui/Textarea";
 
 export default function ModelsPage() {
   const params = useParams();
   const pid = typeof params.pid === "string" ? params.pid : Array.isArray(params.pid) ? params.pid[0] ?? "" : "";
-  const [name, setName] = useState("Operational Forecast Model");
-  const [description, setDescription] = useState("");
+  const [showWizard, setShowWizard] = useState(false);
   const models = useModels(pid);
   const createModel = useCreateModel(pid);
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">Analytical Models</h1>
-      <p className="text-sm text-[var(--text-muted)]">Project: {pid}</p>
-      <div className="rounded-lg border border-[var(--surface-border-strong)] bg-[var(--surface-default)] p-4 space-y-2">
-        <h2 className="text-base font-semibold">Create model</h2>
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Model name" />
-        <Textarea
-          rows={3}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Description"
-        />
-        <Button
-          type="button"
-          onClick={() => void createModel.mutateAsync({ name, description })}
-          disabled={createModel.isPending}
-        >
-          {createModel.isPending ? "Creating..." : "Create model"}
-        </Button>
+      <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+        <Link href={`/projects/${pid}`} className="hover:text-[var(--text-default)]">Studio</Link>
+        <span>/</span>
+        <span className="text-[var(--text-default)] font-medium">Models</span>
       </div>
+      <h1 className="text-2xl font-semibold">Analytical Models</h1>
+      {showWizard ? (
+        <FinancialModelWizard
+          onComplete={(data) => {
+            void createModel.mutateAsync({
+              name: data.name,
+              assumptions: data.assumptions as Record<string, unknown>,
+            }).then(() => setShowWizard(false));
+          }}
+        />
+      ) : (
+        <Button type="button" onClick={() => setShowWizard(true)}>
+          New model
+        </Button>
+      )}
       <div className="rounded-lg border border-[var(--surface-border-strong)] bg-[var(--surface-default)] p-4">
         <h2 className="text-base font-semibold">Model list</h2>
         {models.isLoading ? (

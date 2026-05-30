@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import logging
+import re
 import textwrap
 import time
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from app.services.claude_tools import run_subagent_tool_loop
 from app.services.drawio_builder import process_model_to_drawio_xml
 from app.services.observability import increment
 from app.services.process_extraction import extract_process_model
+from app.services.output_format_detection import is_financial_model_intent
 from app.services.proposal_policy import PROPOSAL_SKILL_ID, proposal_prompt_contract
 from app.services.tool_registry import (
     anthropic_tool_definitions,
@@ -1404,13 +1406,84 @@ def run_drawio_agent(ctx: AgentContext) -> AgentOutput:
     return AgentOutput(updates={"drawio_xml": process_model_to_drawio_xml(pm)})
 
 
+def _financial_assumptions_from_context(ctx: AgentContext, pm: dict[str, Any]) -> dict[str, Any]:
+    """Build model assumptions from process metrics and discovery slots."""
+    assumptions: dict[str, Any] = {
+        "revenue": 1_000_000,
+        "growth_rate": 0.08,
+        "cogs_pct": 0.40,
+        "opex": 200_000,
+        "tax_rate": 0.21,
+        "discount_rate": 0.10,
+        "terminal_growth": 0.02,
+        "capex": 50_000,
+        "current_assets": 500_000,
+        "fixed_assets": 2_000_000,
+        "current_liabilities": 300_000,
+        "long_term_debt": 1_000_000,
+        "shareholders_equity": 1_200_000,
+    }
+    for metric in pm.get("metrics") or []:
+        if not isinstance(metric, dict):
+            continue
+        stat = str(metric.get("stat") or "").strip().lower()
+        label = str(metric.get("label") or metric.get("value") or "").strip()
+        if not stat and not label:
+            continue
+        raw = stat or label
+        digits = re.sub(r"[^\d.]", "", raw.replace(",", ""))
+        if not digits:
+            continue
+        try:
+            val = float(digits)
+        except ValueError:
+            continue
+        if "revenue" in raw or "sales" in raw:
+            assumptions["revenue"] = val
+        elif "margin" in raw and val <= 1:
+            assumptions["cogs_pct"] = max(0.0, min(1.0, 1.0 - val))
+        elif "growth" in raw and val <= 1:
+            assumptions["growth_rate"] = val
+        elif "wacc" in raw or "discount" in raw:
+            assumptions["discount_rate"] = val if val <= 1 else val / 100.0
+    plan = ctx.plan_payload if isinstance(ctx.plan_payload, dict) else {}
+    discovery = plan.get("discovery") if isinstance(plan.get("discovery"), dict) else {}
+    if isinstance(discovery.get("assumptions"), dict):
+        for k, v in discovery["assumptions"].items():
+            if v is not None:
+                assumptions[str(k)] = v
+    return assumptions
+
+
 def run_xlsx_agent(ctx: AgentContext) -> AgentOutput:
     """
     Skill-aware XLSX agent. When raci_v2 is the active skill, generates a RACI matrix
     (Activity | Responsible | Accountable | Consulted | Informed). Otherwise generates
     the standard process data table (Activity | Owner | Inputs | Outputs | Tools | Duration | Notes).
+
+    For financial-model requests, composes a full formula-driven workbook via
+    ``compose_financial_model`` (same engine as the Models API).
     """
     pm = _model(ctx)
+    instruction_text = " ".join(
+        x
+        for x in (
+            str(ctx.user_instruction or ""),
+            str(ctx.assembled_context or "")[:6000],
+        )
+        if x
+    )
+    if is_financial_model_intent(instruction_text):
+        from app.services.excel_model_composer import compose_financial_model
+
+        assumptions = _financial_assumptions_from_context(ctx, pm)
+        try:
+            cells = compose_financial_model(assumptions)
+            if cells:
+                return AgentOutput(updates={"xlsx_cells": cells, "xlsx_markdown": ""})
+        except Exception as exc:
+            _LOG.warning("financial model compose failed, falling back to table agent: %s", exc)
+
     steps = pm.get("steps") or []
     roles = pm.get("roles") or []
     primary = _primary_skill(ctx)

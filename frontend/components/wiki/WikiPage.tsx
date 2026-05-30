@@ -10,6 +10,7 @@ import dynamic from 'next/dynamic';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { WikiTabNav } from './WikiTabNav';
+import { WikiPagePreview } from './WikiPagePreview';
 import { confidenceClass } from '@/utils/wikiColors';
 
 const WikiRelationships = dynamic(
@@ -129,15 +130,16 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
     return (
       <div className="space-y-1">
         {links.map((link) => (
-          <button
-            key={`${link.type}-${link.id}`}
-            type="button"
-            onClick={() => onSelectPage?.(link.id)}
-            disabled={!onSelectPage}
-            className="w-full text-left text-xs text-[var(--accent-blue)] py-1 border-b border-[var(--surface-border)] hover:underline disabled:text-[var(--text-muted)] disabled:no-underline"
-          >
-            {link.title}
-          </button>
+          <WikiPagePreview key={`${link.type}-${link.id}`} pageId={link.id} wikiType={wikiType} projectId={projectId} trigger="hover">
+            <button
+              type="button"
+              onClick={() => onSelectPage?.(link.id)}
+              disabled={!onSelectPage}
+              className="w-full text-left text-xs text-[var(--accent-blue)] py-1 border-b border-[var(--surface-border)] hover:underline disabled:text-[var(--text-muted)] disabled:no-underline"
+            >
+              {link.title}
+            </button>
+          </WikiPagePreview>
         ))}
       </div>
     );
@@ -153,15 +155,16 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
           const targetId = m[1];
           const label = m[2] ?? m[1];
           return (
-            <button
-              key={`${idx}-${targetId}`}
-              type="button"
-              className="text-[var(--accent-blue)] hover:underline"
-              onClick={() => onSelectPage?.(targetId)}
-              disabled={!onSelectPage}
-            >
-              {label}
-            </button>
+            <WikiPagePreview key={`${idx}-${targetId}`} pageId={targetId} wikiType={wikiType} projectId={projectId} trigger="hover">
+              <button
+                type="button"
+                className="text-[var(--accent-blue)] hover:underline"
+                onClick={() => onSelectPage?.(targetId)}
+                disabled={!onSelectPage}
+              >
+                {label}
+              </button>
+            </WikiPagePreview>
           );
         })}
       </div>

@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     # pubsub connection; size to >= peak concurrent streams expected.
     sse_redis_max_connections: int = 300
 
+    # SMTP for outbound email (financial report delivery). Email is disabled when
+    # smtp_host is empty — send_email() returns {"sent": False, "reason": "email_not_configured"}.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+
     jwt_algorithm: str = "HS256"
     jwt_access_exp_minutes: int = 60
     jwt_refresh_exp_days: int = 7
@@ -78,6 +87,10 @@ class Settings(BaseSettings):
     run_approve_rate_limit: str = "20/minute"
     run_recommend_rate_limit: str = "30/minute"
     run_regenerate_rate_limit: str = "10/minute"
+    # Per-IP rate limits for scipy-heavy model calculation endpoints.
+    model_calc_rate_limit: str = "30/minute"   # NPV, IRR, metrics
+    model_dcf_rate_limit: str = "10/minute"    # DCF, sensitivity
+    model_forecast_rate_limit: str = "20/minute"  # all 6 forecast methods
     scheduler_enabled: bool = True
     auth_allow_self_signup: bool = False
     # Comma-separated emails permitted to mutate the shared leading_practice wiki.

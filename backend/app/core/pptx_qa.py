@@ -55,7 +55,9 @@ def _extract_pptx_text(pptx_path: Path) -> dict[int, list[str]]:
             text_blocks = []
             for shape in slide.shapes:
                 # Table shapes: shape.text is empty; extract cell text directly.
-                if hasattr(shape, "table"):
+                # Use the safe has_table boolean — accessing `.table` on a non-table
+                # GraphicFrame (e.g. a chart) raises ValueError, which hasattr() would not swallow.
+                if getattr(shape, "has_table", False):
                     for row in shape.table.rows:
                         for cell in row.cells:
                             t = cell.text_frame.text.strip()
@@ -256,24 +258,27 @@ def validate_pptx_against_slides(
             empty_slides.append(slide_idx + 1)
             issues.append(f"Slide {slide_idx + 1}: Very low text content")
 
+    # Storytelling heuristics are advisory only — they enrich the report and remediation hints
+    # but must NOT gate the render (mirrors the advisory-only evidence-validation invariant).
+    advisories: list[str] = []
     storytelling = _storytelling_metrics(pptx_slides, text_by_slide)
     if storytelling["clutter_risk_slides"]:
-        issues.append(f"Clutter/readability risk on slides {storytelling['clutter_risk_slides']}")
+        advisories.append(f"Clutter/readability risk on slides {storytelling['clutter_risk_slides']}")
         remediation.append(
             f"Reduce text density on slides {storytelling['clutter_risk_slides']}; split dense bullets into visual cards."
         )
     if storytelling["weak_slides"]:
-        issues.append(f"Weak storytelling signal on slides {storytelling['weak_slides']}")
+        advisories.append(f"Weak storytelling signal on slides {storytelling['weak_slides']}")
         remediation.append(
             f"Strengthen slide intent on slides {storytelling['weak_slides']} with concrete insight titles and evidence."
         )
     if storytelling["transition_issues"]:
-        issues.append(f"Section-transition continuity risk on slides {storytelling['transition_issues']}")
+        advisories.append(f"Section-transition continuity risk on slides {storytelling['transition_issues']}")
         remediation.append(
             "Add explicit section breadcrumbs/subtitles to improve narrative flow between adjacent slides."
         )
 
-    # Overall status
+    # Overall status — only hard structural issues fail the gate; advisories never do.
     status = "pass" if not issues else "fail"
 
     summary = f"PPTX QA: {status.upper()}"
@@ -299,6 +304,7 @@ def validate_pptx_against_slides(
         "truncations": list(set(truncations)),
         "placeholders": list(set(placeholders)),
         "empty_slides": empty_slides,
+        "advisories": advisories,
         "storytelling_metrics": storytelling,
         "remediation": remediation,
         "pptx_path": str(pptx_path),

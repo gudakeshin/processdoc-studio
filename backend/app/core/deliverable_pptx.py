@@ -298,6 +298,12 @@ class PPTXDeliverable(IDeliverable):
             prs.save(out)
             logger.info("PPTX rendered successfully: %s", out)
             try:
+                from app.services.artifact_integrity import write_pptx_integrity_manifest
+
+                write_pptx_integrity_manifest(run_dir)
+            except Exception as integrity_exc:
+                logger.warning("Failed to write PPTX integrity manifest: %s", integrity_exc)
+            try:
                 from app.core.deck_exporter import export_deck_artifacts
 
                 export_deck_artifacts(

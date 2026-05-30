@@ -6,7 +6,7 @@ from app.core.config import Settings
 from app.services.text_editor_executor import execute_text_editor_tool
 
 _TEST_SETTINGS_BASE = {
-    "jwt_secret": "test-jwt-secret-min-16chars",
+    "jwt_secret": "test-jwt-secret-32-chars-long-ok!",
     "database_url": "sqlite:///:memory:",
 }
 

@@ -147,6 +147,9 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
   const [permissionSimResult, setPermissionSimResult] = useState<any | null>(null);
   const [hooksBusy, setHooksBusy] = useState(false);
   const [hooksData, setHooksData] = useState<Array<Record<string, unknown>>>([]);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [pptxDownloadBusy, setPptxDownloadBusy] = useState(false);
+  const [copyBundlePromptDone, setCopyBundlePromptDone] = useState(false);
 
   const latestAssistantMetadata = useMemo(() => {
     for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
@@ -948,8 +951,33 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     URL.revokeObjectURL(url);
   }
 
-  const [handoffBusy, setHandoffBusy] = useState(false);
-  const [copyBundlePromptDone, setCopyBundlePromptDone] = useState(false);
+  async function downloadPptxFromRun(filename: string) {
+    if (!pid || !rid || pptxDownloadBusy) return;
+    setPptxDownloadBusy(true);
+    setArtifactsError(null);
+    try {
+      const res = await api(
+        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/artifacts/pptx/download`
+      );
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(extractApiErrorMessage(data, "PPTX download failed"));
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setArtifactsError(e instanceof Error ? e.message : "PPTX download failed");
+    } finally {
+      setPptxDownloadBusy(false);
+    }
+  }
 
   async function downloadHandoffBundle(filename: string) {
     if (!pid || !rid || handoffBusy) return;
@@ -1153,8 +1181,8 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         {readyDownloads.includes("pptx") && (() => {
           const fname = downloadDisplayName(outputFilenames, "pptx", "output.pptx");
           return (
-            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts.pptx_base64 || ""), "application/vnd.openxmlformats-officedocument.presentationml.presentation")}>
-              {fname}
+            <Button type="button" className={downloadBtnClass} title={fname} disabled={pptxDownloadBusy} onClick={() => downloadPptxFromRun(fname)}>
+              {pptxDownloadBusy ? "Downloading…" : fname}
             </Button>
           );
         })()}

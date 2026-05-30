@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-min-16chars")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-chars-long-ok!")
 
 
 @pytest.fixture(autouse=True)

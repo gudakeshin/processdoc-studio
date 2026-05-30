@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import Membership, RefreshToken, User
 from app.db.session import get_db
+from app.services.cache import cache_service
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -108,13 +109,23 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         _reject_if_non_access_bearer(payload)
         email = payload.get("sub")
-        if not email:
+        if not email or not isinstance(email, str):
             raise credentials_exc
     except JWTError as exc:
         raise credentials_exc from exc
+
+    cached = cache_service.get(f"user_jwt:{email}")
+    if cached:
+        return User(**cached)
+
     user = db.scalar(select(User).where(User.email == email))
     if not user:
         raise credentials_exc
+    cache_service.set(
+        f"user_jwt:{email}",
+        {"id": user.id, "email": user.email, "hashed_password": user.hashed_password},
+        ttl_seconds=300,
+    )
     return user
 
 
@@ -156,10 +167,17 @@ def get_current_user_sse(
 
 
 def require_project_role(project_id: str, allowed_roles: set[str], user: User, db: Session) -> None:
-    member = db.scalar(
-        select(Membership).where(Membership.project_id == project_id, Membership.user_id == user.id)
-    )
-    if not member or member.role not in allowed_roles:
+    cache_key = f"project_role:{user.id}:{project_id}"
+    cached_role = cache_service.get(cache_key)
+    if cached_role:
+        role = cached_role.get("role", "")
+    else:
+        member = db.scalar(
+            select(Membership).where(Membership.project_id == project_id, Membership.user_id == user.id)
+        )
+        role = member.role if member else ""
+        cache_service.set(cache_key, {"role": role}, ttl_seconds=60)
+    if not role or role not in allowed_roles:
         raise HTTPException(status_code=403, detail="Insufficient project permissions")
 
 

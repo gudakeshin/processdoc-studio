@@ -113,6 +113,48 @@ class TestArtifactToolRenderer:
         assert "status" in qa_report
         assert "slide_count" in qa_report
 
+    def test_process_flow_renders_step_descriptions(self, temp_run_dir, sample_branding):
+        """process_flow slides must render phase descriptions, not just labels."""
+        slides = [
+            {
+                "slide_type": "process_flow",
+                "title": "Engagement Approach",
+                "process_flow": {
+                    "steps": [
+                        {
+                            "label": "Discovery",
+                            "description": "Map current-state RTR processes and pain points",
+                            "fill": "dark",
+                        },
+                        {
+                            "label": "Design",
+                            "description": "Define target operating model and automation roadmap",
+                            "fill": "green",
+                        },
+                        {
+                            "label": "Delivery",
+                            "description": "Implement controls, reporting, and change management",
+                            "fill": "mid_dark",
+                        },
+                    ]
+                },
+            }
+        ]
+        payload = {"pptx_slides": slides}
+        result = render_pptx_with_artifact_tool(payload, temp_run_dir, sample_branding)
+        prs = Presentation(str(result["output_path"]))
+        text = "\n".join(
+            shape.text_frame.text
+            for shape in prs.slides[0].shapes
+            if getattr(shape, "has_text_frame", False) and shape.text_frame.text
+        )
+        assert "Map current-state RTR processes and pain points" in text
+        assert "Define target operating model and automation roadmap" in text
+        assert "Implement controls, reporting, and change management" in text
+
+        integrity_path = temp_run_dir / "pptx_integrity.json"
+        assert integrity_path.is_file()
+
     def test_pptx_qa_detects_missing_content(self, temp_run_dir, sample_slides, sample_branding):
         """QA should detect missing or incomplete content."""
         # Create a slide with truly empty content (no title, no bullets)
@@ -133,8 +175,15 @@ class TestArtifactToolRenderer:
         result = render_pptx_with_artifact_tool(payload, temp_run_dir, sample_branding)
 
         qa_report = result["qa_report"]
-        # QA should detect the issue - either flag empty slides or have issues
-        assert len(qa_report.get("empty_slides", [])) > 0 or len(qa_report.get("issues", [])) > 0
+        # QA should detect the incompleteness — via a hard signal (empty slides / issues /
+        # missing text) or an advisory storytelling signal (advisories are non-blocking but
+        # still surface soft-quality gaps).
+        assert (
+            len(qa_report.get("empty_slides", [])) > 0
+            or len(qa_report.get("issues", [])) > 0
+            or len(qa_report.get("missing_text", [])) > 0
+            or len(qa_report.get("advisories", [])) > 0
+        )
 
     def test_evidence_validator_extracts_numeric_claims(self):
         """Evidence validator should find numeric claims in text."""

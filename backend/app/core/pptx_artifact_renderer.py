@@ -6,6 +6,7 @@ Supports dynamic text wrapping, balanced layouts, evidence-driven content, and p
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -134,7 +135,7 @@ class SlideComposer:
         ft = b.get("footer_text")
         if ft and str(ft).strip():
             return str(ft).strip()
-        cn = str(b.get("company_name", "Company")).strip()
+        cn = str(b.get("company_name", "Deloitte")).strip()
         return f"{cn}." if not cn.endswith(".") else cn
 
     def _resolve_fill(self, fill_token: str | None) -> tuple[RGBColor, RGBColor]:
@@ -232,18 +233,30 @@ class SlideComposer:
         """Compose a title/cover slide."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])  # blank layout
         slide.background.fill.solid()
-        slide.background.fill.fore_color.rgb = self.colors["primary"]
-        # Hero backdrop with gradient and subtle shadow for visual depth.
-        hero = slide.shapes.add_shape(
-            MSO_SHAPE.ROUNDED_RECTANGLE,
-            Inches(0.7),
-            Inches(1.45),
-            Inches(SLIDE_W - 1.4),
-            Inches(3.2),
+        slide.background.fill.fore_color.rgb = self.colors["neutral_dark"]
+
+        # Cover chrome: exactly three rectangles — full-bleed dark backdrop,
+        # left green strip, and bottom green bar (Deloitte brand contract).
+        backdrop = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(SLIDE_W), Inches(SLIDE_H)
         )
-        self._apply_shape_gradient(hero, self.colors["primary"], self.colors["accent_dark"])
-        hero.line.fill.background()
-        self._apply_soft_shadow(hero)
+        backdrop.fill.solid()
+        backdrop.fill.fore_color.rgb = self.colors["neutral_dark"]
+        backdrop.line.fill.background()
+
+        left_strip = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(0.35), Inches(SLIDE_H)
+        )
+        left_strip.fill.solid()
+        left_strip.fill.fore_color.rgb = self.colors["primary"]
+        left_strip.line.fill.background()
+
+        bottom_bar = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(0), Inches(SLIDE_H - 0.35), Inches(SLIDE_W), Inches(0.35)
+        )
+        bottom_bar.fill.solid()
+        bottom_bar.fill.fore_color.rgb = self.colors["primary"]
+        bottom_bar.line.fill.background()
 
         # Title (centered, large)
         title_box = slide.shapes.add_textbox(
@@ -262,6 +275,7 @@ class SlideComposer:
 
         # Subtitle (centered, smaller)
         subtitle = slide_dict.get("subtitle", "")
+        badges_y = 3.3
         if subtitle:
             subtitle_box = slide.shapes.add_textbox(
                 Inches(MARGIN_H),
@@ -275,23 +289,23 @@ class SlideComposer:
             subtitle_frame.paragraphs[0].font.color.rgb = self.colors["accent_light"]
             subtitle_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
             subtitle_frame.word_wrap = True
-        # Icon-style glyph badge as a visual anchor.
-        badge = slide.shapes.add_shape(
-            MSO_SHAPE.OVAL,
-            Inches(MARGIN_H),
-            Inches(0.45),
-            Inches(0.45),
-            Inches(0.45),
-        )
-        badge.fill.solid()
-        badge.fill.fore_color.rgb = self.colors["accent_light"]
-        badge.line.fill.background()
-        badge_tf = badge.text_frame
-        badge_tf.text = "\u2699"
-        badge_tf.paragraphs[0].alignment = PP_ALIGN.CENTER
-        badge_tf.paragraphs[0].font.size = Pt(14)
-        badge_tf.paragraphs[0].font.bold = True
-        badge_tf.paragraphs[0].font.color.rgb = self.colors["primary"]
+            badges_y = 4.2
+
+        # Badges (if provided)
+        badges = slide_dict.get("badges", [])
+        if badges:
+            badges_box = slide.shapes.add_textbox(
+                Inches(MARGIN_H),
+                Inches(badges_y),
+                Inches(CONTENT_W),
+                Inches(0.6)
+            )
+            badges_frame = badges_box.text_frame
+            badges_frame.text = " • ".join(badges)
+            badges_frame.paragraphs[0].font.size = Pt(14)
+            badges_frame.paragraphs[0].font.color.rgb = self.colors["text_inverse"]
+            badges_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+            badges_frame.word_wrap = True
 
         # Brand logo (best-effort, non-fatal)
         self._add_logo(slide)
@@ -375,6 +389,14 @@ class SlideComposer:
 
     def _add_title_bar(self, slide: Any, title: str, eyebrow: str = "") -> None:
         """Add primary title bar at top of slide, with optional ALL-CAPS eyebrow label above."""
+        # Green top bar — Deloitte brand chrome on every content slide.
+        top_bar = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(SLIDE_W), Inches(0.12)
+        )
+        top_bar.fill.solid()
+        top_bar.fill.fore_color.rgb = self.colors["primary"]
+        top_bar.line.fill.background()
+
         if eyebrow:
             eyebrow_box = slide.shapes.add_textbox(
                 Inches(MARGIN_H),
@@ -420,10 +442,23 @@ class SlideComposer:
             Inches(0.25)
         )
         footer_frame = footer_box.text_frame
-        footer_frame.text = f"{self.footer_text} | {page_num}/{total_pages}"
+        footer_frame.text = f"{self.footer_text} | {page_num} / {total_pages}"
         footer_frame.paragraphs[0].font.size = Pt(9)
         footer_frame.paragraphs[0].font.color.rgb = self.colors["neutral_dark"]
         footer_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
+
+    def _add_placeholder(self, slide: Any, y: float, h: float, text: str) -> None:
+        """Centered placeholder text for slides whose content payload is empty."""
+        box = slide.shapes.add_textbox(
+            Inches(MARGIN_H), Inches(y + h / 2 - 0.3), Inches(CONTENT_W), Inches(0.6)
+        )
+        tf = box.text_frame
+        tf.word_wrap = True
+        tf.text = text
+        tf.paragraphs[0].font.size = Pt(18)
+        tf.paragraphs[0].font.italic = True
+        tf.paragraphs[0].font.color.rgb = self.colors["neutral_light"]
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
 
     def _compose_bullets(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
         """Compose bullet-point slide."""
@@ -455,6 +490,26 @@ class SlideComposer:
             p.level = 0
             p.space_before = Pt(8)
             p.space_after = Pt(4)
+
+        # Optional source/footnote band (light-green) anchored at the bottom of the content area.
+        footer_note = str(slide_dict.get("footer_note", "")).strip()
+        if footer_note:
+            band = slide.shapes.add_shape(
+                MSO_SHAPE.RECTANGLE,
+                Inches(MARGIN_H),
+                Inches(y + h - 0.45),
+                Inches(CONTENT_W),
+                Inches(0.4),
+            )
+            band.fill.solid()
+            band.fill.fore_color.rgb = self.colors["accent_light"]
+            band.line.fill.background()
+            band_tf = band.text_frame
+            band_tf.word_wrap = True
+            band_tf.text = footer_note
+            band_tf.paragraphs[0].font.size = Pt(10)
+            band_tf.paragraphs[0].font.italic = True
+            band_tf.paragraphs[0].font.color.rgb = self.colors["text_primary"]
 
     def _compose_stat_cards(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
         """Compose 3-column stat cards layout."""
@@ -537,6 +592,7 @@ class SlideComposer:
         """Compose 3-column card layout."""
         cards = slide_dict.get("column_cards", [])
         if not cards:
+            self._add_placeholder(slide, y, h, "Content pending")
             return
 
         cols = min(3, len(cards))
@@ -783,6 +839,22 @@ class SlideComposer:
             label_frame.paragraphs[0].font.color.rgb = text_color
             label_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
 
+        # Optional supporting context line below the label.
+        context = str(big_number.get("context", "")).strip()
+        if context:
+            ctx_box = slide.shapes.add_textbox(
+                Inches(MARGIN_H + 0.5),
+                Inches(y + h * 0.85),
+                Inches(CONTENT_W - 1),
+                Inches(h * 0.18),
+            )
+            ctx_frame = ctx_box.text_frame
+            ctx_frame.word_wrap = True
+            ctx_frame.text = context
+            ctx_frame.paragraphs[0].font.size = Pt(14)
+            ctx_frame.paragraphs[0].font.color.rgb = text_color
+            ctx_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
+
     def _compose_process_flow(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
         """Compose 5-step process flow."""
         raw_flow = slide_dict.get("process_flow", [])
@@ -795,7 +867,8 @@ class SlideComposer:
 
         steps = steps[:5]
         step_w = (CONTENT_W - ((len(steps) - 1) * GUTTER)) / len(steps)
-        step_h = h * 0.6
+        # Use most of the content band so phase descriptions fit under labels.
+        step_h = h * 0.88
         shape_cycle = [
             MSO_SHAPE.ROUNDED_RECTANGLE,
             MSO_SHAPE.CHEVRON,
@@ -858,16 +931,32 @@ class SlideComposer:
             # Label
             label = str(step.get("label", ""))
             label_box = slide.shapes.add_textbox(
-                Inches(x + 0.1),
-                Inches(y + 0.5),
-                Inches(step_w - 0.2),
-                Inches(step_h - 0.6)
+                Inches(x + 0.08),
+                Inches(y + 0.42),
+                Inches(step_w - 0.16),
+                Inches(step_h * 0.28),
             )
             label_frame = label_box.text_frame
             label_frame.text = label
-            label_frame.paragraphs[0].font.size = Pt(11)
+            label_frame.paragraphs[0].font.size = Pt(10)
+            label_frame.paragraphs[0].font.bold = True
             label_frame.paragraphs[0].font.color.rgb = text_color
             label_frame.word_wrap = True
+
+            # Description (required for process_flow QA parity with slide JSON)
+            description = str(step.get("description") or "").strip()
+            if description:
+                desc_box = slide.shapes.add_textbox(
+                    Inches(x + 0.08),
+                    Inches(y + 0.72),
+                    Inches(step_w - 0.16),
+                    Inches(max(step_h - 0.80, 0.35)),
+                )
+                desc_frame = desc_box.text_frame
+                desc_frame.text = description
+                desc_frame.paragraphs[0].font.size = Pt(8)
+                desc_frame.paragraphs[0].font.color.rgb = text_color
+                desc_frame.word_wrap = True
 
             # Arrow connector (skip for last step)
             if idx < len(steps) - 1:
@@ -943,9 +1032,16 @@ class SlideComposer:
 
     def _compose_section_divider(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
         """Compose section divider (title-only, dark background)."""
-        # Override background
+        # Override background, plus a full-bleed dark rectangle shape so the dark
+        # fill is detectable on the slide's shapes (not just the slide background).
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = self.colors["neutral_dark"]
+        backdrop = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(SLIDE_W), Inches(SLIDE_H)
+        )
+        backdrop.fill.solid()
+        backdrop.fill.fore_color.rgb = self.colors["neutral_dark"]
+        backdrop.line.fill.background()
         # Hero ribbon with gradient and a diamond accent.
         ribbon = slide.shapes.add_shape(
             MSO_SHAPE.ROUNDED_RECTANGLE,
@@ -1039,7 +1135,19 @@ def render_pptx_with_artifact_tool(
                 errors.append(f"Slide {idx + 1}: Invalid slide data structure")
                 continue
 
-            slide_type = str(slide_dict.get("slide_type", "bullets")).lower()
+            slide_type = str(slide_dict.get("slide_type", "")).lower().strip()
+            if not slide_type:
+                # Legacy payloads omit slide_type and carry a content dict (e.g. `layout` +
+                # `table`/`chart`). Infer the renderer from whichever content key is present.
+                for _key in (
+                    "table", "chart", "big_number", "process_flow",
+                    "stack_layers", "stat_cards", "column_cards",
+                ):
+                    if slide_dict.get(_key):
+                        slide_type = _key
+                        break
+                else:
+                    slide_type = "bullets"
 
             try:
                 if slide_type == "title":
@@ -1058,6 +1166,13 @@ def render_pptx_with_artifact_tool(
         # Save PPTX
         prs.save(str(output_path))
         logger.info("PPTX rendered: %s", output_path)
+
+        try:
+            from app.services.artifact_integrity import write_pptx_integrity_manifest
+
+            write_pptx_integrity_manifest(run_dir)
+        except Exception as exc:
+            logger.warning("Failed to write PPTX integrity manifest: %s", exc)
 
         # Run QA validation
         qa_report = validate_pptx_against_slides(output_path, pptx_slides)

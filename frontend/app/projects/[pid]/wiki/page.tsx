@@ -44,6 +44,10 @@ const WikiGraph = dynamic(
   () => import("@/components/wiki/WikiGraph").then((m) => ({ default: m.WikiGraph })),
   { loading: () => <div className="p-6 text-sm text-gray-400">Loading graph…</div> },
 );
+const WikiDashboard = dynamic(
+  () => import("@/components/wiki/WikiDashboard").then((m) => ({ default: m.WikiDashboard })),
+  { loading: () => <div className="p-6 text-sm text-gray-400">Loading…</div> },
+);
 
 type WikiLevel = "project" | "leading_practice";
 type RightPanel = "page" | "query" | "ingest" | "health" | "graph" | "schema" | "refresh";
@@ -370,62 +374,29 @@ export default function WikiPageRoute() {
             </div>
           ) : (
             /* Default: no page selected, show landing */
-            <div className="max-w-2xl mx-auto pt-12">
-              {pages.length === 0 ? (
-                <EmptyState
-                  title="Wiki is empty"
-                  description={
-                    wikiLevel === "project"
-                      ? "Upload documents in Run Studio — they'll appear here automatically. Or use + Ingest to add URLs and other sources."
-                      : "Use + Ingest to add leading practices."
-                  }
-                >
-                  <Button
-                    variant="primary"
-                    className="text-xs px-4 py-2"
-                    onClick={() => { setRightPanel("ingest"); setSelectedPageId(null); }}
-                  >
-                    + Ingest source
-                  </Button>
-                </EmptyState>
-              ) : (
-                <div className="space-y-6">
-                  {/* Stats */}
-                  <div className="grid grid-cols-3 divide-x divide-[var(--surface-border)] border border-[var(--surface-border)]">
-                    {[
-                      { label: "Pages",      value: pages.length },
-                      { label: "Categories", value: categories.length },
-                      { label: "High conf.", value: pages.filter((p) => p.confidence === "high").length },
-                    ].map(({ label, value }) => (
-                      <div key={label} className="px-4 py-3 bg-[var(--surface-muted)] text-center">
-                        <div className="text-lg font-semibold text-[var(--text-default)]">{value}</div>
-                        <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mt-0.5">{label}</div>
-                      </div>
+            <div className="max-w-2xl mx-auto pt-12 space-y-6">
+              <WikiDashboard wikiType={wikiLevel} projectId={projectId} />
+              {pages.length > 0 && (
+                <div>
+                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-2">Recent pages</p>
+                  <div className="divide-y divide-[var(--surface-border)] border border-[var(--surface-border)]">
+                    {pages.slice(0, 8).map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => handlePageSelect(p.id)}
+                        className="w-full text-left px-4 py-2.5 hover:bg-[var(--surface-muted)] transition flex items-center gap-3"
+                      >
+                        <span className={`flex-shrink-0 w-1.5 h-1.5 rounded-full ${CONFIDENCE_DOT[p.confidence] ?? CONFIDENCE_DOT.medium}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-[var(--text-default)] truncate">{p.title}</p>
+                          {p.summary && (
+                            <p className="text-xs text-[var(--text-muted)] truncate mt-0.5">{p.summary}</p>
+                          )}
+                        </div>
+                        <Badge className="flex-shrink-0 text-[10px] capitalize">{p.category}</Badge>
+                      </button>
                     ))}
-                  </div>
-
-                  {/* Recent pages */}
-                  <div>
-                    <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-2">Recent pages</p>
-                    <div className="divide-y divide-[var(--surface-border)] border border-[var(--surface-border)]">
-                      {pages.slice(0, 8).map((page) => (
-                        <button
-                          key={page.id}
-                          type="button"
-                          onClick={() => handlePageSelect(page.id)}
-                          className="w-full text-left px-4 py-2.5 hover:bg-[var(--surface-muted)] transition flex items-center gap-3"
-                        >
-                          <span className={`flex-shrink-0 w-1.5 h-1.5 rounded-full ${CONFIDENCE_DOT[page.confidence] ?? CONFIDENCE_DOT.medium}`} />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-[var(--text-default)] truncate">{page.title}</p>
-                            {page.summary && (
-                              <p className="text-xs text-[var(--text-muted)] truncate mt-0.5">{page.summary}</p>
-                            )}
-                          </div>
-                          <Badge className="flex-shrink-0 text-[10px] capitalize">{page.category}</Badge>
-                        </button>
-                      ))}
-                    </div>
                   </div>
                 </div>
               )}

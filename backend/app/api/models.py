@@ -2,21 +2,36 @@ import json
 import logging
 import uuid
 from datetime import datetime
-from app.core.tz import IST
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from jose import JWTError, jwt
 from openpyxl import Workbook
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+import app.services.excel_lock_service as lock_svc
 from app.core.auth import get_current_user, require_project_role
+from app.core.config import settings
+from app.core.tz import IST
 from app.core.upload_validation import validate_excel_upload
 from app.db.models import User
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.services.budget_vs_actual import (
     calculate_period_variance,
     calculate_ytd_variance,
@@ -48,6 +63,7 @@ from app.services.financial_data_connector import (
     list_data_sources,
     sync_data_source,
 )
+from app.services.financial_metrics import compute_consolidated_metrics
 from app.services.financial_statements import (
     generate_balance_sheet,
     generate_cash_flow_statement,
@@ -80,9 +96,11 @@ from app.services.model_links import (
     sync_linked_cells,
     validate_all_links,
 )
+from app.services.email_service import send_email
 from app.services.model_realtime import append_model_event, broadcast_model_event, replay_model_events
 from app.services.observability import increment, observe_latency
 from app.services.observability import snapshot as observability_snapshot
+from app.services.report_generator import generate_report
 from app.services.scenario_runner import (
     compare_scenarios,
     get_scenario_rankings,
@@ -101,10 +119,35 @@ from app.services.variance_analysis import (
     generate_variance_report,
 )
 from app.services.xlsx_parser import parse_workbook, quality_gate_failed
+from app.core.rate_limit import limiter
 
 log = logging.getLogger(__name__)
 
+
+def _model_calc_rate_limit() -> str:
+    return (settings.model_calc_rate_limit or "30/minute").strip() or "30/minute"
+
+
+def _model_dcf_rate_limit() -> str:
+    return (settings.model_dcf_rate_limit or "10/minute").strip() or "10/minute"
+
+
+def _model_forecast_rate_limit() -> str:
+    return (settings.model_forecast_rate_limit or "20/minute").strip() or "20/minute"
+
 router = APIRouter()
+
+# presence_store: {(pid, mid): {user_id: {"email": str, "connectedAt": str, "cursor": str | None}}}
+_presence_store: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+
+
+def _presence_room(pid: str, mid: str) -> dict[str, dict[str, Any]]:
+    k = (pid, mid)
+    if k not in _presence_store:
+        _presence_store[k] = {}
+    return _presence_store[k]
+
+
 OBSERVABILITY_COUNTERS = {
     "models_created": 0,
     "scenarios_created": 0,
@@ -152,6 +195,23 @@ def _emit_model_event(pid: str, mid: str, event_type: str, payload: dict[str, An
         pass
 
 
+def _websocket_user_from_token(token: str) -> User | None:
+    db = SessionLocal()
+    try:
+        try:
+            payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+            if payload.get("typ") != "access":
+                return None
+            email = payload.get("sub")
+            if not isinstance(email, str):
+                return None
+        except JWTError:
+            return None
+        return db.scalar(select(User).where(User.email == email))
+    finally:
+        db.close()
+
+
 def _now_iso() -> str:
     return datetime.now(IST).isoformat()
 
@@ -171,6 +231,23 @@ class ModelUpdateRequest(BaseModel):
 class ScenarioCreateRequest(BaseModel):
     name: str
     assumption_overrides: dict[str, float | int | str | bool] = Field(default_factory=dict)
+
+
+class ReportGenerateRequest(BaseModel):
+    reportType: str = "comprehensive"
+    format: str = "xlsx"
+    title: str = "Financial Report"
+    includeCharts: bool = True
+    includeTables: bool = True
+    recipients: str = ""
+
+
+class StyleProfileRequest(BaseModel):
+    formality: str = "Formal"
+    tone: str = "Authoritative"
+    persona: str = "Senior Director"
+    verbosity: str = "Balanced"
+    audience: str = "C-suite"
 
 
 class ConflictDetectRequest(BaseModel):
@@ -1159,6 +1236,22 @@ def excel_conflicts_get(
     item = get_conflict(_excel_dir(pid, mid), cid)
     if item is None:
         raise HTTPException(status_code=404, detail="Conflict not found")
+    cell_ref = item.get("cell_ref", "")
+    # Attach cell history from audit log filtered by cell_ref
+    history: list[dict[str, Any]] = []
+    from app.services.conflict_resolution import audit_log_path
+    log_path = audit_log_path(_excel_dir(pid, mid))
+    if log_path.exists():
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+                if entry.get("cell_ref") == cell_ref or entry.get("conflict_id") == cid:
+                    history.append(entry)
+            except json.JSONDecodeError:
+                log.debug("Skipping malformed conflict audit log line", exc_info=True)
+    item["history"] = history
+    # Static impact — dependency graph not available yet
+    item["impact"] = {"dependentCells": [], "affectedModels": [], "impactCount": 0}
     return item
 
 
@@ -1249,8 +1342,327 @@ def model_events(
     return {"items": events}
 
 
+# ---------------------------------------------------------------------------
+# Phase 2a — Audit log
+# ---------------------------------------------------------------------------
+
+@router.get("/projects/{pid}/models/{mid}/excel/audit-log")
+def excel_audit_log(
+    pid: str,
+    mid: str,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    event_type: str | None = Query(default=None),
+    cell_ref: str | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    from app.services.conflict_resolution import audit_log_path
+    log_path = audit_log_path(_excel_dir(pid, mid))
+
+    _event_type_map = {
+        "conflict_detected": "conflict_detected",
+        "conflict_resolved": "conflict_resolved",
+        "conflict_reopened": "model_updated",
+        "model_created": "model_created",
+        "model_updated": "model_updated",
+        "assumption_changed": "assumption_changed",
+        "sync_completed": "sync_completed",
+        "external_data_synced": "external_data_synced",
+        "budget_recorded": "budget_recorded",
+    }
+
+    def _map_event(e: dict[str, Any], idx: int) -> dict[str, Any]:
+        raw_type = str(e.get("event", e.get("event_type", "model_updated")))
+        mapped_type = _event_type_map.get(raw_type, "model_updated")
+        return {
+            "id": e.get("id", f"evt_{idx}"),
+            "timestamp": e.get("timestamp", ""),
+            "eventType": mapped_type,
+            "user": e.get("actor", e.get("user", "")),
+            "modelId": mid,
+            "cellRef": e.get("cell_ref", e.get("cellRef")),
+            "oldValue": e.get("old_value"),
+            "newValue": e.get("new_value"),
+            "metadata": {k: v for k, v in e.items() if k not in {"id", "timestamp", "event", "event_type", "actor", "user", "cell_ref"}},
+            "severity": e.get("severity", "info"),
+        }
+
+    def _iter_events() -> Any:
+        if not log_path.exists():
+            return
+        with log_path.open(encoding="utf-8") as fh:
+            for idx, line in enumerate(fh):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw = json.loads(line)
+                except json.JSONDecodeError:
+                    log.debug("Skipping malformed audit log line", exc_info=True)
+                    continue
+                mapped = _map_event(raw, idx)
+                if event_type and mapped["eventType"] != event_type:
+                    continue
+                if cell_ref and mapped.get("cellRef") != cell_ref:
+                    continue
+                yield mapped
+
+    all_matching: list[dict[str, Any]] = list(_iter_events())
+    total = len(all_matching)
+    page = all_matching[offset: offset + limit]
+    return {"events": page, "total": total, "has_more": offset + limit < total}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Consolidated financial dashboard
+# ---------------------------------------------------------------------------
+
+@router.get("/projects/{pid}/models/{mid}/financial/consolidated")
+def financial_consolidated(
+    pid: str,
+    mid: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    return compute_consolidated_metrics(_model_dir(pid, mid))
+
+
+# ---------------------------------------------------------------------------
+# Style profile — save / load
+# ---------------------------------------------------------------------------
+
+_STYLE_PROFILE_DEFAULTS: dict[str, str] = {
+    "formality": "Formal",
+    "tone": "Authoritative",
+    "persona": "Senior Director",
+    "verbosity": "Balanced",
+    "audience": "C-suite",
+}
+
+
+@router.get("/projects/{pid}/models/{mid}/style-profile")
+def get_style_profile(
+    pid: str,
+    mid: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    path = _model_dir(pid, mid) / "style_profile.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return dict(_STYLE_PROFILE_DEFAULTS)
+
+
+@router.put("/projects/{pid}/models/{mid}/style-profile")
+def put_style_profile(
+    pid: str,
+    mid: str,
+    body: StyleProfileRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner", "Editor"}, user, db)
+    path = _model_dir(pid, mid) / "style_profile.json"
+    path.write_text(json.dumps(body.model_dump(), ensure_ascii=False), encoding="utf-8")
+    return body.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4a — Report generation
+# ---------------------------------------------------------------------------
+
+@router.post("/projects/{pid}/models/{mid}/reports/generate")
+def reports_generate(
+    pid: str,
+    mid: str,
+    body: ReportGenerateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    result = generate_report(
+        _model_dir(pid, mid),
+        report_type=body.reportType,
+        fmt=body.format,
+        title=body.title,
+        include_charts=body.includeCharts,
+        include_tables=body.includeTables,
+    )
+    if result.get("status") == "not_yet_implemented":
+        raise HTTPException(status_code=501, detail=result.get("detail", "Report format not implemented"))
+    if result.get("status") == "ok" and "filename" in result:
+        result["download_path"] = f"/api/projects/{pid}/models/{mid}/reports/download/{result['filename']}"
+        if body.recipients.strip():
+            report_path = _model_dir(pid, mid) / "reports" / result["filename"]
+            outcome = send_email(
+                body.recipients.replace(";", ",").split(","),
+                subject=body.title,
+                body=f"Your financial report '{body.title}' is attached.",
+                attachments=[report_path],
+            )
+            result["emailed"] = bool(outcome.get("sent"))
+            result["email_reason"] = outcome.get("reason")
+        else:
+            result["emailed"] = False
+            result["email_reason"] = None
+    return result
+
+
+@router.get("/projects/{pid}/models/{mid}/reports/download/{filename}")
+def reports_download(
+    pid: str,
+    mid: str,
+    filename: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    from fastapi.responses import FileResponse
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    # Sanitize — no path traversal
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = _model_dir(pid, mid) / "reports" / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Report not found")
+    return FileResponse(str(path), filename=filename)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4b — Collaborative editing locks (REST + WebSocket)
+# ---------------------------------------------------------------------------
+
+@router.get("/projects/{pid}/models/{mid}/collaborative/locks")
+def collab_locks_list(
+    pid: str,
+    mid: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    return {"locks": lock_svc.get_locks(pid, mid)}
+
+
+@router.delete("/projects/{pid}/models/{mid}/collaborative/locks/{cell_ref}")
+def collab_locks_force_release(
+    pid: str,
+    mid: str,
+    cell_ref: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner"}, user, db)
+    released = lock_svc.force_release_lock(pid, mid, cell_ref)
+    if not released:
+        raise HTTPException(status_code=404, detail="Lock not found")
+    return {"ok": True}
+
+
+@router.websocket("/ws/models/{pid}/{mid}/collab")
+async def collab_websocket(
+    pid: str,
+    mid: str,
+    ws: WebSocket,
+) -> None:
+    token = ws.query_params.get("token")
+    if not token:
+        await ws.close(code=1008)
+        return
+    db = SessionLocal()
+    user: User | None = None
+    try:
+        user = _websocket_user_from_token(token)
+        if not user:
+            await ws.close(code=1008)
+            return
+        require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    except Exception:
+        await ws.close(code=1008)
+        return
+    finally:
+        db.close()
+
+    await ws.accept()
+    q = lock_svc.subscribe(pid, mid)
+    user_id = user.email
+    presence = _presence_room(pid, mid)
+    presence[user_id] = {"email": user_id, "connectedAt": _now_iso(), "cursor": None}
+    try:
+        await ws.send_json({
+            "type": "init",
+            "locks": lock_svc.get_locks(pid, mid),
+            "presence": list(presence.values()),
+        })
+        await lock_svc.broadcast(pid, mid, {"type": "presence_update", "presence": list(presence.values())})
+
+        async def _pump() -> None:
+            while True:
+                msg = await q.get()
+                await ws.send_json(msg)
+
+        import asyncio
+        pump_task = asyncio.create_task(_pump())
+        try:
+            while True:
+                data = await ws.receive_json()
+                action = data.get("action")
+                cell_ref = data.get("cellRef", "")
+                if action == "lock":
+                    result = lock_svc.acquire_lock(pid, mid, cell_ref, user_id)
+                    await lock_svc.broadcast(pid, mid, {"type": "lock_update", "locks": lock_svc.get_locks(pid, mid)})
+                    await ws.send_json({"type": "lock_result", **result})
+                elif action == "release":
+                    lock_svc.release_lock(pid, mid, cell_ref, user_id)
+                    await lock_svc.broadcast(pid, mid, {"type": "lock_update", "locks": lock_svc.get_locks(pid, mid)})
+                elif action == "cursor":
+                    presence[user_id]["cursor"] = cell_ref or None
+                    await lock_svc.broadcast(pid, mid, {"type": "presence_update", "presence": list(presence.values())})
+        finally:
+            pump_task.cancel()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        presence.pop(user_id, None)
+        await lock_svc.broadcast(pid, mid, {"type": "presence_update", "presence": list(presence.values())})
+        lock_svc.release_all_locks_for_user(pid, mid, user_id)
+        lock_svc.unsubscribe(pid, mid, q)
+
+
+@router.post("/projects/{pid}/models/{mid}/collaborative/locks/{cell_ref}/acquire")
+def collab_lock_acquire(
+    pid: str,
+    mid: str,
+    cell_ref: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner", "Editor"}, user, db)
+    return lock_svc.acquire_lock(pid, mid, cell_ref, user.email)
+
+
+@router.post("/projects/{pid}/models/{mid}/collaborative/locks/{cell_ref}/release")
+def collab_lock_release(
+    pid: str,
+    mid: str,
+    cell_ref: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_project_role(pid, {"Owner", "Editor"}, user, db)
+    released = lock_svc.release_lock(pid, mid, cell_ref, user.email)
+    return {"ok": released}
+
+
 @router.post("/projects/{pid}/models/{mid}/calculate/npv")
+@limiter.limit(_model_calc_rate_limit)
 def calculate_model_npv(
+    request: Request,
     pid: str,
     mid: str,
     body: CalculateNPVRequest,
@@ -1267,7 +1679,9 @@ def calculate_model_npv(
 
 
 @router.post("/projects/{pid}/models/{mid}/calculate/irr")
+@limiter.limit(_model_calc_rate_limit)
 def calculate_model_irr(
+    request: Request,
     pid: str,
     mid: str,
     body: CalculateIRRRequest,
@@ -1284,7 +1698,9 @@ def calculate_model_irr(
 
 
 @router.post("/projects/{pid}/models/{mid}/calculate/dcf")
+@limiter.limit(_model_dcf_rate_limit)
 def calculate_model_dcf(
+    request: Request,
     pid: str,
     mid: str,
     body: CalculateDCFRequest,
@@ -1310,7 +1726,9 @@ def calculate_model_dcf(
 
 
 @router.post("/projects/{pid}/models/{mid}/calculate/sensitivity")
+@limiter.limit(_model_dcf_rate_limit)
 def calculate_model_sensitivity(
+    request: Request,
     pid: str,
     mid: str,
     body: SensitivityAnalysisRequest,
@@ -1482,7 +1900,9 @@ def rank_scenarios_by_metric(
 
 
 @router.post("/projects/{pid}/models/{mid}/calculate/metrics")
+@limiter.limit(_model_calc_rate_limit)
 def calculate_model_metrics(
+    request: Request,
     pid: str,
     mid: str,
     body: CalculateFinancialMetricsRequest,
@@ -1591,7 +2011,9 @@ def generate_cash_flow_statement_endpoint(
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/linear-regression")
+@limiter.limit(_model_forecast_rate_limit)
 def forecast_linear_regression(
+    request: Request,
     pid: str,
     mid: str,
     body: ForecastRequest,
@@ -1608,7 +2030,9 @@ def forecast_linear_regression(
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/exponential-smoothing")
+@limiter.limit(_model_forecast_rate_limit)
 def forecast_exponential_smoothing(
+    request: Request,
     pid: str,
     mid: str,
     body: ExponentialSmoothingRequest,
@@ -1630,7 +2054,9 @@ def forecast_exponential_smoothing(
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/moving-average")
+@limiter.limit(_model_forecast_rate_limit)
 def forecast_moving_average(
+    request: Request,
     pid: str,
     mid: str,
     body: MovingAverageRequest,
@@ -1647,7 +2073,9 @@ def forecast_moving_average(
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/arima")
+@limiter.limit(_model_forecast_rate_limit)
 def forecast_arima(
+    request: Request,
     pid: str,
     mid: str,
     body: ForecastRequest,
@@ -1664,7 +2092,9 @@ def forecast_arima(
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/compare-methods")
+@limiter.limit(_model_forecast_rate_limit)
 def forecast_compare_methods(
+    request: Request,
     pid: str,
     mid: str,
     body: ForecastRequest,
@@ -1681,7 +2111,9 @@ def forecast_compare_methods(
 
 
 @router.post("/projects/{pid}/models/{mid}/forecast/ensemble-with-confidence")
+@limiter.limit(_model_forecast_rate_limit)
 def forecast_ensemble_with_confidence(
+    request: Request,
     pid: str,
     mid: str,
     body: ForecastWithConfidenceRequest,

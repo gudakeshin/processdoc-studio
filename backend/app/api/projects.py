@@ -20,6 +20,7 @@ from app.api.runs import (
     _normalize_output_type_representations,
     _recommend_output_types,
 )
+from app.services.output_format_detection import merge_format_intent_into_template_ids
 from app.services.permission_pipeline import evaluate_permission_pipeline
 from app.services.swarm import persist_instruction_broadcast_swarm_event_payload
 from app.core.auth import get_current_user, require_project_role
@@ -401,6 +402,22 @@ def _execute_plan_now(
     )
     output_type_representations = _normalize_output_type_representations(
         {str(k): str(v) for k, v in (plan_meta.get("output_type_representations") or {}).items()}
+    )
+    recent_user_text = " ".join(
+        str(m.get("content") or "").strip()
+        for m in _serialize_messages(db, conv.id)[-12:]
+        if m.get("role") == "user" and str(m.get("content") or "").strip()
+    )
+    allowed_formats = {
+        str(item.get("output_type_id"))
+        for item in _load_output_types()
+        if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
+    }
+    template_ids, output_type_representations = merge_format_intent_into_template_ids(
+        f"{instruction}\n{recent_user_text}".strip(),
+        template_ids,
+        allowed=allowed_formats,
+        output_type_representations=output_type_representations,
     )
     content_skill_targets: dict[str, str] = {
         str(k).strip(): str(v).strip()
@@ -3340,6 +3357,24 @@ def _post_project_conversation_message_inner(
     )
     custom_output_types: list[str] = list(fallback_custom_output_types)
     rationale = decision.rationale or "Recommended by conversation router."
+
+    allowed_catalog = {
+        str(item.get("output_type_id"))
+        for item in available_output_types
+        if isinstance(item, dict) and isinstance(item.get("output_type_id"), str)
+    }
+    template_ids, output_type_representations = merge_format_intent_into_template_ids(
+        combined_instruction,
+        template_ids,
+        allowed=allowed_catalog,
+        output_type_representations=output_type_representations,
+    )
+    if template_ids == ["xlsx"] and "pptx" not in template_ids:
+        state.deliverable = {
+            "template_ids": template_ids,
+            "representations": output_type_representations,
+            "content_skill_hint": content_skill_hint,
+        }
 
     recent_text = "\n".join(str(m.get("content") or "") for m in prior_messages[-8:])
     if decision.intent == "out_of_scope":

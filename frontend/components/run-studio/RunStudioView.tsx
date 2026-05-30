@@ -19,6 +19,10 @@ const DrawioCollabEditor = dynamic(() => import("@/components/DrawioCollabEditor
   ssr: false,
   loading: () => <p className="text-sm text-[var(--text-muted)]">Loading collaborative editor...</p>,
 });
+const WikiArtifactSection = dynamic(
+  () => import("@/components/wiki/WikiArtifactSection").then((m) => ({ default: m.WikiArtifactSection })),
+  { ssr: false, loading: () => null },
+);
 
 function RunStudioViewInner(props: UseRunStudioReturn) {
   const {
@@ -211,6 +215,9 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
           </div>
         ) : null}
         <ApprovalBannerRedesigned state={approvalBannerState} />
+        {pid && rid && (
+          <WikiArtifactSection runId={rid} projectId={pid} />
+        )}
       </section>
         <ActivityFeedRedesigned
           parsedEvents={parsedRunEvents}

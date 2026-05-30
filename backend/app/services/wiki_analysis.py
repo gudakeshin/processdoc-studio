@@ -6,7 +6,6 @@ and performance metrics. All state files use the .meta/ subdirectory.
 """
 import json
 import logging
-from datetime import 
 
 _LOG = logging.getLogger(__name__)
 
@@ -376,8 +375,8 @@ def _save_god_nodes(
     """Save god nodes (important pages) to .meta/god_nodes.json."""
     try:
         from datetime import datetime
-from app.core.tz import IST
 
+        from app.core.tz import IST
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":

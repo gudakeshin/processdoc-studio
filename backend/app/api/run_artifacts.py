@@ -11,6 +11,7 @@ from app.core.auth import get_current_user, require_project_role
 from app.core.handoff_bundle import build_handoff_bundle
 from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEvent, User
 from app.db.session import get_db
+from app.services.artifact_integrity import pptx_base64_from_file, verify_pptx_on_disk
 from app.services.storage import workspace_path
 
 router = APIRouter()
@@ -115,6 +116,8 @@ def get_run_artifacts(
 
     run_dir = workspace_path(project_id) / "runs" / run_id
 
+    pptx_b64, pptx_integrity = pptx_base64_from_file(run_dir)
+
     process_model_payload = _read_json(run_dir / "process_model.json")
     source_trace = []
     if isinstance(process_model_payload, dict):
@@ -131,7 +134,8 @@ def get_run_artifacts(
         "xlsx_base64": _read_base64(run_dir / "output.xlsx"),
         "pdf_base64": _read_base64(run_dir / "output.pdf"),
         "docx_base64": _read_base64(run_dir / "output.docx"),
-        "pptx_base64": _read_base64(run_dir / "output.pptx"),
+        "pptx_base64": pptx_b64,
+        "pptx_integrity": pptx_integrity,
         "deck_html": _read_text(run_dir / "deck.html"),
         "deck_pdf_base64": _read_base64(run_dir / "deck.pdf"),
         "sop_markdown": _read_text(run_dir / "sop.md"),
@@ -286,6 +290,46 @@ def save_canvas_artifact(
     run_dir = workspace_path(project_id) / "runs" / run_id
     (run_dir / CANVAS_ARTIFACT_FILES[body.artifact_key]).write_text(body.content, encoding="utf-8")
     return {"ok": True, "artifact_key": body.artifact_key}
+
+
+@router.get("/{project_id}/{run_id}/artifacts/pptx/download")
+def download_run_pptx(
+    project_id: str,
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stream output.pptx directly from the run workspace (canonical on-disk artifact)."""
+    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    pptx_path = run_dir / "output.pptx"
+    if not pptx_path.is_file():
+        raise HTTPException(status_code=404, detail="PPTX output not found for this run")
+
+    check = verify_pptx_on_disk(run_dir)
+    if not check.get("ok"):
+        raise HTTPException(status_code=404, detail="PPTX output not available")
+
+    process_meta = {}
+    pm = _read_json(run_dir / "process_model.json")
+    if isinstance(pm, dict) and isinstance(pm.get("metadata"), dict):
+        process_meta = pm["metadata"]
+    project = db.scalar(select(Project).where(Project.id == project_id))
+    project_name = str(project.name or "").strip() if project else ""
+    client_hint = str(process_meta.get("client_name") or "").strip()
+    client_name = _tokenize_filename(client_hint or project_name or "Client")
+    run_date = run.created_at.date().strftime("%Y%m%d") if run.created_at else "UnknownDate"
+    filename = f"{client_name}_ExecutiveDeck_{run_date}.pptx"
+
+    return FileResponse(
+        path=str(pptx_path),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        filename=filename,
+    )
 
 
 @router.get("/{project_id}/{run_id}/handoff_bundle")

@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 
-type ConflictType = "formula_changed" | "type_mismatch" | "structural_shift" | "value_mismatch";
+type ConflictType = "formula_changed" | "type_mismatch" | "structural_shift" | "value_mismatch" | "deleted_range";
 type ConflictStatus = "open" | "resolved" | "reopened";
 type ConflictSeverity = "high" | "medium" | "low";
 
@@ -30,13 +30,13 @@ type ModelConflict = {
   type: ConflictType;
   severity: ConflictSeverity;
   status: ConflictStatus;
-  base?: { value: unknown };
-  local?: { value: unknown };
-  remote?: { value: unknown };
+  base?: { value?: unknown };
+  local?: { value?: unknown };
+  remote?: { value?: unknown };
   history?: CellVersion[];
   impact?: ConflictImpact;
   formula?: string;
-  createdAt: string;
+  createdAt?: string;
   resolvedAt?: string;
 };
 
@@ -44,15 +44,22 @@ type ResolutionMode = "single" | "batch" | "history" | "impact";
 
 export function EnhancedConflictResolution({
   conflicts: initialConflicts = [],
+  selectedConflictId: controlledSelectedConflictId,
+  selectedConflictDetail,
+  onSelectConflict,
   onResolve,
   onBatchResolve,
 }: {
   conflicts?: ModelConflict[];
+  selectedConflictId?: string | null;
+  selectedConflictDetail?: Partial<ModelConflict> | null;
+  onSelectConflict?: (conflictId: string) => void;
   onResolve?: (conflictId: string, chosenSide: string) => void;
   onBatchResolve?: (strategy: string) => void;
 }) {
   const [mode, setMode] = useState<ResolutionMode>("single");
-  const [selectedConflictId, setSelectedConflictId] = useState<string>("");
+  const [localSelectedConflictId, setLocalSelectedConflictId] = useState<string>("");
+  const selectedConflictId = controlledSelectedConflictId ?? localSelectedConflictId;
   const [filters, setFilters] = useState({
     sheet: "",
     severity: "",
@@ -70,10 +77,14 @@ export function EnhancedConflictResolution({
     });
   }, [initialConflicts, filters]);
 
-  const selectedConflict = useMemo(
-    () => filteredConflicts.find((c) => c.id === selectedConflictId),
-    [filteredConflicts, selectedConflictId]
-  );
+  const selectedConflict = useMemo(() => {
+    const base = filteredConflicts.find((c) => c.id === selectedConflictId);
+    if (!base) return undefined;
+    if (selectedConflictDetail && selectedConflictDetail.id === selectedConflictId) {
+      return { ...base, ...selectedConflictDetail } as ModelConflict;
+    }
+    return base;
+  }, [filteredConflicts, selectedConflictId, selectedConflictDetail]);
 
   const sheets = useMemo(
     () => Array.from(new Set(initialConflicts.map((x) => x.sheet))).sort(),
@@ -202,7 +213,10 @@ export function EnhancedConflictResolution({
                 filteredConflicts.map((conflict) => (
                   <button
                     key={conflict.id}
-                    onClick={() => setSelectedConflictId(conflict.id)}
+                    onClick={() => {
+                      setLocalSelectedConflictId(conflict.id);
+                      onSelectConflict?.(conflict.id);
+                    }}
                     className={`w-full rounded-lg border p-3 text-left transition ${
                       selectedConflictId === conflict.id
                         ? "border-[#86BC24] bg-[#f0f8f0]"

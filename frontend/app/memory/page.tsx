@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/Input";
 import { Textarea } from "@/components/ui/Textarea";
 import { useAuth } from "@/lib/auth-context";
 import { extractApiErrorMessage } from "@/lib/api-error";
+import { WikiMemoryLink } from "@/components/wiki/WikiMemoryLink";
 
 type MemoryItemRow = {
   id: string;
@@ -690,6 +691,16 @@ export default function MemoryPage() {
                         Delete
                       </Button>
                     </div>
+                    {projectId && (item.memory_type === "fact" || item.memory_type === "decision" || item.memory_type === "constraint") && (
+                      <div className="mt-3 pt-3 border-t border-[var(--surface-border)]">
+                        <WikiMemoryLink
+                          memoryId={item.id}
+                          memoryType={item.memory_type as "fact" | "decision" | "constraint"}
+                          memoryContent={item.value}
+                          projectId={projectId}
+                        />
+                      </div>
+                    )}
                   </>
                 )}
               </li>

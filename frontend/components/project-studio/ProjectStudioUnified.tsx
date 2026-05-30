@@ -391,7 +391,7 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
         </div>
       </header>
 
-      {error ? <div className="alert alert--error p-2 text-sm">{error}</div> : null}
+      {error ?<div className="alert alert--error p-2 text-sm">{error}</div> : null}
 
       <section className="grid gap-3 lg:grid-cols-[minmax(0,2.1fr)_minmax(340px,1fr)]">
         <section className="min-w-0 space-y-3">

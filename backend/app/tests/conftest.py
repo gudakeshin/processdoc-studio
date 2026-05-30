@@ -5,7 +5,7 @@ import os
 import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-min-16chars")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-chars-long-ok!")
 # Prevent optional localhost Redis from connecting during tests (draw.io collab fan-out / timing).
 os.environ["REDIS_URL"] = "redis://127.0.0.1:1/0"
 
@@ -27,6 +27,9 @@ def _auth_allow_self_signup_for_integration_tests(monkeypatch: pytest.MonkeyPatc
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "auth_allow_self_signup", True)
+    # Integration tests predate the collaborative storyline flow and only need a confirmed plan
+    # to exercise downstream behaviour; the legacy discovery→plan path reaches ready_for_confirmation.
+    monkeypatch.setattr(settings, "collaborative_building_enabled", False)
 
 
 @pytest.fixture(autouse=True)

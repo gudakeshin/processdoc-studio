@@ -4,70 +4,36 @@ import { useState } from "react";
 import dynamic from "next/dynamic";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
-
-type FinancialMetrics = {
-  profitability: {
-    grossMargin: number;
-    operatingMargin: number;
-    netMargin: number;
-    roe: number;
-    roic: number;
-  };
-  liquidity: {
-    currentRatio: number;
-    quickRatio: number;
-    cashConversionCycle: number;
-  };
-  leverage: {
-    debtToEquity: number;
-    interestCoverage: number;
-    netDebtToEbitda: number;
-  };
-  growth: {
-    revenueGrowth: number;
-    ebitdaGrowth: number;
-    fcfGrowth: number;
-    cagr: number;
-  };
-};
+import type {
+  ConsolidatedFinancialMetrics,
+  ConsolidatedFinancialStatement,
+  ConsolidatedVarianceData,
+  ConsolidatedForecastData,
+} from "@/hooks/useModels";
 
 type DashboardTab = "overview" | "statements" | "variance" | "forecast" | "assumptions";
-
-type FinancialStatement = {
-  name: string;
-  periods: string[];
-  revenue: number[];
-  cogs: number[];
-  grossProfit: number[];
-  opex: number[];
-  ebit: number[];
-  taxes: number[];
-  netIncome: number[];
-};
-
-type VarianceData = {
-  period: number;
-  budget: number;
-  actual: number;
-  variance: number;
-  variancePct: number;
-  favorable: boolean;
-};
-
-type ForecastData = {
-  period: number;
-  revenue: number;
-  margin: number;
-  ebit: number;
-  confidence: number;
-};
 
 const DashboardChart = dynamic(() => import("@/components/models/ModelDashboardChart"), {
   ssr: false,
   loading: () => <p className="text-xs text-[#4C4C4C]">Loading...</p>,
 });
+
+function numericRows(values?: number[]) {
+  return Array.isArray(values) ? values : [];
+}
+
+function fmtRatio(v: number | null | undefined, decimals = 2): string {
+  return v == null ? "N/A" : v.toFixed(decimals);
+}
+
+function fmtPct(v: number | null | undefined): string {
+  return v == null ? "N/A" : `${(v * 100).toFixed(1)}%`;
+}
+
+function fmtX(v: number | null | undefined): string {
+  return v == null ? "N/A" : `${v.toFixed(1)}x`;
+}
 
 export function ConsolidatedFinancialDashboard({
   metrics,
@@ -75,12 +41,14 @@ export function ConsolidatedFinancialDashboard({
   variances,
   forecasts,
   assumptions,
+  dataSource,
 }: {
-  metrics?: FinancialMetrics;
-  statements?: FinancialStatement;
-  variances?: VarianceData[];
-  forecasts?: ForecastData[];
+  metrics?: ConsolidatedFinancialMetrics;
+  statements?: ConsolidatedFinancialStatement;
+  variances?: ConsolidatedVarianceData[];
+  forecasts?: ConsolidatedForecastData[];
   assumptions?: Record<string, number>;
+  dataSource?: "snapshot" | "assumptions";
 }) {
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
   const [selectedScenario, setSelectedScenario] = useState("base");
@@ -96,6 +64,15 @@ export function ConsolidatedFinancialDashboard({
           <p className="mt-1 text-sm text-[#4C4C4C]">
             Comprehensive view of financial performance and projections
           </p>
+          {dataSource && (
+            <span className={`mt-1 inline-block rounded px-2 py-0.5 text-xs font-medium ${
+              dataSource === "snapshot"
+                ? "bg-green-100 text-green-800"
+                : "bg-yellow-100 text-yellow-800"
+            }`}>
+              Data source: {dataSource === "snapshot" ? "Excel upload" : "Assumptions only — upload a workbook for balance sheet metrics"}
+            </span>
+          )}
         </div>
         <div className="flex gap-2">
           <Select
@@ -140,19 +117,17 @@ export function ConsolidatedFinancialDashboard({
               </h3>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                 {[
-                  { label: "Gross Margin", value: metrics.profitability.grossMargin, format: "pct" },
-                  { label: "Operating Margin", value: metrics.profitability.operatingMargin, format: "pct" },
-                  { label: "Net Margin", value: metrics.profitability.netMargin, format: "pct" },
-                  { label: "ROE", value: metrics.profitability.roe, format: "pct" },
-                  { label: "ROIC", value: metrics.profitability.roic, format: "pct" },
+                  { label: "Gross Margin", display: fmtPct(metrics.profitability.grossMargin) },
+                  { label: "Operating Margin", display: fmtPct(metrics.profitability.operatingMargin) },
+                  { label: "Net Margin", display: fmtPct(metrics.profitability.netMargin) },
+                  { label: "ROE", display: fmtPct(metrics.profitability.roe) },
+                  { label: "ROIC", display: fmtPct(metrics.profitability.roic) },
                 ].map((metric) => (
                   <Card key={metric.label} className="bg-white">
                     <div className="p-4">
                       <p className="text-xs text-[#4C4C4C]">{metric.label}</p>
-                      <p className="mt-2 text-lg font-bold text-[#86BC24]">
-                        {metric.format === "pct"
-                          ? `${(metric.value * 100).toFixed(1)}%`
-                          : metric.value.toFixed(2)}
+                      <p className={`mt-2 text-lg font-bold ${metric.display === "N/A" ? "text-[#9CA3AF]" : "text-[#86BC24]"}`}>
+                        {metric.display}
                       </p>
                     </div>
                   </Card>
@@ -167,17 +142,15 @@ export function ConsolidatedFinancialDashboard({
               </h3>
               <div className="grid gap-3 sm:grid-cols-3">
                 {[
-                  { label: "Current Ratio", value: metrics.liquidity.currentRatio },
-                  { label: "Quick Ratio", value: metrics.liquidity.quickRatio },
-                  { label: "Cash Conversion Cycle", value: metrics.liquidity.cashConversionCycle, format: "days" },
+                  { label: "Current Ratio", display: metrics.liquidity.currentRatio == null ? "N/A" : `${fmtRatio(metrics.liquidity.currentRatio)}x` },
+                  { label: "Quick Ratio", display: metrics.liquidity.quickRatio == null ? "N/A" : `${fmtRatio(metrics.liquidity.quickRatio)}x` },
+                  { label: "Cash Conversion Cycle", display: metrics.liquidity.cashConversionCycle == null ? "N/A" : `${Math.round(metrics.liquidity.cashConversionCycle)} days` },
                 ].map((metric) => (
                   <Card key={metric.label} className="bg-white">
                     <div className="p-4">
                       <p className="text-xs text-[#4C4C4C]">{metric.label}</p>
-                      <p className="mt-2 text-lg font-bold text-[#0F0B0B]">
-                        {metric.format === "days"
-                          ? `${Math.round(metric.value)} days`
-                          : metric.value.toFixed(2)}x
+                      <p className={`mt-2 text-lg font-bold ${metric.display === "N/A" ? "text-[#9CA3AF]" : "text-[#0F0B0B]"}`}>
+                        {metric.display}
                       </p>
                     </div>
                   </Card>
@@ -192,15 +165,15 @@ export function ConsolidatedFinancialDashboard({
               </h3>
               <div className="grid gap-3 sm:grid-cols-3">
                 {[
-                  { label: "Debt/Equity", value: metrics.leverage.debtToEquity },
-                  { label: "Interest Coverage", value: metrics.leverage.interestCoverage, format: "x" },
-                  { label: "Net Debt/EBITDA", value: metrics.leverage.netDebtToEbitda, format: "x" },
+                  { label: "Debt/Equity", display: fmtRatio(metrics.leverage.debtToEquity) },
+                  { label: "Interest Coverage", display: fmtX(metrics.leverage.interestCoverage) },
+                  { label: "Net Debt/EBITDA", display: fmtX(metrics.leverage.netDebtToEbitda) },
                 ].map((metric) => (
                   <Card key={metric.label} className="bg-white">
                     <div className="p-4">
                       <p className="text-xs text-[#4C4C4C]">{metric.label}</p>
-                      <p className="mt-2 text-lg font-bold text-[#0F0B0B]">
-                        {metric.format === "x" ? `${metric.value.toFixed(1)}x` : metric.value.toFixed(2)}
+                      <p className={`mt-2 text-lg font-bold ${metric.display === "N/A" ? "text-[#9CA3AF]" : "text-[#0F0B0B]"}`}>
+                        {metric.display}
                       </p>
                     </div>
                   </Card>
@@ -251,7 +224,7 @@ export function ConsolidatedFinancialDashboard({
                         <th className="px-3 py-2 text-left font-semibold text-[#0F0B0B]">
                           Period
                         </th>
-                        {statements.periods.map((period) => (
+                        {(statements.periods ?? []).map((period) => (
                           <th
                             key={period}
                             className="px-3 py-2 text-right font-semibold text-[#0F0B0B]"
@@ -263,13 +236,13 @@ export function ConsolidatedFinancialDashboard({
                     </thead>
                     <tbody className="divide-y divide-[#f0f0f0]">
                       {[
-                        { label: "Revenue", values: statements.revenue },
-                        { label: "COGS", values: statements.cogs },
-                        { label: "Gross Profit", values: statements.grossProfit, bold: true },
-                        { label: "OpEx", values: statements.opex },
-                        { label: "EBIT", values: statements.ebit, bold: true },
-                        { label: "Taxes", values: statements.taxes },
-                        { label: "Net Income", values: statements.netIncome, bold: true },
+                        { label: "Revenue", values: numericRows(statements.revenue) },
+                        { label: "COGS", values: numericRows(statements.cogs) },
+                        { label: "Gross Profit", values: numericRows(statements.grossProfit), bold: true },
+                        { label: "OpEx", values: numericRows(statements.opex) },
+                        { label: "EBIT", values: numericRows(statements.ebit), bold: true },
+                        { label: "Taxes", values: numericRows(statements.taxes) },
+                        { label: "Net Income", values: numericRows(statements.netIncome), bold: true },
                       ].map((row) => (
                         <tr
                           key={row.label}
