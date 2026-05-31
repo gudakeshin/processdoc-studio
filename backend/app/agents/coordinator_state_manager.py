@@ -28,6 +28,7 @@ class ExecutionPlanSnapshot:
     ordered_output_types: list[str]
     rationale: str
     per_output_notes: dict[str, str] = field(default_factory=dict)
+    complexity_weights: dict[str, int] = field(default_factory=dict)
     used_llm_plan: bool = False
     fallback_reason: str | None = None
     thinking_excerpt: str = ""
@@ -41,6 +42,7 @@ class ExecutionPlanSnapshot:
             ordered_output_types=data.get("ordered_output_types", []),
             rationale=data.get("rationale", ""),
             per_output_notes=data.get("per_output_notes", {}),
+            complexity_weights=data.get("complexity_weights", {}),
             used_llm_plan=data.get("used_llm_plan", False),
             fallback_reason=data.get("fallback_reason"),
             thinking_excerpt=data.get("thinking_excerpt", ""),
@@ -325,11 +327,14 @@ class CoordinatorStateManager:
 
         todos = []
         for task_id, task_info in sorted_tasks:
-            todos.append({
+            entry: dict[str, Any] = {
                 "id": task_id,
                 "label": task_info.get("label", task_id),
                 "status": task_info.get("status", "queued"),
-            })
+            }
+            if task_info.get("status") == "skipped" and task_info.get("error"):
+                entry["skip_reason"] = task_info["error"]
+            todos.append(entry)
 
         return todos
 

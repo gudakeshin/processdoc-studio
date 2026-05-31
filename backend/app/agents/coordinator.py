@@ -15,15 +15,17 @@ from sqlalchemy import select
 if TYPE_CHECKING:
     from app.agents.coordinator_state_manager import CoordinatorStateManager
 
-from app.agents.agent_types import AgentOutput, build_agent_context, merge_agent_output
+from app.agents.agent_types import AgentOutput, build_agent_context, merge_agent_output, validate_agent_output
 from app.agents.coordinator_teammate_integration import CoordinatorTeammateIntegration
 from app.agents.prompt_hygiene import UNTRUSTED_JSON_USER_NOTE, wrap_untrusted
 from app.agents.subagents import (
     run_docx_agent,
     run_drawio_agent,
+    run_narrative_agent,
     run_pdf_agent,
     run_pptx_agent,
     run_process_extraction,
+    run_sop_agent,
     run_xlsx_agent,
 )
 from app.core.config import settings
@@ -61,10 +63,19 @@ from app.services.teammate_executor import TeammateExecutor
 
 _OUTPUT_AGENTS: dict[str, object] = {
     "process_map": run_drawio_agent,
-    "docx": run_docx_agent,
-    "pptx": run_pptx_agent,
-    "xlsx": run_xlsx_agent,
-    "pdf": run_pdf_agent,
+    "docx":        run_docx_agent,
+    "pptx":        run_pptx_agent,
+    "xlsx":        run_xlsx_agent,
+    "pdf":         run_pdf_agent,
+    "sop":         run_sop_agent,
+    "narrative":   run_narrative_agent,
+}
+
+# Rough complexity weights (1=fast, 5=slow) for ordering metadata emitted in coordinator_plan events.
+# Does not change execution order (which is LLM-driven); used as a scheduling hint.
+_OUTPUT_TYPE_COMPLEXITY: dict[str, int] = {
+    "pptx": 5, "xlsx": 4, "docx": 3, "pdf": 3,
+    "narrative": 2, "sop": 2, "process_map": 1,
 }
 
 _OUTPUT_TYPE_REQUIREMENTS_PATH = Path(__file__).resolve().parents[2] / "config" / "output_types.json"
@@ -380,6 +391,11 @@ class Coordinator:
         if use_subprocess:
             self.executor = TeammateExecutor(max_processes=8)
             self.teammate_integration: CoordinatorTeammateIntegration | None = None
+            _LOG.warning(
+                "coordinator_use_subprocess_workers=True but TeammateExecutor is only active "
+                "in the deprecated run() path — _run_event_loop ignores self.executor. "
+                "Set coordinator_use_subprocess_workers=False to suppress this warning."
+            )
         else:
             self.executor = None
             self.teammate_integration = None
@@ -472,6 +488,8 @@ class Coordinator:
             "pdf_markdown": "pdf_markdown",
             "drawio_xml": "drawio_xml",
             "pptx_slides": "pptx_slides",
+            "sop_markdown": "sop_markdown",
+            "narrative_md": "narrative_md",
         }
         return mapping.get(output_key)
 
@@ -489,6 +507,8 @@ class Coordinator:
             "pdf_markdown": "pdf",
             "drawio_xml": "process_map",
             "pptx_slides": "pptx",
+            "sop_markdown": "sop",
+            "narrative_md": "narrative",
         }
         remediation_texts: list[str] = []
         rerun_agent_keys: list[str] = []
@@ -749,9 +769,22 @@ class Coordinator:
         return reports, outputs
 
     @staticmethod
-    def _apply_worker_patch(state: ProcessDocState, patch: AgentOutput | dict[str, Any]) -> None:
+    def _apply_worker_patch(
+        state: ProcessDocState,
+        patch: AgentOutput | dict[str, Any],
+        *,
+        output_type: str | None = None,
+    ) -> None:
         """Apply worker results to shared state (call from coordinator thread only)."""
         if isinstance(patch, AgentOutput):
+            if output_type:
+                unexpected = validate_agent_output(output_type, patch)
+                if unexpected:
+                    _LOG.warning(
+                        "Agent %r returned unexpected state keys %r — merging anyway",
+                        output_type, unexpected,
+                    )
+                    increment("agent_output_unexpected_key_total")
             merge_agent_output(state, patch)
         elif patch:
             state.update(patch)
@@ -1075,32 +1108,45 @@ class Coordinator:
         """
         _LOG.info(f"Replanning after task failure: {failed_task_id} - {error}")
 
-        # Find the failed task
         if failed_task_id not in sm.task_board:
             _LOG.warning(f"Replan requested for unknown task: {failed_task_id}")
             return
 
         task = sm.task_board[failed_task_id]
+        attempts = int(task.get("attempts") or 0)
 
-        # Simple replan strategy: retry the task
-        # In full implementation, could:
-        # 1. Call Claude to analyze failure
-        # 2. Adjust parameters (e.g., different skill)
-        # 3. Skip and continue to next task
-        # 4. Escalate to user
-
-        # For now, just reset task to queued for retry
-        task["status"] = "queued"
-        task["error"] = error
-        task["assigned_teammate"] = None
+        if attempts < 2:
+            # Retry: reset to queued for another attempt.
+            action = "retry"
+            task["status"] = "queued"
+            task["error"] = error
+            task["assigned_teammate"] = None
+        elif task.get("phase") == "generation":
+            # Generation tasks are skippable — degrade gracefully rather than blocking the run.
+            action = "skip"
+            task["status"] = "skipped"
+            task["error"] = f"Skipped after {attempts} attempts: {error}"
+            if emit_event:
+                emit_event("coordinator_skip_event", {
+                    "task_id": failed_task_id,
+                    "output_type": task.get("output_type"),
+                    "reason": f"Exceeded retry budget ({attempts} attempts): {error[:200]}",
+                    "phase": task.get("phase"),
+                })
+        else:
+            # Setup or finalization tasks cannot be skipped; keep as failed so
+            # CoordinatorStateManager.replanning_count will eventually exceed max_replans.
+            action = "escalate"
 
         if emit_event:
             emit_event("coordinator_replan_event", {
                 "failed_task": failed_task_id,
                 "error": error,
-                "action": "task_reset_for_retry",
+                "action": action,
+                "attempts": attempts,
                 "replan_count": sm.replanning_count,
             })
+        _LOG.info("Replan for %s: action=%s attempts=%d", failed_task_id, action, attempts)
 
     def _poll_and_execute_tasks(
         self,
@@ -1670,6 +1716,10 @@ class Coordinator:
             ordered_output_types=execution_plan.ordered_output_types,
             rationale=execution_plan.rationale,
             per_output_notes=execution_plan.per_output_notes,
+            complexity_weights={
+                ot: _OUTPUT_TYPE_COMPLEXITY.get(ot, 3)
+                for ot in execution_plan.ordered_output_types
+            },
             used_llm_plan=execution_plan.used_llm_plan,
             fallback_reason=execution_plan.fallback_reason,
             thinking_excerpt=execution_plan.thinking_excerpt,

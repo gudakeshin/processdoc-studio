@@ -44,14 +44,17 @@ from app.services.tool_registry import (
     tool_names_for_skill,
 )
 
-_SWARM_TOOL_NAMES: tuple[str, ...] = (
+_SWARM_READ_TOOLS: tuple[str, ...] = (
     "swarm_list_tasks",
-    "swarm_create_task",
-    "swarm_update_task",
     "swarm_list_messages",
     "swarm_send_message",
+)
+_SWARM_LEAD_ONLY_TOOLS: tuple[str, ...] = (
+    "swarm_create_task",
+    "swarm_update_task",
     "swarm_broadcast",
 )
+_SWARM_TOOL_NAMES: tuple[str, ...] = _SWARM_READ_TOOLS + _SWARM_LEAD_ONLY_TOOLS  # backward compat
 
 _DEBUG_LOG_PATH = Path("/Users/pallavchaturvedi/Agentic Projects/Process Doc v2/.cursor/debug-a9841a.log")
 _DEBUG_SESSION_ID = "a9841a"
@@ -604,7 +607,12 @@ def _run_subagent_tool_loop_text(
                 if t not in names:
                     names = list(names) + [t]
         if getattr(settings, "swarm_orchestration_enabled", False):
-            for n in _SWARM_TOOL_NAMES:
+            from app.services.swarm import SWARM_LEAD_ONLY_TOOLS as _SLO, get_teammate_role
+            _rid = str(ctx.run_id or "")
+            _tm = str(ctx.swarm_teammate_id or "")
+            _role = get_teammate_role(run_id=_rid, teammate_id=_tm) if _rid and _tm else "worker"
+            _swarm_names = _SWARM_READ_TOOLS + (_SWARM_LEAD_ONLY_TOOLS if _role == "lead" else ())
+            for n in _swarm_names:
                 if n not in names:
                     names.append(n)
         tool_defs = anthropic_tool_definitions(names)
@@ -613,11 +621,15 @@ def _run_subagent_tool_loop_text(
         pid = str(ctx.project_id or "").strip()
         if not pid:
             return None
-        from app.services.swarm import SWARM_WORKER_PREAMBLE
+        from app.services.swarm import SWARM_LEAD_PREAMBLE, SWARM_WORKER_PREAMBLE, get_teammate_role as _gtr
 
         sys_prompt = system
         if getattr(settings, "swarm_orchestration_enabled", False):
-            sys_prompt = f"{SWARM_WORKER_PREAMBLE}\n\n{system}"
+            _rid2 = str(ctx.run_id or "")
+            _tm2 = str(ctx.swarm_teammate_id or "")
+            _role2 = _gtr(run_id=_rid2, teammate_id=_tm2) if _rid2 and _tm2 else "worker"
+            _preamble = SWARM_LEAD_PREAMBLE if _role2 == "lead" else SWARM_WORKER_PREAMBLE
+            sys_prompt = f"{_preamble}\n\n{system}"
         nc: dict[str, Any] = {
             "project_id": pid,
             "user_id": ctx.user_id,

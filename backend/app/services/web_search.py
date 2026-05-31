@@ -19,6 +19,10 @@ _RATE_LOCK = threading.Lock()
 _RATE_STATE: dict[str, dict[str, Any]] = {}
 _HTTP_CLIENT = httpx.Client(timeout=15.0)
 
+# Singleflight: prevents duplicate concurrent requests for the same cache_key.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT: dict[str, threading.Event] = {}
+
 
 class WebSearchService:
     """Multi-provider web search: Tavily, Brave, Google.
@@ -197,34 +201,59 @@ class WebSearchService:
 
         project_key = project_id or "global"
         cache_key = f"websearch:{project_key}:{self._hash_key(q)}"
+
+        # Fast path: already cached.
         cached = cache_service.get(cache_key)
         if cached and isinstance(cached, dict) and isinstance(cached.get("results"), list):
             return cached["results"]
 
-        if self._rate_limited(project_id):
-            return []
+        # Singleflight: if an identical query is already in-flight, wait for it rather than
+        # issuing a duplicate request. This prevents concurrent agents from hitting the same
+        # search provider multiple times for the same query.
+        with _INFLIGHT_LOCK:
+            if cache_key in _INFLIGHT:
+                waiter_event = _INFLIGHT[cache_key]
+                is_owner = False
+            else:
+                waiter_event = threading.Event()
+                _INFLIGHT[cache_key] = waiter_event
+                is_owner = True
 
-        results: list[dict[str, Any]] = []
-        provider_chain = self._resolve_provider_chain(project_id)
+        if not is_owner:
+            waiter_event.wait(timeout=15.0)
+            cached = cache_service.get(cache_key)
+            return cached.get("results", []) if isinstance(cached, dict) else []
 
-        # Try each provider in sequence
-        for provider_name, api_key in provider_chain:
-            try:
-                if provider_name == "brave":
-                    results = self._search_brave(q, api_key)
-                elif provider_name == "tavily":
-                    results = self._search_tavily(q, api_key)
-                elif provider_name == "google":
-                    results = self._search_google(q, api_key)
+        # This thread is the owner: perform the actual search.
+        try:
+            if self._rate_limited(project_id):
+                return []
 
-                if results:
-                    break
-            except Exception as e:
-                _LOG.debug(f"Provider {provider_name} failed: {e}")
-                continue
+            results: list[dict[str, Any]] = []
+            provider_chain = self._resolve_provider_chain(project_id)
 
-        cache_service.set(cache_key, {"results": results, "query": q}, ttl_seconds=300)
-        return results
+            # Try each provider in sequence
+            for provider_name, api_key in provider_chain:
+                try:
+                    if provider_name == "brave":
+                        results = self._search_brave(q, api_key)
+                    elif provider_name == "tavily":
+                        results = self._search_tavily(q, api_key)
+                    elif provider_name == "google":
+                        results = self._search_google(q, api_key)
+
+                    if results:
+                        break
+                except Exception as e:
+                    _LOG.debug(f"Provider {provider_name} failed: {e}")
+                    continue
+
+            cache_service.set(cache_key, {"results": results, "query": q}, ttl_seconds=300)
+            return results
+        finally:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.pop(cache_key, None)
+            waiter_event.set()
 
 
 web_search_service = WebSearchService()

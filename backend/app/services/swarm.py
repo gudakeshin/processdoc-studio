@@ -28,6 +28,28 @@ SWARM_WORKER_PREAMBLE = (
     "Do not spawn sub-agents or delegate to other orchestrators. If blocked, report a clear blocker."
 )
 
+# Lead preamble — coordination-focused, can create/modify tasks and broadcast to workers.
+SWARM_LEAD_PREAMBLE = (
+    "You are the LEAD teammate in a swarm. Decompose the run goal into tasks "
+    "(swarm_create_task), assign them to workers via swarm_broadcast, monitor status "
+    "(swarm_list_tasks), escalate blockers, and synthesize final output. "
+    "Delegate hands-on generation — do not perform it yourself."
+)
+
+
+def get_teammate_role(*, run_id: str, teammate_id: str) -> str:
+    """Return 'lead' or 'worker' for a teammate; falls back to 'worker' on any error."""
+    from app.db.session import SessionLocal
+
+    try:
+        with SessionLocal() as session:
+            for m in list_teammates(session, run_id=run_id):
+                if m.teammate_id == teammate_id:
+                    return str(m.role or "worker").strip().lower()
+    except Exception:
+        pass
+    return "worker"
+
 
 def enrich_run_todos_with_dependencies(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Attach depends_on (task ids) to milestone rows for DAG semantics."""

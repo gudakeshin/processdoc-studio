@@ -17,6 +17,11 @@ from app.services.tool_registry import resolve_tool_call, tool_result_to_text
 
 _LOG = logging.getLogger(__name__)
 
+
+def _tool_error_response(tool_name: str, exc: Exception, *, timed_out: bool = False) -> str:
+    """Produce a consistent JSON error envelope for failed tool calls."""
+    return json.dumps({"error": str(exc)[:800], "tool": tool_name, "timed_out": timed_out, "ok": False})
+
 BASH_TOOL: dict[str, Any] = {"type": "bash_20250124", "name": "bash"}
 TEXT_EDITOR_TOOL: dict[str, Any] = {
     "type": "text_editor_20250728",
@@ -373,7 +378,8 @@ def run_subagent_tool_loop(
                     out_text = tool_result_to_text(result)
                     is_err = False
                 except Exception as exc:  # noqa: BLE001
-                    out_text = json.dumps({"error": str(exc)[:800]})
+                    timed_out = isinstance(exc, TimeoutError) or "timed out" in str(exc).lower()
+                    out_text = _tool_error_response(name_str, exc, timed_out=timed_out)
                     is_err = True
             trace_entry: dict[str, Any] = {
                 "round": rounds_completed,
