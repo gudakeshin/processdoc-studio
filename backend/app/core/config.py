@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 def _get_env_files() -> list[str]:
@@ -19,12 +22,8 @@ def _get_env_files() -> list[str]:
         str(backend_dir / ".env"),  # Then backend .env (overrides repo root)
     ]
 
-    # Log the paths we're using for debugging
-    import sys
-    print("[CONFIG] Using .env files:", file=sys.stderr)
     for ef in env_files:
-        exists = Path(ef).exists()
-        print(f"[CONFIG]   {ef} (exists={exists})", file=sys.stderr)
+        logger.info("[CONFIG] env file %s (exists=%s)", ef, Path(ef).exists())
 
     return env_files
 

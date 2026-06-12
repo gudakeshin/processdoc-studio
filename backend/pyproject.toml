@@ -13,10 +13,10 @@ dependencies = [
   "pydantic>=2.0",
   "pydantic-settings>=2.0",
   "python-multipart",
-  "python-jose[cryptography]",
+  "python-jose[cryptography]>=3.5,<4",
   "passlib[bcrypt]",
   "bcrypt>=4.0,<4.1",
-  "redis",
+  "redis>=7.4,<8",
   "httpx",
   "python-dotenv",
   "orjson",
@@ -34,8 +34,8 @@ dependencies = [
   "pyyaml",
   "langfuse",
   "slowapi",
-  "sentence-transformers",
-  "faiss-cpu",
+  "sentence-transformers>=5.4,<6",
+  "faiss-cpu>=1.13,<2",
   "networkx",
 ]
 
