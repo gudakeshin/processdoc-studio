@@ -3,16 +3,17 @@ uvicorn[standard]
 pydantic>=2.0
 pydantic-settings>=2.0
 python-multipart
-python-jose[cryptography]
+python-jose[cryptography]<4,>=3.5
 passlib[bcrypt]
 bcrypt<4.1,>=4.0
-redis
+redis<8,>=7.4
 httpx
 python-dotenv
 orjson
 openpyxl
 python-pptx<2.0,>=1.0
 reportlab
+python-docx<2.0,>=1.0
 sqlalchemy
 alembic
 psycopg[binary]
@@ -23,11 +24,12 @@ pypdf
 pyyaml
 langfuse
 slowapi
-sentence-transformers
-faiss-cpu
+sentence-transformers<6,>=5.4
+faiss-cpu<2,>=1.13
 networkx
 
 [dev]
 pytest
 pytest-cov
 pytest-asyncio
+fakeredis>=2.0
