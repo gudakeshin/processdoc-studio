@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_project_role
+from app.core.config import settings
+from app.core.office.zip_safety import validate_zip_for_read
 from app.core.upload_validation import validate_document_upload
 from app.db.models import User
 from app.db.session import get_db
@@ -51,6 +53,7 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
                 import io
                 text_parts: list[str] = []
                 with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                    validate_zip_for_read(zf, max_uncompressed_bytes=settings.zip_max_uncompressed_bytes)
                     for name in zf.namelist():
                         if lower.endswith(".docx") and not name.startswith("word/"):
                             continue

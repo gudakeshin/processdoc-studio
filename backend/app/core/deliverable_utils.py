@@ -1,11 +1,43 @@
 from __future__ import annotations
 
+import logging
 import re
+import tempfile
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def safe_text(value: object, default: str = "") -> str:
     return str(value or default).strip()
+
+
+def fetch_logo_source(logo_url: str) -> str | None:
+    """Resolve a branding logo reference to a local file path, or None.
+
+    Remote URLs go through the SSRF-safe ``safe_get`` (HTTPS-only, private-IP
+    blocking, size cap); the logo is best-effort, so failures log and return None.
+    """
+    logo_url = str(logo_url or "").strip()
+    if not logo_url:
+        return None
+    if logo_url.startswith(("http://", "https://")):
+        try:
+            from app.services.http_fetch import safe_get
+
+            suffix = Path(logo_url.split("?")[0]).suffix or ".png"
+            data = safe_get(logo_url, timeout=8.0)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(data)
+                return tmp.name
+        except Exception as exc:  # noqa: BLE001 - logo is best-effort; slide renders without it
+            logger.warning("Failed to download branding logo_url %s: %s", logo_url, exc)
+        return None
+    p = Path(logo_url)
+    if p.exists() and p.is_file():
+        return str(p)
+    return None
 
 
 def rows_from_markdown(md: str) -> list[list[str]]:

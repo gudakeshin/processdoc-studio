@@ -4,8 +4,6 @@ import contextlib
 import json
 import logging
 import re
-import tempfile
-import urllib.request
 from datetime import datetime
 from app.core.tz import IST
 from pathlib import Path
@@ -19,6 +17,7 @@ from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
 
 from app.core.deliverable import DeliverableMetadata, IDeliverable
+from app.core.deliverable_utils import fetch_logo_source
 from app.services.deliverable_quality import _validate_pptx_completeness
 
 logger = logging.getLogger(__name__)
@@ -575,21 +574,7 @@ class PPTXDeliverable(IDeliverable):
         logo_url = str(self._brand.get("logo_url") or "").strip()
         if not logo_url:
             return
-        source: str | None = None
-        if logo_url.startswith(("http://", "https://")):
-            try:
-                suffix = Path(logo_url.split("?")[0]).suffix or ".png"
-                with urllib.request.urlopen(logo_url, timeout=8) as resp:
-                    data = resp.read()
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(data)
-                    source = tmp.name
-            except Exception as exc:
-                logger.warning("Failed to download branding logo_url %s: %s", logo_url, exc)
-        else:
-            p = Path(logo_url)
-            if p.exists() and p.is_file():
-                source = str(p)
+        source = fetch_logo_source(logo_url)
         if not source:
             return
         try:
