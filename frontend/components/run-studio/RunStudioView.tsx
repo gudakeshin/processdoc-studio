@@ -5,7 +5,6 @@ import { memo, useMemo } from "react";
 
 import { ZoneAInstruction } from "@/components/run-studio/ZoneAInstruction";
 import { ZoneCLiveMonitor } from "@/components/run-studio/ZoneCLiveMonitor";
-import { ApprovalBanner } from "@/components/run-studio/ApprovalBanner";
 import { ApprovalBannerRedesigned } from "@/components/run-studio/ApprovalBannerRedesigned";
 import { ToolActivityFeed } from "@/components/run-studio/ToolActivityFeed";
 import { ActivityFeedRedesigned } from "@/components/run-studio/ActivityFeedRedesigned";

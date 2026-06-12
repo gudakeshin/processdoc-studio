@@ -23,4 +23,12 @@ module.exports = [
       "jsx-a11y/role-supports-aria-props": "error",
     },
   },
+  {
+    // The @typescript-eslint plugin is registered by eslint-config-next for TS files only.
+    files: ["**/*.ts", "**/*.tsx"],
+    rules: {
+      // Visibility-only for now; ratchet to "error" once existing `any`s are burned down.
+      "@typescript-eslint/no-explicit-any": "warn",
+    },
+  },
 ];
