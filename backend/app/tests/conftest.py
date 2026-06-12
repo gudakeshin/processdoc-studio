@@ -33,6 +33,19 @@ def _auth_allow_self_signup_for_integration_tests(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.fixture(autouse=True)
+def _disable_narrative_llm_critique_for_tests(request, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Narrative coherence tests assert the deterministic score; the LLM critique
+    blend (enabled by default) would add live Anthropic calls and non-deterministic
+    issues. Opt out with @pytest.mark.live_llm.
+    """
+    if request.node.get_closest_marker("live_llm"):
+        return
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "narrative_llm_critique_enabled", False)
+
+
+@pytest.fixture(autouse=True)
 def _stub_output_type_recommendations_for_integration_tests(request, monkeypatch):
     """Avoid live Anthropic calls and flaky empty recommendations during plan drafting.
 
@@ -52,6 +65,6 @@ def _stub_output_type_recommendations_for_integration_tests(request, monkeypatch
             None,
         )
 
-    import app.api.projects as projects_module
+    import app.api.projects.conversation as projects_module
 
     monkeypatch.setattr(projects_module, "_recommend_output_types", fake_recommend)

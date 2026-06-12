@@ -1,57 +1,35 @@
 import json
 import logging
 import re
-import shutil
 import uuid
-from datetime import datetime, timedelta
-from app.core.tz import IST
+from datetime import datetime
 from time import perf_counter
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.api.formats import _load_output_types
+from app.api.projects._router import router  # shared: see _router.py
 from app.api.runs import (
     _build_plan_payload,
-    _ensure_run_enqueued,
     _normalize_custom_output_types,
     _normalize_output_type_representations,
     _recommend_output_types,
 )
-from app.services.output_format_detection import merge_format_intent_into_template_ids
-from app.services.permission_pipeline import evaluate_permission_pipeline
-from app.services.swarm import persist_instruction_broadcast_swarm_event_payload
 from app.core.auth import get_current_user, require_project_role
 from app.core.config import settings
 from app.core.db_checkpoints import checkpoint_scope
+from app.core.tz import IST
 from app.db.models import (
-    ConsentLedger,
     Conversation,
     ConversationMessage,
-    DPDPRightsRequest,
-    Membership,
-    MemoryEvent,
-    MemoryItem,
-    Project,
     ProjectMemoryProfile,
     Run,
-    RunEvent,
-    ScheduledTask,
-    ScheduledTaskRun,
     User,
-    UserProjectPreference,
 )
 from app.db.session import get_db
-from app.schemas.common import ProjectSummary
-from app.services.proposal_policy import (
-    derive_proposal_skill_targets,
-    generate_deck_outline_preview,
-    generate_document_outline_preview,
-    has_proposal_intent,
-    is_finance_proposal_intent,
-)
 from app.services.conversation_router import fallback_decision, route_turn
 from app.services.conversation_state import ConversationState, load_state, save_state, stamp_router
 from app.services.memory_event_service import (
@@ -59,11 +37,19 @@ from app.services.memory_event_service import (
     record_discovery_answer,
     record_routing_decision,
 )
+from app.services.output_format_detection import merge_format_intent_into_template_ids
+from app.services.permission_pipeline import evaluate_permission_pipeline
+from app.services.proposal_policy import (
+    derive_proposal_skill_targets,
+    generate_deck_outline_preview,
+    generate_document_outline_preview,
+    has_proposal_intent,
+    is_finance_proposal_intent,
+)
 from app.services.retrieval import TieredContextEngine
 from app.services.run_worker import append_memory_event, append_run_event, enqueue_run_execution
-from app.services.storage import ensure_workspace, workspace_path
+from app.services.swarm import persist_instruction_broadcast_swarm_event_payload
 
-router = APIRouter()
 _LOG = logging.getLogger(__name__)
 
 
@@ -1589,19 +1575,6 @@ I'm Sheldon — think of me as your strategic thought partner. Not a vending mac
 So — what are you working on? I'm all ears."""
 
 
-class CreateProjectRequest(BaseModel):
-    name: str
-
-
-class UpdateProjectSettingsRequest(BaseModel):
-    qa_threshold: float | None = None
-    max_qa_loops: int | None = None
-    hard_gate_enabled: bool | None = None
-    web_search_provider: str | None = None
-    tavily_enabled: bool | None = None
-    tavily_api_key: str | None = None
-
-
 class ConversationMessageRequest(BaseModel):
     content: str
 
@@ -1633,41 +1606,6 @@ class ConversationOutlineUpdateRequest(BaseModel):
     conversation_id: str | None = None
     plan_hash: str | None = None
     slides: list[OutlineSlideUpdate]
-
-
-class UserProjectPreferencesBody(BaseModel):
-    """Lines merged into coordinator NonNegotiables (assemble_v2) for this user+project."""
-
-    context_lines: list[str] | None = None
-    # Optional counters for future behavioral-learning (v4 §5.1.1); stored opaque in JSON.
-    learning_signals: dict[str, int] | None = None
-
-
-class ScheduledTaskCreateBody(BaseModel):
-    name: str
-    instruction: str
-    output_types: list[str] = []
-    custom_output_types: list[str] = []
-    output_type_representations: dict[str, str] = {}
-    trigger_type: str = "interval"
-    cadence_minutes: int = 60
-    run_at: str | None = None
-    timezone: str = "UTC"
-    retry_limit: int = 3
-
-
-class ScheduledTaskUpdateBody(BaseModel):
-    name: str | None = None
-    instruction: str | None = None
-    output_types: list[str] | None = None
-    custom_output_types: list[str] | None = None
-    output_type_representations: dict[str, str] | None = None
-    trigger_type: str | None = None
-    cadence_minutes: int | None = None
-    run_at: str | None = None
-    timezone: str | None = None
-    retry_limit: int | None = None
-    status: str | None = None
 
 
 def _detail(code: str, message: str, **extra: object) -> dict[str, object]:
@@ -2511,159 +2449,6 @@ def _serialize_messages(db: Session, conversation_id: str) -> list[dict]:
     return out
 
 
-def _ensure_workspace_safe(project_id: str) -> None:
-    try:
-        ensure_workspace(project_id)
-    except Exception:  # noqa: S110 — best-effort, non-fatal
-        # Workspace creation is retried by downstream endpoints that require it.
-        pass
-
-
-@router.get("", response_model=dict[str, list[ProjectSummary]])
-def list_projects(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
-    rows = db.scalars(
-        select(Project).join(Membership, Membership.project_id == Project.id).where(Membership.user_id == user.id)
-    ).all()
-    return {"items": [{"id": p.id, "name": p.name} for p in rows]}
-
-
-@router.post("")
-def create_project(
-    body: CreateProjectRequest,
-    background_tasks: BackgroundTasks,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    project = Project(id=f"p_{uuid.uuid4().hex[:10]}", name=body.name, created_by=user.id)
-    db.add(project)
-    db.add(Membership(id=f"m_{uuid.uuid4().hex[:10]}", project_id=project.id, user_id=user.id, role="Owner"))
-    db.commit()
-    background_tasks.add_task(_ensure_workspace_safe, project.id)
-    return {"id": project.id, "name": project.name, "roles": ["Owner", "Editor", "Viewer"]}
-
-
-@router.delete("/{pid}")
-def delete_project(
-    pid: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    project = db.scalar(select(Project).where(Project.id == pid))
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    membership = db.scalar(select(Membership).where(Membership.project_id == pid, Membership.user_id == user.id))
-    if membership is None or membership.role != "Owner":
-        raise HTTPException(status_code=403, detail="Insufficient project permissions")
-
-    run_ids = db.scalars(select(Run.id).where(Run.project_id == pid)).all()
-    if run_ids:
-        db.execute(delete(RunEvent).where(RunEvent.run_id.in_(run_ids)))
-        db.execute(delete(MemoryEvent).where(MemoryEvent.run_id.in_(run_ids)))
-        db.execute(delete(ScheduledTaskRun).where(ScheduledTaskRun.run_id.in_(run_ids)))
-
-    task_ids = db.scalars(select(ScheduledTask.id).where(ScheduledTask.project_id == pid)).all()
-    if task_ids:
-        db.execute(delete(ScheduledTaskRun).where(ScheduledTaskRun.task_id.in_(task_ids)))
-
-    conv_ids = db.scalars(select(Conversation.id).where(Conversation.project_id == pid)).all()
-    if conv_ids:
-        db.execute(delete(ConversationMessage).where(ConversationMessage.conversation_id.in_(conv_ids)))
-
-    db.execute(delete(ScheduledTaskRun).where(ScheduledTaskRun.project_id == pid))
-    db.execute(delete(ScheduledTask).where(ScheduledTask.project_id == pid))
-    db.execute(delete(MemoryItem).where(MemoryItem.project_id == pid))
-    db.execute(delete(UserProjectPreference).where(UserProjectPreference.project_id == pid))
-    db.execute(delete(ProjectMemoryProfile).where(ProjectMemoryProfile.project_id == pid))
-    db.execute(delete(Conversation).where(Conversation.project_id == pid))
-    db.execute(delete(Membership).where(Membership.project_id == pid))
-    db.execute(delete(Run).where(Run.project_id == pid))
-    db.execute(delete(ConsentLedger).where(ConsentLedger.project_id == pid))
-    db.execute(delete(DPDPRightsRequest).where(DPDPRightsRequest.project_id == pid))
-    db.execute(delete(Project).where(Project.id == pid))
-    db.commit()
-
-    project_workspace = workspace_path(pid)
-    if project_workspace.exists():
-        shutil.rmtree(project_workspace, ignore_errors=True)
-    return {"project_id": pid, "deleted": True}
-
-
-@router.get("/{pid}/settings")
-def get_project_settings(
-    pid: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    membership = db.scalar(
-        select(Project).join(Membership, Membership.project_id == Project.id).where(
-            Project.id == pid, Membership.user_id == user.id
-        )
-    )
-    if not membership:
-        raise HTTPException(status_code=403, detail="Insufficient project permissions")
-    settings_path = workspace_path(pid) / "settings.json"
-    response = {"project_id": pid, "qa_threshold": 0.8, "max_qa_loops": 2, "hard_gate_enabled": True}
-    if settings_path.exists():
-        try:
-            data = json.loads(settings_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                response.update(data)
-        except Exception:  # noqa: S110 — best-effort, non-fatal
-            pass
-    if response.get("tavily_api_key"):
-        response["tavily_configured"] = True
-        del response["tavily_api_key"]
-    return response
-
-
-@router.put("/{pid}/settings")
-def update_project_settings(
-    pid: str,
-    body: UpdateProjectSettingsRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    # Owner/Editor can edit settings.
-    membership = db.scalar(
-        select(Membership).where(Membership.project_id == pid, Membership.user_id == user.id)
-    )
-    if not membership or membership.role not in {"Owner", "Editor"}:
-        raise HTTPException(status_code=403, detail="Insufficient project permissions")
-
-    ensure_workspace(pid)
-    current = {"qa_threshold": 0.8, "max_qa_loops": 2, "hard_gate_enabled": True}
-    settings_path = workspace_path(pid) / "settings.json"
-    if settings_path.exists():
-        try:
-            parsed = json.loads(settings_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                current.update(parsed)
-        except Exception:  # noqa: S110 — best-effort, non-fatal
-            pass
-    if body.qa_threshold is not None:
-        current["qa_threshold"] = max(0.0, min(1.0, float(body.qa_threshold)))
-    if body.max_qa_loops is not None:
-        current["max_qa_loops"] = max(1, min(5, int(body.max_qa_loops)))
-    if body.hard_gate_enabled is not None:
-        current["hard_gate_enabled"] = bool(body.hard_gate_enabled)
-    if body.web_search_provider is not None:
-        provider = body.web_search_provider.strip().lower() if body.web_search_provider else ""
-        if provider in {"brave", "google", "tavily", ""}:
-            current["web_search_provider"] = provider if provider else None
-        else:
-            raise HTTPException(status_code=400, detail="Invalid web_search_provider")
-    if body.tavily_enabled is not None:
-        current["tavily_enabled"] = bool(body.tavily_enabled)
-    if body.tavily_api_key is not None:
-        current["tavily_api_key"] = body.tavily_api_key.strip() if body.tavily_api_key else ""
-    settings_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
-    response = {"project_id": pid}
-    response.update({k: v for k, v in current.items() if k != "tavily_api_key"})
-    if current.get("tavily_api_key"):
-        response["tavily_configured"] = True
-    return response
-
-
 @router.get("/{pid}/conversation")
 def get_project_conversation(
     pid: str,
@@ -2721,19 +2506,18 @@ def _handle_collaborative_building(
       slide_negotiation → structure_agreed
       structure_agreed → plan generation (same as original flow)
     """
+    from app.services.slide_negotiator import (
+        ARC_BLUEPRINTS,
+        assemble_outline_from_decisions,
+        parse_slide_feedback,
+        propose_slide,
+        save_agreed_slide,
+    )
     from app.services.storyline_builder import (
         ARC_LIBRARY,
         parse_arc_from_user_message,
         propose_arcs,
         save_agreed_arc,
-    )
-    from app.services.slide_negotiator import (
-        ARC_BLUEPRINTS,
-        assemble_outline_from_decisions,
-        load_agreed_slides,
-        parse_slide_feedback,
-        propose_slide,
-        save_agreed_slide,
     )
 
     current_state = state.state
@@ -3956,331 +3740,3 @@ def confirm_project_conversation_plan(
     }
 
 
-@router.get("/{pid}/me/preferences")
-def get_my_project_preferences(
-    pid: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
-    row = db.scalar(
-        select(UserProjectPreference).where(
-            UserProjectPreference.user_id == user.id,
-            UserProjectPreference.project_id == pid,
-        )
-    )
-    if row is None:
-        return {"project_id": pid, "context_lines": [], "learning_signals": {}, "updated_at": None}
-    try:
-        data = json.loads(row.preferences_json) if row.preferences_json else {}
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    lines = data.get("context_lines")
-    ls = data.get("learning_signals")
-    return {
-        "project_id": pid,
-        "context_lines": lines if isinstance(lines, list) else [],
-        "learning_signals": ls if isinstance(ls, dict) else {},
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
-
-
-@router.patch("/{pid}/me/preferences")
-def patch_my_project_preferences(
-    pid: str,
-    body: UserProjectPreferencesBody,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner", "Editor"}, user, db)
-    row = db.scalar(
-        select(UserProjectPreference).where(
-            UserProjectPreference.user_id == user.id,
-            UserProjectPreference.project_id == pid,
-        )
-    )
-    base: dict = {}
-    if row is not None:
-        try:
-            parsed = json.loads(row.preferences_json) if row.preferences_json else {}
-            if isinstance(parsed, dict):
-                base = parsed
-        except Exception:
-            base = {}
-    if body.context_lines is not None:
-        base["context_lines"] = [str(x).strip() for x in body.context_lines if str(x).strip()][:50]
-    if body.learning_signals is not None:
-        prev = base.get("learning_signals")
-        merged = dict(prev) if isinstance(prev, dict) else {}
-        for k, v in body.learning_signals.items():
-            if not k or len(str(k)) > 64:
-                continue
-            try:
-                merged[str(k)[:64]] = int(v)
-            except (TypeError, ValueError):
-                continue
-        base["learning_signals"] = merged
-    payload = json.dumps(base, sort_keys=True)
-    now = datetime.now(IST).replace(tzinfo=None)
-    if row is None:
-        row = UserProjectPreference(user_id=user.id, project_id=pid, preferences_json=payload, updated_at=now)
-        db.add(row)
-    else:
-        row.preferences_json = payload
-        row.updated_at = now
-    db.commit()
-    return get_my_project_preferences(pid, user, db)
-
-
-@router.get("/{pid}/admin/team-personalization")
-def get_team_personalization_summary(
-    pid: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner"}, user, db)
-    total_items = int(
-        db.scalar(
-            select(func.count())
-            .select_from(MemoryItem)
-            .where(MemoryItem.project_id == pid, MemoryItem.is_archived.is_(False))
-        )
-        or 0
-    )
-    by_type_rows = db.execute(
-        select(MemoryItem.memory_type, func.count())
-        .where(MemoryItem.project_id == pid, MemoryItem.is_archived.is_(False))
-        .group_by(MemoryItem.memory_type)
-    ).all()
-    by_source_rows = db.execute(
-        select(MemoryItem.source, func.count())
-        .where(MemoryItem.project_id == pid, MemoryItem.is_archived.is_(False))
-        .group_by(MemoryItem.source)
-    ).all()
-    pref_users = int(
-        db.scalar(select(func.count()).select_from(UserProjectPreference).where(UserProjectPreference.project_id == pid))
-        or 0
-    )
-    return {
-        "project_id": pid,
-        "memory_items_total": total_items,
-        "memory_items_by_type": {str(r[0]): int(r[1]) for r in by_type_rows},
-        "memory_items_by_source": {str(r[0]): int(r[1]) for r in by_source_rows},
-        "users_with_saved_preferences": pref_users,
-    }
-
-
-@router.get("/{pid}/scheduled-tasks")
-def list_scheduled_tasks(
-    pid: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
-    rows = db.scalars(select(ScheduledTask).where(ScheduledTask.project_id == pid).order_by(ScheduledTask.created_at.desc())).all()
-    items: list[dict] = []
-    for row in rows:
-        items.append(
-            {
-                "id": row.id,
-                "name": row.name,
-                "instruction": row.instruction,
-                "status": row.status,
-                "trigger_type": row.trigger_type,
-                "cadence_minutes": row.cadence_minutes,
-                "run_at": row.run_at.isoformat() if row.run_at else None,
-                "next_run_at": row.next_run_at.isoformat() if row.next_run_at else None,
-                "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,
-                "last_run_status": row.last_run_status,
-                "output_types": json.loads(row.output_types_json or "[]"),
-                "custom_output_types": json.loads(row.custom_output_types_json or "[]"),
-                "output_type_representations": json.loads(row.output_type_representations_json or "{}"),
-            }
-        )
-    return {"project_id": pid, "items": items}
-
-
-@router.post("/{pid}/scheduled-tasks")
-def create_scheduled_task(
-    pid: str,
-    body: ScheduledTaskCreateBody,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner", "Editor"}, user, db)
-    run_at_dt = None
-    if body.run_at:
-        try:
-            run_at_dt = datetime.fromisoformat(body.run_at.replace("Z", "+00:00")).replace(tzinfo=None)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid run_at ISO timestamp") from None
-    task = ScheduledTask(
-        id=f"task_{uuid.uuid4().hex[:10]}",
-        project_id=pid,
-        created_by=user.id,
-        name=(body.name or "").strip()[:255],
-        instruction=(body.instruction or "").strip()[:6000],
-        output_types_json=json.dumps(list(dict.fromkeys(body.output_types or []))),
-        custom_output_types_json=json.dumps(body.custom_output_types or []),
-        output_type_representations_json=json.dumps(body.output_type_representations or {}),
-        trigger_type=body.trigger_type if body.trigger_type in {"interval", "once"} else "interval",
-        cadence_minutes=max(1, int(body.cadence_minutes or 60)),
-        run_at=run_at_dt,
-        timezone=(body.timezone or "UTC").strip()[:64],
-        retry_limit=max(0, int(body.retry_limit or 3)),
-        status="active",
-    )
-    task.next_run_at = task.run_at if task.trigger_type == "once" else (datetime.now(IST).replace(tzinfo=None) + timedelta(minutes=task.cadence_minutes))
-    db.add(task)
-    db.commit()
-    return {"project_id": pid, "task_id": task.id, "status": "created"}
-
-
-@router.patch("/{pid}/scheduled-tasks/{task_id}")
-def update_scheduled_task(
-    pid: str,
-    task_id: str,
-    body: ScheduledTaskUpdateBody,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner", "Editor"}, user, db)
-    row = db.scalar(select(ScheduledTask).where(ScheduledTask.id == task_id, ScheduledTask.project_id == pid))
-    if row is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if body.name is not None:
-        row.name = body.name.strip()[:255]
-    if body.instruction is not None:
-        row.instruction = body.instruction.strip()[:6000]
-    if body.output_types is not None:
-        row.output_types_json = json.dumps(list(dict.fromkeys(body.output_types)))
-    if body.custom_output_types is not None:
-        row.custom_output_types_json = json.dumps(body.custom_output_types)
-    if body.output_type_representations is not None:
-        row.output_type_representations_json = json.dumps(body.output_type_representations)
-    if body.trigger_type in {"interval", "once"}:
-        row.trigger_type = body.trigger_type
-    if body.cadence_minutes is not None:
-        row.cadence_minutes = max(1, int(body.cadence_minutes))
-    if body.timezone is not None:
-        row.timezone = body.timezone.strip()[:64]
-    if body.retry_limit is not None:
-        row.retry_limit = max(0, int(body.retry_limit))
-    if body.status in {"active", "paused", "archived"}:
-        row.status = body.status
-    if body.run_at is not None:
-        row.run_at = datetime.fromisoformat(body.run_at.replace("Z", "+00:00")).replace(tzinfo=None) if body.run_at else None
-    row.next_run_at = row.run_at if row.trigger_type == "once" else (datetime.now(IST).replace(tzinfo=None) + timedelta(minutes=row.cadence_minutes))
-    if row.status != "active":
-        row.next_run_at = None
-    row.updated_at = datetime.now(IST).replace(tzinfo=None)
-    db.commit()
-    return {"project_id": pid, "task_id": task_id, "status": "updated"}
-
-
-@router.post("/{pid}/scheduled-tasks/{task_id}/pause")
-def pause_scheduled_task(
-    pid: str,
-    task_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner", "Editor"}, user, db)
-    row = db.scalar(select(ScheduledTask).where(ScheduledTask.id == task_id, ScheduledTask.project_id == pid))
-    if row is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    row.status = "paused"
-    row.next_run_at = None
-    row.updated_at = datetime.now(IST).replace(tzinfo=None)
-    db.commit()
-    return {"project_id": pid, "task_id": task_id, "status": "paused"}
-
-
-@router.post("/{pid}/scheduled-tasks/{task_id}/resume")
-def resume_scheduled_task(
-    pid: str,
-    task_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner", "Editor"}, user, db)
-    row = db.scalar(select(ScheduledTask).where(ScheduledTask.id == task_id, ScheduledTask.project_id == pid))
-    if row is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    row.status = "active"
-    row.next_run_at = row.run_at if row.trigger_type == "once" else (datetime.now(IST).replace(tzinfo=None) + timedelta(minutes=row.cadence_minutes))
-    row.updated_at = datetime.now(IST).replace(tzinfo=None)
-    db.commit()
-    return {"project_id": pid, "task_id": task_id, "status": "active"}
-
-
-@router.post("/{pid}/scheduled-tasks/{task_id}/run-now")
-def run_scheduled_task_now(
-    pid: str,
-    task_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    require_project_role(pid, {"Owner", "Editor"}, user, db)
-    row = db.scalar(select(ScheduledTask).where(ScheduledTask.id == task_id, ScheduledTask.project_id == pid))
-    if row is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    run_id = f"run_{uuid.uuid4().hex[:10]}"
-    plan = {
-        "skill_card": "auto_selected",
-        "sub_agents": json.loads(row.output_types_json or "[]"),
-        "custom_output_types": json.loads(row.custom_output_types_json or "[]"),
-        "output_type_representations": json.loads(row.output_type_representations_json or "{}"),
-        "scheduled_task_id": row.id,
-    }
-    run = Run(
-        id=run_id,
-        project_id=pid,
-        status="plan_ready",
-        output_types=row.output_types_json,
-        instruction=row.instruction,
-        plan_payload=json.dumps(plan),
-    )
-    db.add(run)
-    append_run_event(db, run_id, "scheduled_task.run_started", {"task_id": row.id, "project_id": pid})
-    append_run_event(db, run_id, "plan_ready", plan)
-    append_run_event(db, run_id, "step", {"status": "awaiting_hitl_approval", "source": "scheduled_task"})
-    db.add(
-        ScheduledTaskRun(
-            id=f"str_{uuid.uuid4().hex[:10]}",
-            task_id=row.id,
-            project_id=pid,
-            run_id=run_id,
-            status="plan_ready",
-            message="Run-now created and awaiting approval",
-        )
-    )
-    row.last_run_at = datetime.now(IST).replace(tzinfo=None)
-    row.last_run_status = "queued"
-    row.updated_at = datetime.now(IST).replace(tzinfo=None)
-    db.commit()
-    return {"project_id": pid, "task_id": task_id, "run_id": run_id, "status": "plan_ready"}
-
-
-@router.get("/{pid}/token-usage")
-def get_project_token_usage(
-    pid: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    """Return accumulated token counts and estimated cost for this project session."""
-    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
-    from app.services.run_budget import get_project_usage
-    from app.services.llm_pricing import calculate_run_cost_usd
-    usage = get_project_usage(pid)
-    cost = calculate_run_cost_usd(**usage)
-    return {
-        "project_id": pid,
-        "input_tokens": usage["input_tokens"],
-        "output_tokens": usage["output_tokens"],
-        "cache_read_tokens": usage["cache_read_tokens"],
-        "cache_creation_tokens": usage["cache_creation_tokens"],
-        "cost_usd": cost,
-    }

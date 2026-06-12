@@ -16,8 +16,11 @@ from typing import Any
 
 import pytest
 
-from app.api import projects as projects_module
+from app.agents import subagents
+from app.agents.agent_types import AgentContext
+from app.api.projects import conversation as projects_module
 from app.core.config import settings
+from app.services import observability
 from app.services.proposal_policy import (
     _discovery_brief,
     generate_document_outline_preview,
@@ -267,3 +270,147 @@ def test_assistant_plan_message_does_not_inline_open_questions(
     # Top-level response payload exposes wiki_context_refs + document_outline_preview.
     assert result["wiki_context_refs"] == ["Finance Ops Baseline", "CFO Briefing Archive"]
     assert "document_outline_preview" in result
+
+
+# ---------------------------------------------------------------------------
+# 5) Grounded context excerpt: ranked retrieval reaches deliverable prompts,
+#    and repair-mode PRIOR_DECK stays bounded.
+# ---------------------------------------------------------------------------
+def _agent_ctx(**overrides: Any) -> AgentContext:
+    base: dict[str, Any] = dict(
+        output_type="pptx",
+        project_id="p1",
+        run_id="r1",
+        user_id="u1",
+        raw_text="raw",
+        user_instruction="Create a finance transformation deck",
+        user_intent_original="Create a finance transformation deck",
+        process_model={
+            "process_name": "Procure to Pay",
+            "steps": [{"name": "Create PR", "role": "Buyer"}],
+            "roles": ["Buyer"],
+        },
+        assembled_context="",
+        output_type_representations={},
+        skill_instructions_by_output={},
+        skill_card={},
+        plan_payload={},
+    )
+    base.update(overrides)
+    return AgentContext(**base)
+
+
+def test_pptx_appendix_includes_ranked_retrieval_chunks() -> None:
+    # assembled_context is tier-ordered: curated head, ~13K of tier-1 padding,
+    # then the BM25/MMR-ranked tier-2 chunk at the tail — beyond any head slice.
+    filler = "Generic snippet line for tier one padding only. " * 270
+    ac = (
+        "CONTEXT-HEAD pain point: invoice approvals stall for 11 days.\n"
+        + filler
+        + "\nTIER2-CHUNK-ZETA appears only at the tail of assembled context."
+    )
+    ranked = (
+        "## Planner retrieval excerpt\n\n"
+        "TIER2-CHUNK-ZETA reconciliation evidence from uploaded source docs."
+    )
+    ctx = _agent_ctx(assembled_context=ac, retrieval_excerpt=ranked)
+
+    appendix = subagents._shared_user_context_appendix(ctx)
+
+    assert "TIER2-CHUNK-ZETA" not in ac[:3500], "sanity: a head slice misses the ranked chunk"
+    assert "TIER2-CHUNK-ZETA" in appendix
+    assert "CONTEXT-HEAD" in appendix, "curated head (CONTEXT.md / QA remediation) must survive"
+
+
+def test_pptx_labelled_sections_carry_extracted_lines() -> None:
+    ac = (
+        "Key pain point: invoice approvals take 11 days due to manual routing.\n"
+        "A case study from a global bank cut close cycle time by 40 percent.\n"
+    )
+    appendix = subagents._shared_user_context_appendix(_agent_ctx(assembled_context=ac))
+    labels = appendix.split("## Full context")[0]
+    assert "## PAIN POINTS & CURRENT STATE" in labels
+    assert "invoice approvals take 11 days" in labels
+    assert "## LEADING PRACTICES & CASE STUDIES" in labels
+    assert "global bank" in labels
+
+    # No keyword match → no bare header.
+    neutral = subagents._shared_user_context_appendix(
+        _agent_ctx(assembled_context="Neutral text about scheduling activities and owners only.")
+    )
+    assert "## PAIN POINTS" not in neutral
+    assert "## LEADING PRACTICES" not in neutral
+
+
+def test_grounded_context_excerpt_falls_back_to_head_slice() -> None:
+    ctx = _agent_ctx(output_type="docx", assembled_context="A" * 5000, retrieval_excerpt="")
+    assert subagents._grounded_context_excerpt(ctx, 3000) == "A" * 3000
+
+
+def test_grounded_context_excerpt_records_telemetry() -> None:
+    ctx = _agent_ctx(
+        output_type="xlsx",
+        assembled_context="B" * 4000,
+        retrieval_excerpt="ranked source facts " * 50,
+    )
+    out = subagents._grounded_context_excerpt(ctx, 1000)
+    assert len(out) <= 1000
+    counters = observability.snapshot()["counters"]
+    assert counters.get("subagent_context_offered_chars_xlsx_total", 0) > 0
+    assert counters.get("subagent_context_consumed_chars_xlsx_total", 0) > 0
+    assert counters.get("subagent_context_truncated_total", 0) >= 1
+
+
+def test_pptx_repair_prompt_bounds_prior_deck_and_preserves_unfixed_slides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prior = [
+        {
+            "slide_type": "bullets",
+            "title": f"Slide {i + 1} insight",
+            "bullets": [f"Slide {i + 1} bullet {j} " + "detail " * 30 for j in range(6)],
+        }
+        for i in range(20)
+    ]
+    captured: dict[str, str] = {}
+
+    def fake_tool_loop(ctx: Any, *, agent_id: str, system: str, user: str, **kw: Any) -> str:
+        captured["user"] = user
+        fixed = {"slide_type": "bullets", "title": "Repaired slide", "bullets": ["fixed"]}
+        slides = [
+            fixed
+            if i == 1
+            else {
+                "slide_index": i + 1,
+                "title": prior[i]["title"],
+                "slide_type": "bullets",
+                "unchanged": True,
+            }
+            for i in range(20)
+        ]
+        return json.dumps({"slides": slides})
+
+    monkeypatch.setattr(subagents, "is_claude_enabled", lambda: True)
+    monkeypatch.setattr(subagents, "_run_subagent_tool_loop_text", fake_tool_loop)
+    monkeypatch.setattr(subagents, "_apply_quality_gate", lambda ctx, kind, text, **kw: text)
+    monkeypatch.setattr(subagents, "_run_pptx_post_processor", lambda ctx, slides: slides)
+
+    ctx = _agent_ctx(
+        plan_payload={
+            "prior_pptx_slides": prior,
+            "pptx_visual_feedback": [{"slide_index": 2, "instruction": "Fix contrast on title"}],
+        },
+    )
+    out = subagents.run_pptx_agent(ctx)
+
+    prior_deck_json = captured["user"].split("PRIOR_DECK:\n", 1)[1]
+    deck_for_prompt = json.loads(prior_deck_json)  # PRIOR_DECK must stay parseable
+    assert len(deck_for_prompt) == 20
+    assert "bullets" in deck_for_prompt[1], "slide under repair keeps full content"
+    assert deck_for_prompt[0].get("unchanged") is True
+    assert "bullets" not in deck_for_prompt[0], "non-fixed slides are stubs"
+    assert len(prior_deck_json) < len(json.dumps(prior, ensure_ascii=False)) / 3
+
+    slides_out = out.updates["pptx_slides"]
+    assert slides_out[1]["title"] == "Repaired slide"
+    assert slides_out[0]["bullets"] == prior[0]["bullets"], "unfixed content survives the merge"

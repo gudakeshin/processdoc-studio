@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-import app.api.projects as projects_module
+import app.api.projects.conversation as projects_module
 import app.services.claude as claude_service
 import app.services.conversation_router as router_module
 from app.main import app as fastapi_app
