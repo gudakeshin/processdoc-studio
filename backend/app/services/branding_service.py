@@ -43,6 +43,9 @@ class BrandingContext:
     logo_url: str | None
     company_name: str
     custom_footer_text: str | None
+    # Deck design language: "" = unset (resolved at render time from the
+    # pptx_editorial_theme_enabled flag), "classic" or "editorial" to force one.
+    deck_theme: str = ""
 
 
 class BrandingService:
@@ -303,6 +306,7 @@ class BrandingService:
             logo_url=(str(override.get("logo_url")).strip() or None) if override.get("logo_url") else None,
             company_name=str(override.get("company_name") or "Company"),
             custom_footer_text=(str(override.get("footer_text")).strip() or None) if override.get("footer_text") else None,
+            deck_theme=str(override.get("deck_theme") or ""),
         )
 
     def get_branding_for_run(self, project_id: str | int | None, skill_card: dict | None = None, run_config: dict | None = None) -> BrandingContext:

@@ -1098,8 +1098,23 @@ def render_pptx_with_artifact_tool(
         prs.slide_width = Inches(SLIDE_W)
         prs.slide_height = Inches(SLIDE_H)
 
-        # Initialize composer
-        composer = SlideComposer(prs, branding_dict)
+        # Initialize composer — editorial theme uses the component-based sibling
+        # composer; classic keeps the original SlideComposer (byte-identical default).
+        try:
+            from app.core.pptx_theme import resolve_theme, resolve_theme_name
+
+            theme_name = resolve_theme_name(
+                branding_dict, editorial_default=bool(getattr(settings, "pptx_editorial_theme_enabled", False))
+            )
+            if theme_name == "editorial":
+                from app.core.pptx_editorial_composer import EditorialSlideComposer
+
+                composer = EditorialSlideComposer(prs, branding_dict, resolve_theme(branding_dict, "editorial"))
+            else:
+                composer = SlideComposer(prs, branding_dict)
+        except Exception as exc:
+            logger.warning("Editorial composer unavailable, using classic: %s", exc)
+            composer = SlideComposer(prs, branding_dict)
 
         # Get slides
         pptx_slides = payload.get("pptx_slides", [])
@@ -1231,6 +1246,7 @@ def _merge_branding_dict(branding: Any) -> dict[str, Any]:
             "text_primary": str(branding.get("text_primary", "#1A1A1A")),
             "text_inverse": str(branding.get("text_inverse", "#FFFFFF")),
             "logo_url": str(branding.get("logo_url", "")),
+            "deck_theme": str(branding.get("deck_theme", "") or ""),
         }
     # Fallback for dataclass-like objects
     pal = getattr(branding, "palette", None)
@@ -1248,4 +1264,5 @@ def _merge_branding_dict(branding: Any) -> dict[str, Any]:
         "text_primary": str(getattr(pal, "text_primary", "#1A1A1A") if pal is not None else "#1A1A1A"),
         "text_inverse": str(getattr(pal, "text_inverse", "#FFFFFF") if pal is not None else "#FFFFFF"),
         "logo_url": str(getattr(branding, "logo_url", "") or ""),
+        "deck_theme": str(getattr(branding, "deck_theme", "") or ""),
     }
