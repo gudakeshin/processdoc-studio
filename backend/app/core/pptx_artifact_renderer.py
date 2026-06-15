@@ -104,6 +104,61 @@ def _icon_for_step_label(step_label: str, fallback: str = "\u25CF") -> str:
     return fallback
 
 
+def _classic_fallback(slide_dict: dict[str, Any], slide_type: str) -> tuple[dict[str, Any], str]:
+    """Remap Phase-3 editorial slide types to classic equivalents so SlideComposer handles them."""
+    if slide_type == "split_panel":
+        items = slide_dict.get("items", [])
+        bullets = [str(i.get("label", i) if isinstance(i, dict) else i) for i in items]
+        return {**slide_dict, "slide_type": "bullets", "bullets": bullets or slide_dict.get("bullets", [])}, "bullets"
+    if slide_type == "lanes":
+        lanes = slide_dict.get("lanes", [])[:3]
+        cards = [{"heading": str(l.get("label", "")), "body": " · ".join(str(x) for x in l.get("items", [])),
+                  "accent": "dark"} for l in lanes if isinstance(l, dict)]
+        return {**slide_dict, "slide_type": "column_cards", "column_cards": cards}, "column_cards"
+    if slide_type == "workstream_cards":
+        wc = slide_dict.get("workstream_cards", [])[:3]
+        cards = [{"heading": str(c.get("heading", "")), "body": str(c.get("body", "")),
+                  "accent": "dark"} for c in wc if isinstance(c, dict)]
+        return {**slide_dict, "slide_type": "column_cards", "column_cards": cards}, "column_cards"
+    if slide_type == "tower_cards":
+        towers = slide_dict.get("tower_cards", [])[:3]
+        cards = [{"heading": str(t.get("heading", "")),
+                  "body": " · ".join(str(i) if not isinstance(i, dict) else str(i.get("text", "")) for i in t.get("items", [])[:4]),
+                  "accent": "dark"} for t in towers if isinstance(t, dict)]
+        return {**slide_dict, "slide_type": "column_cards", "column_cards": cards}, "column_cards"
+    if slide_type == "roadmap_matrix":
+        data = slide_dict.get("roadmap_matrix", {})
+        if isinstance(data, dict):
+            periods = data.get("periods", [])
+            tracks = data.get("tracks", [])
+            headers = ["Track"] + list(periods)
+            rows = []
+            for tr in tracks:
+                if isinstance(tr, dict):
+                    cells = [str(c.get("label", "")) if isinstance(c, dict) else "" for c in tr.get("cells", [])]
+                    rows.append([str(tr.get("label", ""))] + cells)
+            return {**slide_dict, "slide_type": "table",
+                    "table": {"headers": headers, "rows": rows, "x": 0.28, "y": 1.0, "w": 9.44, "h": 4.3}}, "table"
+    if slide_type == "swimlane_timeline":
+        data = slide_dict.get("swimlane_timeline", {})
+        lanes = data.get("lanes", []) if isinstance(data, dict) else []
+        bullets = [f"{l.get('label', '')}: " + ", ".join(b.get("label", "") for b in l.get("bars", []))
+                   for l in lanes if isinstance(l, dict)]
+        return {**slide_dict, "slide_type": "bullets", "bullets": bullets}, "bullets"
+    if slide_type == "flagship_cards":
+        fc = slide_dict.get("flagship_cards", [])
+        cards = []
+        for c in fc:
+            if isinstance(c, dict):
+                kpis = c.get("kpis", [])
+                stat = str(kpis[0].get("value", "")) if kpis else ""
+                label = str(kpis[0].get("label", "")) if kpis else str(c.get("heading", ""))
+                cards.append({"stat": stat or str(c.get("heading", "")), "label": label,
+                               "description": str(c.get("body", "")), "fill": "dark"})
+        return {**slide_dict, "slide_type": "stat_cards", "stat_cards": cards[:3]}, "stat_cards"
+    return slide_dict, slide_type
+
+
 class SlideComposer:
     """Composition-based slide builder using grid/row/column abstractions."""
 
@@ -1100,6 +1155,7 @@ def render_pptx_with_artifact_tool(
 
         # Initialize composer — editorial theme uses the component-based sibling
         # composer; classic keeps the original SlideComposer (byte-identical default).
+        _editorial_active = False
         try:
             from app.core.pptx_theme import resolve_theme, resolve_theme_name
 
@@ -1110,6 +1166,7 @@ def render_pptx_with_artifact_tool(
                 from app.core.pptx_editorial_composer import EditorialSlideComposer
 
                 composer = EditorialSlideComposer(prs, branding_dict, resolve_theme(branding_dict, "editorial"))
+                _editorial_active = True
             else:
                 composer = SlideComposer(prs, branding_dict)
         except Exception as exc:
@@ -1148,6 +1205,10 @@ def render_pptx_with_artifact_tool(
                         break
                 else:
                     slide_type = "bullets"
+
+            # For classic composer, remap Phase-3 types to supported equivalents.
+            if not _editorial_active:
+                slide_dict, slide_type = _classic_fallback(slide_dict, slide_type)
 
             try:
                 if slide_type == "title":

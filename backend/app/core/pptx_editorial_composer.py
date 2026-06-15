@@ -41,6 +41,14 @@ _FILL_TO_ACCENT = {
     "gray": "muted", "mid": "muted",
 }
 
+# Status key → theme color role.
+_STATUS_COLOR_MAP: dict[str, str] = {
+    "live": "primary",
+    "in_build": "status_in_build",
+    "planned": "status_planned",
+    "partner": "status_partner",
+}
+
 
 class EditorialSlideComposer:
     """Composition-based slide builder for the editorial theme."""
@@ -158,6 +166,13 @@ class EditorialSlideComposer:
             "big_number": self._compose_big_number,
             "process_flow": self._compose_process_flow,
             "stack_layers": self._compose_stack_layers,
+            "split_panel": self._compose_split_panel,
+            "lanes": self._compose_lanes,
+            "workstream_cards": self._compose_workstream_cards,
+            "tower_cards": self._compose_tower_cards,
+            "roadmap_matrix": self._compose_roadmap_matrix,
+            "swimlane_timeline": self._compose_swimlane_timeline,
+            "flagship_cards": self._compose_flagship_cards,
         }
         handler = handlers.get(slide_type, self._compose_bullets)
         with contextlib.suppress(Exception):
@@ -401,3 +416,351 @@ class EditorialSlideComposer:
         for seg, is_emph in C._split_emphasis(title, emphasis):
             C.add_run(p, seg, font=t.font_header, size=fit.pt, bold=True,
                       color=t.color("primary") if is_emph else t.color("inverse"))
+
+    # --- Phase 3: reference vocabulary slide types ----------------------------
+
+    def _compose_split_panel(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
+        """40/60 vertical split — dark left assertion panel + numbered items on right."""
+        items = [i for i in slide_dict.get("items", []) if isinstance(i, dict)][:5]
+        if not items:
+            items = [{"label": str(b), "body": ""} for b in slide_dict.get("bullets", [])][:5]
+        if not items:
+            return
+        t = self.theme
+        gut = t.spacing["gutter"]
+        left_w = r.w * 0.40
+        right_x = r.x + left_w + gut
+        right_w = r.w - left_w - gut
+
+        add_rect(slide, r.x, r.y, left_w, r.h, fill=t.color("panel"))
+        key_text = str(slide_dict.get("left_label") or items[0].get("label", ""))
+        if key_text:
+            kf = tm.fit_text(key_text, box_w_in=left_w - 0.36, box_h_in=r.h - 0.4,
+                             family=t.font_header, max_pt=t.type_scale["headline"], min_pt=16, bold=True)
+            ktf = textbox(slide, r.x + 0.18, r.y + 0.22, left_w - 0.36, r.h - 0.4)
+            for i, ln in enumerate(kf.lines or [key_text]):
+                p = ktf.paragraphs[0] if i == 0 else ktf.add_paragraph()
+                C.add_run(p, ln, font=t.font_header, size=kf.pt, bold=True, color=t.color("inverse"))
+
+        row_h = r.h / len(items)
+        for i, item in enumerate(items):
+            y = r.y + i * row_h
+            C.numbered_circle(slide, t, right_x, y + 0.06, i + 1, d=0.36)
+            ix, iw = right_x + 0.52, right_w - 0.52
+            label = str(item.get("label", ""))
+            if label:
+                lf = tm.fit_text(label, box_w_in=iw, box_h_in=0.42, family=t.font_header,
+                                 max_pt=t.type_scale["card_title"], min_pt=9, bold=True, max_lines=1)
+                ltf = textbox(slide, ix, y + 0.05, iw, 0.44)
+                C.add_run(ltf.paragraphs[0], label, font=t.font_header, size=lf.pt, bold=True, color=t.color("ink"))
+            body = str(item.get("body", "")).strip()
+            if body:
+                bf = tm.fit_text(body, box_w_in=iw, box_h_in=row_h - 0.52, family=t.font_body,
+                                 max_pt=t.type_scale["body"], min_pt=8, max_lines=2)
+                btf = textbox(slide, ix, y + 0.52, iw, row_h - 0.54)
+                for k, ln in enumerate(bf.lines or [body]):
+                    p = btf.paragraphs[0] if k == 0 else btf.add_paragraph()
+                    C.add_run(p, ln, font=t.font_body, size=bf.pt, color=t.color("muted"))
+            if i < len(items) - 1:
+                C.hairline_rule(slide, t, right_x, y + row_h - 0.04, right_w)
+
+    def _compose_lanes(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
+        """2–4 vertical lanes with label chips + numbered items."""
+        lanes = [l for l in slide_dict.get("lanes", []) if isinstance(l, dict)][:4]
+        if not lanes:
+            return
+        t = self.theme
+        gut = t.spacing["gutter"]
+        lw = (r.w - (len(lanes) - 1) * gut) / len(lanes)
+        chip_h = 0.36
+
+        for idx, lane in enumerate(lanes):
+            x = r.x + idx * (lw + gut)
+            label = str(lane.get("label", ""))
+            # Filled label chip spanning full lane width
+            add_rect(slide, x, r.y, lw, chip_h, fill=t.color("panel"))
+            ctf = textbox(slide, x + 0.1, r.y + 0.04, lw - 0.2, chip_h - 0.06)
+            C.add_run(ctf.paragraphs[0], label.upper(), font=t.font_body,
+                      size=t.type_scale["micro"] + 0.5, bold=True, color=t.color("inverse"),
+                      spc=t.spacing.get("letter_spacing", 2.2))
+
+            items = [str(i) for i in lane.get("items", []) if str(i).strip()][:5]
+            if not items:
+                continue
+            item_top = r.y + chip_h + 0.1
+            item_h = (r.h - chip_h - 0.12) / len(items)
+            for j, item_text in enumerate(items):
+                iy = item_top + j * item_h
+                C.numbered_circle(slide, t, x, iy + 0.02, j + 1, d=0.32)
+                itf = textbox(slide, x + 0.44, iy, lw - 0.44, item_h - 0.06, anchor=MSO_ANCHOR.MIDDLE)
+                iff = tm.fit_text(item_text, box_w_in=lw - 0.46, box_h_in=item_h - 0.08,
+                                  family=t.font_body, max_pt=t.type_scale["body"], min_pt=8, max_lines=3)
+                for k, ln in enumerate(iff.lines or [item_text]):
+                    p = itf.paragraphs[0] if k == 0 else itf.add_paragraph()
+                    C.add_run(p, ln, font=t.font_body, size=iff.pt, color=t.color("ink"))
+                if j < len(items) - 1:
+                    C.hairline_rule(slide, t, x, iy + item_h - 0.04, lw)
+
+    def _compose_workstream_cards(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
+        """3–6 narrow workstream cards with top-border status + owner badge + body."""
+        cards = [c for c in slide_dict.get("workstream_cards", []) if isinstance(c, dict)][:6]
+        if not cards:
+            return
+        t = self.theme
+        gut = t.spacing["gutter"] * 0.7
+        cols = len(cards)
+        cw = (r.w - (cols - 1) * gut) / cols
+        statuses = {str(c.get("status", "")).lower() for c in cards if c.get("status")}
+
+        for idx, card in enumerate(cards):
+            x = r.x + idx * (cw + gut)
+            status = str(card.get("status", "")).lower()
+            top_color = t.color(_STATUS_COLOR_MAP.get(status, "primary"))
+            add_rect(slide, x, r.y, cw, r.h, fill=t.color("inverse"), line=t.color("hairline"), line_pt=0.5)
+            add_rect(slide, x, r.y, cw, 0.06, fill=top_color)
+
+            heading = str(card.get("heading", ""))
+            hf = tm.fit_text(heading, box_w_in=cw - 0.2, box_h_in=0.72, family=t.font_header,
+                             max_pt=t.type_scale["card_title"], min_pt=8, bold=True, max_lines=2)
+            htf = textbox(slide, x + 0.1, r.y + 0.12, cw - 0.2, 0.74)
+            for i, ln in enumerate(hf.lines or [heading]):
+                p = htf.paragraphs[0] if i == 0 else htf.add_paragraph()
+                C.add_run(p, ln, font=t.font_header, size=hf.pt, bold=True, color=t.color("ink"))
+
+            y_cur = r.y + 0.9
+            owner = str(card.get("owner", "")).strip()
+            if owner:
+                C.label_chip(slide, t, x + 0.1, y_cur, owner, fill=t.color("muted"), text_color=t.color("inverse"))
+                y_cur += 0.34
+
+            body = str(card.get("body", "")).strip()
+            if body:
+                rem = r.h - (y_cur - r.y) - 0.1
+                if rem > 0.2:
+                    bf = tm.fit_text(body, box_w_in=cw - 0.2, box_h_in=rem,
+                                     family=t.font_body, max_pt=t.type_scale["body"] - 1, min_pt=7, max_lines=4)
+                    btf = textbox(slide, x + 0.1, y_cur, cw - 0.2, rem)
+                    for i, ln in enumerate(bf.lines or [body]):
+                        p = btf.paragraphs[0] if i == 0 else btf.add_paragraph()
+                        C.add_run(p, ln, font=t.font_body, size=bf.pt, color=t.color("muted"))
+
+        if statuses and slide_dict.get("status_legend", True):
+            ordered = [s for s in ("live", "in_build", "planned", "partner") if s in statuses]
+            legend_items = [(s, s.replace("_", " ").title()) for s in ordered]
+            if legend_items:
+                C.status_legend(slide, t, r.x, r.y + r.h + 0.08, legend_items)
+
+    def _compose_tower_cards(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
+        """3–5 towers: dark teal header, items with status dots, optional takeaway strip."""
+        towers = [tw for tw in slide_dict.get("tower_cards", []) if isinstance(tw, dict)][:5]
+        if not towers:
+            return
+        t = self.theme
+        gut = t.spacing["gutter"] * 0.7
+        cols = len(towers)
+        cw = (r.w - (cols - 1) * gut) / cols
+        header_h = 0.52
+        takeaway_h = 0.38
+
+        for idx, tower in enumerate(towers):
+            x = r.x + idx * (cw + gut)
+            add_rect(slide, x, r.y, cw, header_h, fill=t.color("primary"))
+            heading = str(tower.get("heading", ""))
+            hf = tm.fit_text(heading, box_w_in=cw - 0.16, box_h_in=header_h - 0.08, family=t.font_header,
+                             max_pt=t.type_scale["card_title"], min_pt=8, bold=True, max_lines=2)
+            htf = textbox(slide, x + 0.08, r.y + 0.04, cw - 0.16, header_h - 0.06)
+            for i, ln in enumerate(hf.lines or [heading]):
+                p = htf.paragraphs[0] if i == 0 else htf.add_paragraph()
+                C.add_run(p, ln, font=t.font_header, size=hf.pt, bold=True, color=t.color("inverse"))
+
+            takeaway = str(tower.get("takeaway", "")).strip()
+            item_zone_h = r.h - header_h - (takeaway_h if takeaway else 0) - 0.08
+            item_y = r.y + header_h + 0.06
+            items = tower.get("items", [])[:6]
+            ih = item_zone_h / max(len(items), 1)
+            for j, item in enumerate(items):
+                iy = item_y + j * ih
+                if isinstance(item, dict):
+                    status, item_text = str(item.get("status", "")).lower(), str(item.get("text", item.get("label", "")))
+                else:
+                    status, item_text = "", str(item)
+                dot_x = x + 0.08
+                tx = x + 0.24 if status else x + 0.1
+                tw_val = cw - 0.3 if status else cw - 0.16
+                if status:
+                    C.status_dot(slide, t, dot_x, iy + 0.03, status)
+                iff = tm.fit_text(item_text, box_w_in=tw_val, box_h_in=ih - 0.04, family=t.font_body,
+                                  max_pt=t.type_scale["body"] - 1, min_pt=7, max_lines=2)
+                itf = textbox(slide, tx, iy, tw_val, ih - 0.04)
+                for k, ln in enumerate(iff.lines or [item_text]):
+                    p = itf.paragraphs[0] if k == 0 else itf.add_paragraph()
+                    C.add_run(p, ln, font=t.font_body, size=iff.pt, color=t.color("ink"))
+            if takeaway:
+                C.takeaway_strip(slide, t, x, r.y + r.h - takeaway_h, cw, takeaway)
+
+    def _compose_roadmap_matrix(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
+        """Quarter×workstream grid with status-colored cells."""
+        data = slide_dict.get("roadmap_matrix", {})
+        if not isinstance(data, dict):
+            return
+        periods = [str(p) for p in data.get("periods", [])][:8]
+        tracks = [tr for tr in data.get("tracks", []) if isinstance(tr, dict)][:6]
+        if not periods or not tracks:
+            return
+        t = self.theme
+        label_w = 1.25
+        col_w = (r.w - label_w) / len(periods)
+        row_h = r.h / (len(tracks) + 1)
+
+        # Period header row
+        for ci, period in enumerate(periods):
+            px = r.x + label_w + ci * col_w
+            add_rect(slide, px, r.y, col_w - 0.02, row_h - 0.02, fill=t.color("panel"))
+            ptf = textbox(slide, px + 0.04, r.y + 0.04, col_w - 0.1, row_h - 0.1)
+            ptf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            pf = tm.fit_text(period, box_w_in=col_w - 0.12, box_h_in=row_h - 0.12,
+                             family=t.font_header, max_pt=t.type_scale["micro"] + 0.5, min_pt=6, bold=True, max_lines=2)
+            C.add_run(ptf.paragraphs[0], period, font=t.font_header, size=pf.pt, bold=True, color=t.color("inverse"))
+
+        for ri, track in enumerate(tracks):
+            ry = r.y + (ri + 1) * row_h
+            # Alternating row bg
+            if ri % 2 == 0:
+                add_rect(slide, r.x, ry, r.w, row_h - 0.02, fill=t.color("tint"))
+            track_label = str(track.get("label", ""))
+            ltf = textbox(slide, r.x + 0.04, ry + 0.04, label_w - 0.08, row_h - 0.08, anchor=MSO_ANCHOR.MIDDLE)
+            lf = tm.fit_text(track_label, box_w_in=label_w - 0.1, box_h_in=row_h - 0.1,
+                             family=t.font_header, max_pt=t.type_scale["micro"] + 1, min_pt=7, bold=True, max_lines=2)
+            C.add_run(ltf.paragraphs[0], track_label, font=t.font_header, size=lf.pt, bold=True, color=t.color("ink"))
+
+            for ci, cell in enumerate(track.get("cells", [])[:len(periods)]):
+                if not isinstance(cell, dict):
+                    continue
+                px = r.x + label_w + ci * col_w
+                status = str(cell.get("status", "")).lower()
+                fill_color = t.color(_STATUS_COLOR_MAP.get(status, "tint") if status else "tint")
+                cell_label = str(cell.get("label", ""))
+                add_rect(slide, px + 0.03, ry + 0.04, col_w - 0.07, row_h - 0.1, fill=fill_color)
+                if cell_label:
+                    ctf = textbox(slide, px + 0.07, ry + 0.08, col_w - 0.14, row_h - 0.18)
+                    cff = tm.fit_text(cell_label, box_w_in=col_w - 0.16, box_h_in=row_h - 0.22,
+                                      family=t.font_body, max_pt=7, min_pt=5, max_lines=2)
+                    text_color = t.color("inverse") if status in {"live", "in_build"} else t.color("ink")
+                    C.add_run(ctf.paragraphs[0], cell_label, font=t.font_body, size=cff.pt, color=text_color)
+
+    def _compose_swimlane_timeline(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
+        """Horizontal Gantt — per-lane colored bars spanning period columns."""
+        data = slide_dict.get("swimlane_timeline", {})
+        if not isinstance(data, dict):
+            return
+        periods = [str(p) for p in data.get("periods", [])][:8]
+        lanes = [l for l in data.get("lanes", []) if isinstance(l, dict)][:6]
+        if not periods or not lanes:
+            return
+        t = self.theme
+        label_w = 1.3
+        col_w = (r.w - label_w) / len(periods)
+        header_h = 0.34
+        lane_h = (r.h - header_h) / len(lanes)
+
+        for ci, period in enumerate(periods):
+            px = r.x + label_w + ci * col_w
+            add_rect(slide, px, r.y, col_w - 0.02, header_h - 0.02, fill=t.color("panel"))
+            ptf = textbox(slide, px + 0.03, r.y + 0.04, col_w - 0.08, header_h - 0.08)
+            ptf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            pf = tm.fit_text(period, box_w_in=col_w - 0.1, box_h_in=header_h - 0.1,
+                             family=t.font_header, max_pt=t.type_scale["micro"], min_pt=6, bold=True, max_lines=1)
+            C.add_run(ptf.paragraphs[0], period, font=t.font_header, size=pf.pt, bold=True, color=t.color("inverse"))
+
+        for li, lane in enumerate(lanes):
+            ly = r.y + header_h + li * lane_h
+            if li % 2 == 0:
+                add_rect(slide, r.x, ly, r.w, lane_h - 0.02, fill=t.color("tint"))
+            lane_label = str(lane.get("label", ""))
+            ltf = textbox(slide, r.x + 0.04, ly + 0.04, label_w - 0.08, lane_h - 0.08, anchor=MSO_ANCHOR.MIDDLE)
+            lf = tm.fit_text(lane_label, box_w_in=label_w - 0.1, box_h_in=lane_h - 0.1,
+                             family=t.font_header, max_pt=t.type_scale["micro"] + 1, min_pt=7, bold=True, max_lines=2)
+            C.add_run(ltf.paragraphs[0], lane_label, font=t.font_header, size=lf.pt, bold=True, color=t.color("ink"))
+
+            bar_h = lane_h * 0.52
+            bar_y = ly + (lane_h - bar_h) / 2
+            for bar in lane.get("bars", []):
+                if not isinstance(bar, dict):
+                    continue
+                start = max(0, min(int(bar.get("start", 0)), len(periods) - 1))
+                end = max(start, min(int(bar.get("end", start)), len(periods) - 1))
+                status = str(bar.get("status", "")).lower()
+                bar_color = t.color(_STATUS_COLOR_MAP.get(status, "primary"))
+                bx = r.x + label_w + start * col_w + 0.04
+                bw = (end - start + 1) * col_w - 0.08
+                add_rect(slide, bx, bar_y, bw, bar_h, fill=bar_color)
+                bar_label = str(bar.get("label", "")).strip()
+                if bar_label and bw > 0.28:
+                    blf = tm.fit_text(bar_label, box_w_in=bw - 0.1, box_h_in=bar_h,
+                                      family=t.font_body, max_pt=7, min_pt=5, max_lines=1)
+                    bltf = textbox(slide, bx + 0.05, bar_y + 0.04, bw - 0.1, bar_h - 0.08)
+                    C.add_run(bltf.paragraphs[0], bar_label, font=t.font_body, size=blf.pt, color=t.color("inverse"))
+
+    def _compose_flagship_cards(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
+        """2–3 flagship cards: dark header, KPI row, body text, optional client badge."""
+        cards = [c for c in slide_dict.get("flagship_cards", []) if isinstance(c, dict)][:3]
+        if not cards:
+            return
+        t = self.theme
+        gut = t.spacing["gutter"]
+        cols = len(cards)
+        cw = (r.w - (cols - 1) * gut) / cols
+        header_h = 0.9
+
+        for idx, card in enumerate(cards):
+            x = r.x + idx * (cw + gut)
+            add_rect(slide, x, r.y, cw, header_h, fill=t.color("panel"))
+            heading = str(card.get("heading", ""))
+            hf = tm.fit_text(heading, box_w_in=cw - 0.24, box_h_in=header_h - 0.12, family=t.font_header,
+                             max_pt=t.type_scale["card_title"] + 2, min_pt=10, bold=True, max_lines=2)
+            htf = textbox(slide, x + 0.12, r.y + 0.1, cw - 0.24, header_h - 0.14)
+            for i, ln in enumerate(hf.lines or [heading]):
+                p = htf.paragraphs[0] if i == 0 else htf.add_paragraph()
+                C.add_run(p, ln, font=t.font_header, size=hf.pt, bold=True, color=t.color("inverse"))
+
+            add_rect(slide, x, r.y + header_h, cw, r.h - header_h, fill=t.color("inverse"),
+                     line=t.color("hairline"), line_pt=0.5)
+
+            y_cur = r.y + header_h + 0.12
+            kpis = [k for k in card.get("kpis", []) if isinstance(k, dict)][:3]
+            if kpis:
+                kpi_w = cw / len(kpis)
+                for ki, kpi in enumerate(kpis):
+                    kx = x + ki * kpi_w
+                    val = str(kpi.get("value", ""))
+                    lbl = str(kpi.get("label", ""))
+                    if val:
+                        vtf = textbox(slide, kx + 0.06, y_cur, kpi_w - 0.12, 0.38)
+                        vtf.paragraphs[0].alignment = PP_ALIGN.CENTER
+                        C.add_run(vtf.paragraphs[0], val, font=t.font_header,
+                                  size=t.type_scale["kicker"] + 2, bold=True, color=t.color("primary"))
+                    if lbl:
+                        ltf = textbox(slide, kx + 0.06, y_cur + 0.38, kpi_w - 0.12, 0.26)
+                        ltf.paragraphs[0].alignment = PP_ALIGN.CENTER
+                        C.add_run(ltf.paragraphs[0], lbl, font=t.font_body,
+                                  size=t.type_scale["micro"] + 0.5, color=t.color("muted"))
+                y_cur += 0.7
+                C.hairline_rule(slide, t, x, y_cur, cw)
+                y_cur += 0.08
+
+            client = str(card.get("client", "")).strip()
+            client_h = 0.28 if client else 0
+            body = str(card.get("body", "")).strip()
+            body_h = r.h - header_h - (y_cur - (r.y + header_h)) - client_h - 0.1
+            if body and body_h > 0.2:
+                bf = tm.fit_text(body, box_w_in=cw - 0.24, box_h_in=body_h, family=t.font_body,
+                                 max_pt=t.type_scale["body"], min_pt=8, max_lines=4)
+                btf = textbox(slide, x + 0.12, y_cur, cw - 0.24, body_h)
+                for i, ln in enumerate(bf.lines or [body]):
+                    p = btf.paragraphs[0] if i == 0 else btf.add_paragraph()
+                    C.add_run(p, ln, font=t.font_body, size=bf.pt, color=t.color("muted"))
+
+            if client:
+                ctf = textbox(slide, x + 0.12, r.y + r.h - 0.3, cw - 0.24, 0.26)
+                C.add_run(ctf.paragraphs[0], f"TARGET: {client}", font=t.font_body,
+                          size=t.type_scale["micro"], bold=True, color=t.color("primary"))

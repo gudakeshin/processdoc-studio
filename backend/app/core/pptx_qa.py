@@ -392,5 +392,65 @@ def _extract_expected_text_from_slide(slide: dict[str, Any]) -> list[str]:
     if "footer" in slide and slide["footer"]:
         expected.append(str(slide["footer"]))
 
+    # Phase-3 editorial types
+    if "items" in slide and isinstance(slide["items"], list):  # split_panel
+        for item in slide["items"]:
+            if isinstance(item, dict):
+                expected.extend(str(item.get(k)) for k in ("label", "body") if item.get(k))
+
+    if "lanes" in slide and isinstance(slide["lanes"], list):
+        for lane in slide["lanes"]:
+            if isinstance(lane, dict):
+                if lane.get("label"):
+                    expected.append(str(lane["label"]))
+                expected.extend(str(i) for i in lane.get("items", []) if i)
+
+    if "workstream_cards" in slide and isinstance(slide["workstream_cards"], list):
+        for card in slide["workstream_cards"]:
+            if isinstance(card, dict):
+                expected.extend(str(card.get(k)) for k in ("heading", "owner", "body") if card.get(k))
+
+    if "tower_cards" in slide and isinstance(slide["tower_cards"], list):
+        for tower in slide["tower_cards"]:
+            if isinstance(tower, dict):
+                if tower.get("heading"):
+                    expected.append(str(tower["heading"]))
+                for item in tower.get("items", []):
+                    text = str(item.get("text", item.get("label", item))) if isinstance(item, dict) else str(item)
+                    if text:
+                        expected.append(text)
+                if tower.get("takeaway"):
+                    expected.append(str(tower["takeaway"]))
+
+    if "roadmap_matrix" in slide and isinstance(slide["roadmap_matrix"], dict):
+        data = slide["roadmap_matrix"]
+        expected.extend(str(p) for p in data.get("periods", []) if p)
+        for tr in data.get("tracks", []):
+            if isinstance(tr, dict):
+                if tr.get("label"):
+                    expected.append(str(tr["label"]))
+                for cell in tr.get("cells", []):
+                    if isinstance(cell, dict) and cell.get("label"):
+                        expected.append(str(cell["label"]))
+
+    if "swimlane_timeline" in slide and isinstance(slide["swimlane_timeline"], dict):
+        data = slide["swimlane_timeline"]
+        expected.extend(str(p) for p in data.get("periods", []) if p)
+        for lane in data.get("lanes", []):
+            if isinstance(lane, dict):
+                if lane.get("label"):
+                    expected.append(str(lane["label"]))
+                for bar in lane.get("bars", []):
+                    if isinstance(bar, dict) and bar.get("label"):
+                        expected.append(str(bar["label"]))
+
+    if "flagship_cards" in slide and isinstance(slide["flagship_cards"], list):
+        for card in slide["flagship_cards"]:
+            if isinstance(card, dict):
+                expected.extend(str(card.get(k)) for k in ("heading", "body", "client") if card.get(k))
+                for kpi in card.get("kpis", []):
+                    if isinstance(kpi, dict):
+                        expected.extend(str(kpi.get(k)) for k in ("label", "value") if kpi.get(k))
+
     # Filter out empty strings and very short fragments
     return [t for t in expected if t and len(t) > 2]

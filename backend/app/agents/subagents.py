@@ -3021,13 +3021,35 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
         # SKILL.md configuration rather than hardcoded Python.
 
         # ── Shared slide schema (used by both skill-aware and fallback paths) ──
+        # Detect editorial theme context for vocabulary block.
+        _editorial_theme = False
+        try:
+            _branding_ctx = getattr(ctx, "branding", None)
+            if _branding_ctx:
+                _dt = str(getattr(_branding_ctx, "deck_theme", "") or "").lower()
+                if not _dt:
+                    from app.core.config import settings as _s
+                    _dt = "editorial" if getattr(_s, "pptx_editorial_theme_enabled", False) else "classic"
+                _editorial_theme = (_dt == "editorial")
+        except Exception:
+            pass
+
         _slide_schema = (
             "Each slide object schema (omit fields that are null):\n"
             "  title         string — ≤10 words (required)\n"
             "  slide_type    string — one of: title | bullets | stat_cards | column_cards |\n"
             "                         stack_layers | table | chart | section_divider |\n"
-            "                         big_number | process_flow (required)\n"
-            "  subtitle      string | null\n"
+            "                         big_number | process_flow"
+            + (" | split_panel | lanes | workstream_cards | tower_cards |\n"
+               "                         roadmap_matrix | swimlane_timeline | flagship_cards" if _editorial_theme else "")
+            + " (required)\n"
+            "  subtitle      string | null — eyebrow/section label (ALL-CAPS, ≤5 words)\n"
+            "  kicker        string | null — italic sub-headline below title (≤20 words)\n"
+            "  section_number string | null — 2-digit section index (e.g. \"02\")\n"
+            "  emphasis      string | null — substring of title to render in primary color\n"
+            "  status_legend bool | null — show status legend (workstream_cards / tower_cards)\n"
+            "  synthesis_band {label: string, text: string, right_label?: string, right_text?: string} | null\n"
+            "                — full-width dark takeaway band; use ≤1 per 3 slides\n"
             "  bullets       string[] | null — each ≤15 words; for slide_type=\"bullets\"\n"
             "  badges        string[] | null — short phrases for title slide pills (slide_type=\"title\" only)\n"
             "  stat_cards    [{stat: string, label: string, description: string, fill: \"dark\"|\"mid_dark\"|\"gray\"}] | null\n"
@@ -3049,13 +3071,37 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             "                — renders stat at 80pt; use for ONE dominant KPI; at most once per deck\n"
             "  process_flow  {steps: [{label: string ≤4 words, description: string ≤12 words,\n"
             "                          fill: \"green\"|\"dark\"|\"mid_dark\"|\"dark_green\"|\"mid\", icon?: string}]} | null\n"
-            "                — horizontal arrow chain for ordered steps; 2–5 steps required\n\n"
-            "Rules:\n"
+            "                — horizontal arrow chain for ordered steps; 2–5 steps required\n"
+            + (
+            "  split_panel   items: [{label: string, body: string}] — 2–5 numbered items;\n"
+            "                dark left panel shows the key assertion, right shows numbered detail\n"
+            "  lanes         lanes: [{label: string, items: [string]}] — 2–4 parallel swim lanes;\n"
+            "                each lane has a labelled column chip + 2–5 numbered items\n"
+            "  workstream_cards  workstream_cards: [{heading: string, owner: string|null, body: string,\n"
+            "                    status: \"live\"|\"in_build\"|\"planned\"|\"partner\"|null}] — 3–6 cards;\n"
+            "                    set status_legend: true when statuses are mixed\n"
+            "  tower_cards   tower_cards: [{heading: string, items: [{text: string, status?: string}|string],\n"
+            "                takeaway?: string}] — 3–5 towers; teal header + item list + optional takeaway strip\n"
+            "  roadmap_matrix  roadmap_matrix: {periods: [string], tracks: [{label: string,\n"
+            "                  cells: [{label: string, status: \"live\"|\"in_build\"|\"planned\"|\"partner\"|null}]}]}\n"
+            "                  — quarter×workstream grid; ≤8 periods, ≤6 tracks\n"
+            "  swimlane_timeline  swimlane_timeline: {periods: [string], lanes: [{label: string,\n"
+            "                     bars: [{start: int, end: int, label: string, status?: string}]}]}\n"
+            "                     — Gantt; start/end are 0-based period indices\n"
+            "  flagship_cards  flagship_cards: [{heading: string, body: string,\n"
+            "                  kpis?: [{label: string, value: string}], client?: string}] — 2–3 cards\n"
+            if _editorial_theme else ""
+            )
+            + "\nRules:\n"
             "  - title and slide_type are required on every slide.\n"
             "  - stat_cards: include only cards where a real quantifiable value exists; omit cards with no data rather than using placeholder text. Aim for 3 but 1 or 2 is acceptable.\n"
             "  - column_cards must have exactly 3 items.\n"
             "  - Do not mix bullets + table on the same slide.\n"
-            "  - Return ONLY valid JSON: {\"slides\": [...]}\n\n"
+            + ("  - emphasis: use to highlight 1–3 key words in the title — must be a verbatim substring.\n"
+               "  - status discipline: live=currently active; in_build=in development; planned=on roadmap; partner=third-party led.\n"
+               "  - synthesis_band: 1 band per major section break maximum; short assertions only.\n"
+               if _editorial_theme else "")
+            + "  - Return ONLY valid JSON: {\"slides\": [...]}\n\n"
         )
 
         skill_slide_sequence = primary.get("slide_sequence") if primary else None

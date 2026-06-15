@@ -146,6 +146,83 @@ def test_eyebrow_has_letter_spacing() -> None:
     assert spc_found, "expected letterspaced (spc) runs in editorial chrome"
 
 
+_PHASE3_SLIDES = [
+    {
+        "slide_type": "split_panel", "title": "Six levers.", "subtitle": "THE APPROACH",
+        "left_label": "Transform now.",
+        "items": [
+            {"label": "Talent", "body": "Hire senior AI engineers by Q2."},
+            {"label": "Platform", "body": "Consolidate on a single inference endpoint."},
+            {"label": "Governance", "body": "Establish a model risk committee."},
+        ],
+    },
+    {
+        "slide_type": "lanes", "title": "Three horizons.", "subtitle": "BUILD PLAN",
+        "lanes": [
+            {"label": "Horizon 1", "items": ["Define scope", "Secure budget", "Hire leads"]},
+            {"label": "Horizon 2", "items": ["Pilot deployments", "Measure impact", "Scale winners"]},
+            {"label": "Horizon 3", "items": ["Enterprise roll-out", "Partner ecosystem", "IP monetise"]},
+        ],
+    },
+    {
+        "slide_type": "workstream_cards", "title": "Six workstreams.", "subtitle": "DELIVERY",
+        "status_legend": True,
+        "workstream_cards": [
+            {"heading": "AI Engineering", "owner": "CTO", "body": "Core platform build.", "status": "live"},
+            {"heading": "Data", "owner": "CDO", "body": "Unified data layer.", "status": "in_build"},
+            {"heading": "GTM", "owner": "CMO", "body": "Go-to-market motion.", "status": "planned"},
+            {"heading": "Risk", "owner": "CRO", "body": "Model governance.", "status": "partner"},
+        ],
+    },
+    {
+        "slide_type": "tower_cards", "title": "Five towers.", "subtitle": "PORTFOLIO",
+        "tower_cards": [
+            {"heading": "Finance", "items": [{"text": "AP automation", "status": "live"}, {"text": "Close acceleration", "status": "in_build"}], "takeaway": "£1.2M identified."},
+            {"heading": "Procurement", "items": ["Vendor scoring", "Contract mining"], "takeaway": "12% savings."},
+            {"heading": "HR", "items": ["Resume screening", "Offer generation"], "takeaway": "40% faster."},
+        ],
+    },
+    {
+        "slide_type": "roadmap_matrix", "title": "Delivery roadmap.", "subtitle": "PLAN",
+        "roadmap_matrix": {
+            "periods": ["Q1 25", "Q2 25", "Q3 25", "Q4 25"],
+            "tracks": [
+                {"label": "AI Engineering", "cells": [{"label": "Setup", "status": "live"}, {"label": "v1", "status": "in_build"}, {"label": "v2", "status": "planned"}, {}]},
+                {"label": "Data", "cells": [{}, {"label": "Audit", "status": "in_build"}, {"label": "Platform", "status": "planned"}, {}]},
+            ],
+        },
+    },
+    {
+        "slide_type": "swimlane_timeline", "title": "Programme schedule.", "subtitle": "TIMELINE",
+        "swimlane_timeline": {
+            "periods": ["Q1", "Q2", "Q3", "Q4"],
+            "lanes": [
+                {"label": "Talent", "bars": [{"start": 0, "end": 1, "label": "Recruit", "status": "live"}, {"start": 2, "end": 3, "label": "Onboard", "status": "planned"}]},
+                {"label": "Platform", "bars": [{"start": 1, "end": 3, "label": "Build", "status": "in_build"}]},
+            ],
+        },
+    },
+    {
+        "slide_type": "flagship_cards", "title": "Flagship offers.", "subtitle": "MARKET",
+        "flagship_cards": [
+            {"heading": "AI Due Diligence", "body": "Rapid 3-week assessment.", "kpis": [{"label": "Engagements", "value": "24"}, {"label": "NPS", "value": "87"}], "client": "Private Equity"},
+            {"heading": "Process AI", "body": "End-to-end process transformation.", "kpis": [{"label": "Savings", "value": "18%"}], "client": "Fortune 500"},
+        ],
+    },
+]
+
+
+def test_phase3_types_render_without_error() -> None:
+    prs = _render("editorial", _PHASE3_SLIDES)
+    assert len(prs.slides) == len(_PHASE3_SLIDES)
+
+
+def test_phase3_classic_fallback_renders_without_error() -> None:
+    """Classic theme must degrade all Phase-3 types without crashing."""
+    prs = _render("classic", _PHASE3_SLIDES)
+    assert len(prs.slides) == len(_PHASE3_SLIDES)
+
+
 def test_classic_theme_unchanged_green_topbar() -> None:
     prs = _render("classic")
     content = prs.slides[1]
