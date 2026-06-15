@@ -59,6 +59,19 @@ class EditorialSlideComposer:
         self.theme = theme
         self.logo_url = str(branding.get("logo_url") or "").strip()
         self.deck_label = self._deck_label(branding)
+        # Accumulated overflow/trim events; callers can read fit_report after rendering.
+        self.fit_report: list[dict[str, Any]] = []
+
+    def _record_fit(self, slide_num: int, slide_type: str, field: str, action: str) -> None:
+        self.fit_report.append({"slide": slide_num, "slide_type": slide_type, "field": field, "action": action})
+
+    def _trim_to_budget(self, text: str, max_chars: int, label: str, page_num: int, slide_type: str) -> str:
+        """Trim text to char budget; records the trim so callers can surface it in qa_report."""
+        if len(text) <= max_chars:
+            return text
+        trimmed = text[:max_chars - 1].rsplit(" ", 1)[0] + "…"
+        self._record_fit(page_num, slide_type, label, f"trimmed {len(text)}→{len(trimmed)} chars")
+        return trimmed
 
     def _deck_label(self, b: dict[str, Any]) -> str:
         ft = str(b.get("footer_text") or "").strip()

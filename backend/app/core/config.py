@@ -302,6 +302,9 @@ class Settings(BaseSettings):
     # When enabled, decks with an unset deck_theme default to "editorial"; classic remains
     # reachable via brand_override.deck_theme. Fail-soft: falls back to classic on any error.
     pptx_editorial_theme_enabled: bool = False
+    # Visual critic mode for PPTX: "auto" uses pixel path when soffice+pypdfium2 are available,
+    # else falls back to metadata; "pixel" forces pixel path; "metadata" uses structural metadata only.
+    pptx_visual_critic_mode: str = "auto"
     # When True, unsupported numeric claims from PPTX evidence validation fail the render QA gate.
     # When False, evidence signals remain advisory metadata.
     pptx_evidence_hard_fail_enabled: bool = False

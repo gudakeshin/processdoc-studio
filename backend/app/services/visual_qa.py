@@ -162,23 +162,85 @@ def _extract_pptx_metadata(path: Path) -> dict[str, Any]:
 
 
 def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
-    """Dedicated visual QA pass for the PPTX using structural metadata.
+    """Dedicated visual QA pass for the PPTX.
 
-    Sends per-slide structural data (shapes, colours, density) alongside a
-    design-aware prompt.  Returns per-slide findings and remediation_hints that
-    the PPTX generation agent can consume on a retry pass — without any
-    hardcoded pass/fail pixel rules.
+    Mode selection (pptx_visual_critic_mode):
+      "auto"     — pixel path when soffice + pypdfium2 are available; metadata fallback
+      "pixel"    — pixel path only (skips if deps unavailable)
+      "metadata" — structural metadata path only (legacy default)
+
+    Returns per-slide findings and remediation_hints that the PPTX generation
+    agent can consume on a retry pass.
     """
     _empty = {"status": "skip", "summary": "", "per_slide_findings": [], "remediation_hints": []}
     if not bool(getattr(settings, "pptx_visual_critic_enabled", True)):
         return {**_empty, "summary": "PPTX visual critic disabled by configuration"}
     if not path.exists():
         return {**_empty, "summary": "PPTX not found"}
+    if not is_claude_enabled():
+        return {**_empty, "summary": "Claude API not configured"}
+
+    critic_mode = str(getattr(settings, "pptx_visual_critic_mode", "auto") or "auto").lower()
+
+    # Pixel path: soffice → PDF → PNG → vision LLM.
+    if critic_mode in {"auto", "pixel"}:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                pdf_path = _convert_office_to_pdf(path, tmp_path)
+                if pdf_path and pdf_path.exists():
+                    page_images = _render_pdf_pages_to_png(pdf_path, tmp_path, "pptx")
+                    if page_images:
+                        pixel_system = (
+                            "You are a slide design QA reviewer for executive presentations. "
+                            "You receive rendered slide images and evaluate layout quality against the design standard below. "
+                            "Return strict JSON with keys: status (pass|warn|fail), summary (one sentence), "
+                            "per_slide_findings (array of {index, issue, severity: low|medium|high}), "
+                            "remediation_hints (array of {slide_index, instruction})."
+                        )
+                        pixel_user = (
+                            f"Project: {project_id} | Run: {run_id}\n\n"
+                            "Design rubric (evaluate each slide image against these criteria):\n"
+                            "- Alignment: text and shapes should align to an implicit grid; no floating orphan elements.\n"
+                            "- Overlap/clipping: no text clipped by shape borders or slide edge; no two text blocks overlapping.\n"
+                            "- Hierarchy: title clearly dominant; supporting text visibly smaller.\n"
+                            "- Status-color consistency: same status should use the same color throughout the deck.\n"
+                            "- Footer cadence: footer text and page number should appear consistently on every non-title slide.\n"
+                            "- Content density: slides should be neither blank nor overloaded.\n"
+                            "Flag real layout problems — not stylistic preferences. "
+                            "If a slide looks clean, do not manufacture findings."
+                        )
+                        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or None
+                        result = claude_generate_json_with_images(
+                            system=pixel_system,
+                            user=pixel_user,
+                            image_bytes_list=page_images,
+                            model=critic_model,
+                            temperature=0.1,
+                            max_tokens=1600,
+                        )
+                        if isinstance(result, dict) and "status" in result:
+                            status = str(result.get("status") or "warn").lower()
+                            if status not in {"pass", "warn", "fail"}:
+                                status = "warn"
+                            return {
+                                "status": status,
+                                "summary": str(result.get("summary", "")),
+                                "per_slide_findings": result.get("per_slide_findings") or [],
+                                "remediation_hints": result.get("remediation_hints") or [],
+                                "critic_path": "pixel",
+                            }
+        except Exception:
+            pass  # fall through to metadata path
+
+    if critic_mode == "pixel":
+        return {**_empty, "summary": "Pixel critic unavailable (soffice/pypdfium2 not present)"}
+
+    # Metadata path (structural, no images).
     metadata = _extract_pptx_metadata(path)
     if "error" in metadata:
         return {**_empty, "summary": f"Could not parse PPTX: {metadata['error']}"}
-    if not is_claude_enabled():
-        return {**_empty, "summary": "Claude API not configured"}
+
 
     system = (
         "You are a slide design QA reviewer for executive presentations. "

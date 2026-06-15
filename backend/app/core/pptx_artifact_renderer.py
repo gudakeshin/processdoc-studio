@@ -1238,6 +1238,14 @@ def render_pptx_with_artifact_tool(
         # Run QA validation
         qa_report = validate_pptx_against_slides(output_path, pptx_slides)
 
+        # Merge editorial composer fit_report into qa_report.
+        if _editorial_active and hasattr(composer, "fit_report") and composer.fit_report:
+            qa_report["fit_issues"] = composer.fit_report
+            if any(e.get("action", "").startswith("trimmed") for e in composer.fit_report):
+                qa_report.setdefault("advisories", []).append(
+                    f"Text trimmed in {len(composer.fit_report)} field(s) — consider shorter copy or splitting across slides."
+                )
+
         # Run evidence validation
         process_model = payload.get("process_model")
         evidence_report = validate_pptx_slides_evidence(pptx_slides, process_model)

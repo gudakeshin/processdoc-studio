@@ -43,6 +43,78 @@ TRUNCATION_SIGNATURES = {
 }
 
 
+_SLIDE_W_IN = 13.333
+_SLIDE_H_IN = 7.5
+_FOOTER_TOP_IN = 6.9  # shapes below this overlap the footer band
+_OVERLAP_THRESHOLD = 0.08  # 8% overlap fraction to count as a real collision
+
+
+def check_pptx_geometry(pptx_path: Path) -> list[dict[str, Any]]:
+    """Deterministic geometry pass — no LLM, no soffice.
+
+    Reads shape bounding boxes from the saved PPTX and returns a list of issues:
+      {"slide": int (1-based), "shape": str, "issue": str, "severity": "low"|"medium"|"high"}
+
+    Catches off-canvas shapes, shapes that collide with the footer band, and
+    significant bbox overlaps between text shapes on the same slide.
+    """
+    issues: list[dict[str, Any]] = []
+    try:
+        from pptx.util import Emu
+        prs = Presentation(str(pptx_path))
+        emu_per_in = 914400.0
+
+        for si, slide in enumerate(prs.slides):
+            shapes = list(slide.shapes)
+            # Collect shape bboxes in inches [left, top, right, bottom]
+            bboxes: list[tuple[float, float, float, float, str, bool]] = []
+            for sh in shapes:
+                try:
+                    l = (sh.left or 0) / emu_per_in
+                    t = (sh.top or 0) / emu_per_in
+                    w = (sh.width or 0) / emu_per_in
+                    h = (sh.height or 0) / emu_per_in
+                    name = str(sh.name or "")
+                    has_text = sh.has_text_frame
+                    bboxes.append((l, t, l + w, t + h, name, has_text))
+                except Exception:
+                    continue
+
+            for l, t, r, b, name, has_text in bboxes:
+                # Off-canvas (with 0.05" tolerance)
+                if r < -0.05 or l > _SLIDE_W_IN + 0.05 or b < -0.05 or t > _SLIDE_H_IN + 0.05:
+                    issues.append({"slide": si + 1, "shape": name,
+                                   "issue": f"shape off-canvas ({l:.2f},{t:.2f})–({r:.2f},{b:.2f})",
+                                   "severity": "high"})
+                # Footer collision (non-footer shapes extending below 6.9in)
+                if has_text and t < _FOOTER_TOP_IN - 0.05 and b > _FOOTER_TOP_IN + 0.05:
+                    issues.append({"slide": si + 1, "shape": name,
+                                   "issue": f"text shape crosses footer band (bottom={b:.2f}in)",
+                                   "severity": "medium"})
+
+            # Text–text overlap check
+            text_shapes = [(l, t, r, b, name) for l, t, r, b, name, ht in bboxes if ht]
+            for i in range(len(text_shapes)):
+                for j in range(i + 1, len(text_shapes)):
+                    l1, t1, r1, b1, n1 = text_shapes[i]
+                    l2, t2, r2, b2, n2 = text_shapes[j]
+                    ix = max(0.0, min(r1, r2) - max(l1, l2))
+                    iy = max(0.0, min(b1, b2) - max(t1, t2))
+                    if ix <= 0 or iy <= 0:
+                        continue
+                    overlap_area = ix * iy
+                    a1 = max((r1 - l1) * (b1 - t1), 0.001)
+                    a2 = max((r2 - l2) * (b2 - t2), 0.001)
+                    frac = overlap_area / min(a1, a2)
+                    if frac > _OVERLAP_THRESHOLD:
+                        issues.append({"slide": si + 1, "shape": f"{n1}×{n2}",
+                                       "issue": f"text shapes overlap {frac:.0%}",
+                                       "severity": "high" if frac > 0.3 else "medium"})
+    except Exception as exc:
+        logger.debug("pptx geometry check failed: %s", exc)
+    return issues
+
+
 def _extract_pptx_text(pptx_path: Path) -> dict[int, list[str]]:
     """Extract all text blocks from each slide in the PPTX.
 
@@ -294,6 +366,17 @@ def validate_pptx_against_slides(
     if empty_slides:
         remediation.append(f"Add content to slides {empty_slides} or remove them")
 
+    # Deterministic geometry pass (no LLM, no soffice) — advisory only.
+    # Results inform the operator and the pixel critic rubric but do not gate the pipeline.
+    geometry_issues: list[dict[str, Any]] = []
+    try:
+        geometry_issues = check_pptx_geometry(pptx_path)
+        off_canvas = [g for g in geometry_issues if "off-canvas" in g.get("issue", "")]
+        if off_canvas:
+            advisories.append(f"{len(off_canvas)} shape(s) detected off-canvas — check slide content geometry")
+    except Exception as exc:
+        logger.debug("geometry check failed: %s", exc)
+
     return {
         "status": status,
         "summary": summary,
@@ -307,6 +390,7 @@ def validate_pptx_against_slides(
         "advisories": advisories,
         "storytelling_metrics": storytelling,
         "remediation": remediation,
+        "geometry_issues": geometry_issues,
         "pptx_path": str(pptx_path),
     }
 
