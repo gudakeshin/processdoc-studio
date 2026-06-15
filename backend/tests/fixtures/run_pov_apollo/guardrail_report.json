@@ -1,0 +1,17 @@
+{
+  "overall_passed": null,
+  "status": "fail",
+  "gates": {
+    "gate_1_source_grounding": "fail",
+    "gate_7_dpdp_compliance": "pending"
+  },
+  "guardrail_events": [
+    {
+      "gate": "gate_1_source_grounding",
+      "result": "fail",
+      "reason": "Evaluated by Claude."
+    }
+  ],
+  "failed_gate": "gate_1_source_grounding",
+  "retry_count": 0
+}

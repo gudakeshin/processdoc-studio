@@ -132,9 +132,13 @@ def _normalize_drawio_xml(raw: str) -> str | None:
 
 
 def run_process_extraction(state: ProcessDocState) -> ProcessDocState:
+    from app.services.deliverable_archetype import is_meta_process_model
+    from app.services.qa_remediation_channel import strip_qa_feedback
+
     # Use the immutable original intent to avoid contamination from QA/guardrail annotations
-    raw = state.get("user_intent_original") or state.get("raw_text") or ""
-    ctx = state.get("assembled_context") or ""
+    raw = strip_qa_feedback(str(state.get("user_intent_original") or state.get("raw_text") or ""))
+    ctx = strip_qa_feedback(str(state.get("assembled_context") or ""))
+    archetype = str(state.get("deliverable_archetype") or "process_doc")
 
     # When the plan carries discovery (client, outcome, audience, themes), prepend
     # that brief to the raw intent so the extractor names the process after the
@@ -216,18 +220,54 @@ def run_process_extraction(state: ProcessDocState) -> ProcessDocState:
             "  - If no numbered or bulleted steps exist, infer steps from verbs in the text (minimum 1 step).\n"
             "  - If no roles are named, use ['Process Owner'] as the sole role and assign all steps to it.\n"
             "  - Do not invent steps that are not implied by the source text.\n\n"
+        )
+        if archetype == "advisory_pov":
+            user += (
+                "ADVISORY POV RULES:\n"
+                "Extract the SUBJECT-DOMAIN business process (e.g. Record-to-Report: journals, "
+                "intercompany, reconciliation, close, consolidation, reporting).\n"
+                "Do NOT model the workflow of writing, designing, or producing this POV note/deck.\n"
+                "Never include steps like 'develop POV document', 'create presentation', or tools "
+                "such as PowerPoint/Word as process steps.\n"
+                "If the source lacks operational detail, derive a standard industry-reference model "
+                "and set metadata.grounding='illustrative'.\n\n"
+            )
+        user += (
             f"Instruction:\n{wrap_untrusted('user_instruction', str(raw))}\n\n"
             f"Context:\n{wrap_untrusted('assembled_context', str(ctx))}\n"
         )
         try:
             pm = claude_generate_json(system=system, user=user, temperature=0.2, max_tokens=2500)
             if isinstance(pm, dict) and isinstance(pm.get("steps"), list):
+                if archetype == "advisory_pov" and is_meta_process_model(pm):
+                    retry_user = (
+                        user
+                        + "\n\nCORRECTION: your previous model described document production. "
+                        "Re-extract using only the client's operational domain process stages."
+                    )
+                    try:
+                        corrected = claude_generate_json(
+                            system=system, user=retry_user, temperature=0.2, max_tokens=2500
+                        )
+                        if isinstance(corrected, dict) and isinstance(corrected.get("steps"), list):
+                            pm = corrected
+                    except Exception:  # noqa: BLE001, S110 — keep first pass
+                        pass
+                if is_meta_process_model(pm):
+                    meta = pm.get("metadata") if isinstance(pm.get("metadata"), dict) else {}
+                    meta["meta_process_suspect"] = "true"
+                    pm["metadata"] = meta
                 state["process_model"] = pm  # type: ignore[assignment]
                 return state
         except Exception:  # noqa: BLE001, S110 — fallback
             pass
 
-    state["process_model"] = extract_process_model(raw, ctx)
+    pm = extract_process_model(raw, ctx)
+    if is_meta_process_model(pm):
+        meta = pm.get("metadata") if isinstance(pm.get("metadata"), dict) else {}
+        meta["meta_process_suspect"] = "true"
+        pm["metadata"] = meta
+    state["process_model"] = pm
     return state
 
 
@@ -322,6 +362,18 @@ class _SkillBuild:
     system: str
     temperature: float
     max_rounds: int | None  # None → use global settings.subagent_tool_max_rounds
+
+
+def _append_archetype_prompt(sb: _SkillBuild, ctx: AgentContext, output_type: str) -> _SkillBuild:
+    from app.services.deliverable_archetype import archetype_prompt_block
+
+    block = archetype_prompt_block(
+        ctx.deliverable_archetype or "process_doc",  # type: ignore[arg-type]
+        output_type,
+    )
+    if not block:
+        return sb
+    return _SkillBuild(system=sb.system + block, temperature=sb.temperature, max_rounds=sb.max_rounds)
 
 
 def _build_system_from_skill(
@@ -1262,7 +1314,7 @@ def run_narrative_agent(ctx: AgentContext) -> AgentOutput:
             "  - Do not repeat information across sections.\n"
             "  - Do not use the phrase 'in conclusion' or 'in summary'.\n\n"
             f"{process_model_json_block(pm)}\n"
-            f"{context_excerpt_block(actx, 4000)}"
+            f"{context_excerpt_block(_grounded_context_excerpt(ctx, 4000), 4000)}"
         )
         user = _append_conversation_digest_block(user, ctx)
         md: str | None = None
@@ -1481,7 +1533,7 @@ def run_xlsx_agent(ctx: AgentContext) -> AgentOutput:
         x
         for x in (
             str(ctx.user_instruction or ""),
-            str(ctx.assembled_context or "")[:6000],
+            _grounded_context_excerpt(ctx, 6000),
         )
         if x
     )
@@ -1612,7 +1664,6 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
     Default produces a standard process report.
     """
     pm = _model(ctx)
-    actx = (ctx.assembled_context or "").strip()
     primary = _primary_skill(ctx)
     skill_id = str((primary or {}).get("id") or "")
     deliverable = _deliverable_type_for_skill(skill_id)
@@ -1638,7 +1689,7 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
                 "5. `## Recommended Next Actions` — exactly 2–4 numbered items, ≤20 words each\n\n"
                 "Constraints: no hedging language; no 'Context Used' section; no repeated information.\n\n"
                 f"{process_model_json_block(pm)}\n"
-                f"{context_excerpt_block(actx, 3500)}"
+                f"{context_excerpt_block(_grounded_context_excerpt(ctx, 3500), 3500)}"
             )
         elif deliverable == "sop":
             user = (
@@ -1672,7 +1723,7 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
                 "- Include a concise value-case table (lever, impact, confidence, owner).\n"
                 "- Include a 90-day workplan with milestones and governance cadence.\n\n"
                 f"{process_model_json_block(pm)}\n"
-                f"{context_excerpt_block(actx, 3500)}"
+                f"{context_excerpt_block(_grounded_context_excerpt(ctx, 3500), 3500)}"
             )
         else:
             user = (
@@ -1686,7 +1737,7 @@ def run_pdf_agent(ctx: AgentContext) -> AgentOutput:
                 "if none evident: 'No explicit risks or constraints were identified.'\n"
                 "5. `## Next Actions` — exactly 3 numbered items, ≤25 words each\n\n"
                 f"{process_model_json_block(pm)}\n"
-                f"{context_excerpt_block(actx, 3500)}"
+                f"{context_excerpt_block(_grounded_context_excerpt(ctx, 3500), 3500)}"
             )
 
         _pdf_feedback = ctx.plan_payload.get("pdf_visual_feedback") or []
@@ -1775,7 +1826,6 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
     the deliverable-specific user prompt together drive generation.
     """
     pm = _model(ctx)
-    actx = (ctx.assembled_context or "").strip()
     primary = _primary_skill(ctx)
     skill_id = str((primary or {}).get("id") or "")
     deliverable = _deliverable_type_for_skill(skill_id)
@@ -1788,9 +1838,12 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "Audience: an internal team member who will follow this document during execution. "
                 "Heading hierarchy: # for title (H1), ## for main sections (H2), ### for sub-sections (H3). "
                 "Return ONLY valid Markdown. The document must start with a # heading. No HTML. No preamble. "
-                "Do not include YAML front matter."
+                "Do not include YAML front matter. "
+                "Never output source code (JavaScript, Python, the npm 'docx' library, python-docx) that "
+                "would generate the document — your output IS the document body in Markdown."
             ),
         )
+        sb = _append_archetype_prompt(sb, ctx, "docx")
 
         # Select the user prompt based on the active deliverable type
         if deliverable == "sop":
@@ -1820,7 +1873,7 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "5. `## Recommended Next Actions` — exactly 2–4 numbered items, ≤20 words each, specific to this process\n\n"
                 "Constraints: no hedging language; no 'Context Used' section; no section repetition.\n\n"
                 f"{process_model_json_block(pm)}\n"
-                f"{context_excerpt_block(actx, 4000)}"
+                f"{context_excerpt_block(_grounded_context_excerpt(ctx, 4000), 4000)}"
             )
         elif deliverable == "raci":
             user = (
@@ -1869,7 +1922,7 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "- Include risks, mitigations, and measurable success criteria.\n\n"
                 + discovery_block
                 + f"{process_model_json_block(pm)}\n"
-                + f"{context_excerpt_block(actx, 4000)}"
+                + f"{context_excerpt_block(_grounded_context_excerpt(ctx, 4000), 4000)}"
             )
         elif deliverable == "brd":
             user = (
@@ -1883,7 +1936,7 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 "6. `## Success Criteria` — 3–5 measurable criteria\n"
                 "7. `## References` — Source: run instruction and project context\n\n"
                 f"{process_model_json_block(pm)}\n"
-                f"{context_excerpt_block(actx, 3000)}"
+                f"{context_excerpt_block(_grounded_context_excerpt(ctx, 3000), 3000)}"
             )
         else:
             # Generic DOCX — procedure document
@@ -1932,12 +1985,51 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
             except Exception:
                 md = None
         if isinstance(md, str) and md.strip():
+            md = _guard_docx_representation(
+                ctx, md, system=sb.system, user=user, temperature=sb.temperature
+            )
+            if md is None:
+                return AgentOutput(updates={"docx_markdown": _docx_deterministic_fallback(pm, deliverable)})
             md = _apply_quality_gate(ctx, "docx", md, system=sb.system, temperature=sb.temperature)
             md = _run_post_processor(ctx, md)
             return AgentOutput(updates={"docx_markdown": md})
 
     # Deterministic fallback — deliverable-aware
     return AgentOutput(updates={"docx_markdown": _docx_deterministic_fallback(pm, deliverable)})
+
+
+def _guard_docx_representation(
+    ctx: AgentContext, md: str, *, system: str, user: str, temperature: float
+) -> str | None:
+    """Reject generator-code output; one corrective retry, else ``None`` for fallback."""
+    from app.core.markdown_guard import detect_code_document, strip_outer_fence
+
+    md = strip_outer_fence(md)
+    issues = detect_code_document(md)
+    if not issues:
+        return md
+    if ctx.emit_event:
+        ctx.emit_event("docx_representation_guard", {"issues": issues, "action": "regenerate"})
+    try:
+        retry = claude_generate(
+            system=system,
+            user=(
+                user
+                + "\n\nPREVIOUS OUTPUT REJECTED: you emitted program source code that would generate "
+                "the document, not the document itself. Output the document text as plain Markdown."
+            ),
+            temperature=temperature,
+            max_tokens=2200,
+        )
+    except Exception:
+        retry = None
+    if isinstance(retry, str) and retry.strip():
+        retry = strip_outer_fence(retry)
+        if not detect_code_document(retry):
+            return retry
+    if ctx.emit_event:
+        ctx.emit_event("docx_representation_guard", {"issues": issues, "action": "deterministic_fallback"})
+    return None
 
 
 def _docx_deterministic_fallback(pm: ProcessModel, deliverable: str) -> str:
@@ -2035,6 +2127,55 @@ def _docx_deterministic_fallback(pm: ProcessModel, deliverable: str) -> str:
         return "\n".join(lines)
 
 
+def _matching_context_lines(text: str, keywords: tuple[str, ...], *, max_chars: int = 600) -> str:
+    """Lines from assembled context that mention any keyword, bounded for prompt use."""
+    out: list[str] = []
+    used = 0
+    for raw in (text or "").splitlines():
+        line = raw.strip().lstrip("-•#").strip()
+        if len(line) < 20:
+            continue
+        low = line.lower()
+        if not any(kw in low for kw in keywords):
+            continue
+        snippet = f"- {line[:240]}"
+        if used + len(snippet) + 1 > max_chars:
+            break
+        out.append(snippet)
+        used += len(snippet) + 1
+    return "\n".join(out)
+
+
+def _grounded_context_excerpt(ctx: AgentContext, char_cap: int) -> str:
+    """Context excerpt that keeps query-ranked retrieval chunks in the prompt.
+
+    assembled_context is tier-ordered (CONTEXT.md → LP snippets → ranked doc
+    chunks), so a plain head slice never reaches the BM25/MMR-ranked source
+    chunks. Split the cap between the head of assembled_context (curated
+    context plus any prepended QA remediation) and the relevance-ordered
+    retrieval excerpt, which is safe to head-slice.
+    """
+    cap = max(0, int(char_cap))
+    ac = (ctx.assembled_context or "").strip()
+    ranked = (ctx.retrieval_excerpt or "").strip()
+    if ranked.startswith("## Planner retrieval excerpt"):
+        ranked = ranked[len("## Planner retrieval excerpt"):].strip()
+    if not ranked:
+        out = ac[:cap]
+    elif not ac:
+        out = ranked[:cap]
+    else:
+        head = ac[: cap // 2]
+        out = f"{head}\n\n### Ranked source excerpts (query-aligned)\n{ranked}"[:cap]
+    agent = re.sub(r"[^a-z0-9_]", "", str(ctx.output_type or "").lower()) or "unknown"
+    offered = len(ac) + len(ranked)
+    increment(f"subagent_context_offered_chars_{agent}_total", offered)
+    increment(f"subagent_context_consumed_chars_{agent}_total", len(out))
+    if offered > len(out):
+        increment("subagent_context_truncated_total")
+    return out
+
+
 def _shared_user_context_appendix(ctx: AgentContext) -> str:
     """
     Build the user-prompt context appendix with labelled sections.
@@ -2101,33 +2242,42 @@ def _shared_user_context_appendix(ctx: AgentContext) -> str:
 
         # Scan assembled_context for pain-point / current-state signals
         ac_lower = ac.lower()
-        has_pain = any(kw in ac_lower for kw in ("pain point", "challenge", "problem", "current state", "issue", "gap"))
         has_value = any(kw in ac_lower for kw in ("saving", "roi", "cost reduction", "benefit", "improvement", "value"))
-        has_lp = any(kw in ac_lower for kw in ("case study", "leading practice", "benchmark", "reference"))
+        pain_lines = _matching_context_lines(
+            ac, ("pain point", "challenge", "problem", "current state", "issue", "gap")
+        )
+        lp_lines = _matching_context_lines(
+            ac, ("case study", "leading practice", "benchmark", "reference")
+        )
 
-        if has_pain:
-            labelled.append("## PAIN POINTS & CURRENT STATE (use for problem statement slides)")
+        if pain_lines:
+            labelled.append(
+                "## PAIN POINTS & CURRENT STATE (use for problem statement slides)\n" + pain_lines
+            )
         if has_value and value_parts:
             labelled.append(
                 "## VALUE DRIVERS & ROI (use for value case slides)\n" + "\n".join(value_parts)
             )
         elif value_parts:
             labelled.append("## VALUE DRIVERS\n" + "\n".join(value_parts))
-        if has_lp:
-            labelled.append("## LEADING PRACTICES & CASE STUDIES (use for credibility slides)")
+        if lp_lines:
+            labelled.append(
+                "## LEADING PRACTICES & CASE STUDIES (use for credibility slides)\n" + lp_lines
+            )
 
+        excerpt = _grounded_context_excerpt(ctx, 3500)
         if labelled:
             # Prepend labels, then include full context below
             label_block = "\n\n".join(labelled)
             blocks.append(
                 f"## Assembled project context (labelled for slide generation)\n"
                 f"{label_block}\n\n"
-                f"## Full context\n{ac[:3500]}"
+                f"## Full context\n{excerpt}"
             )
         else:
-            blocks.append(f"## Assembled project context (excerpt)\n{ac[:3500]}")
+            blocks.append(f"## Assembled project context (excerpt)\n{excerpt}")
     elif ac:
-        blocks.append(f"## Assembled project context (excerpt)\n{ac[:3500]}")
+        blocks.append(f"## Assembled project context (excerpt)\n{_grounded_context_excerpt(ctx, 3500)}")
 
     pae = ctx.prior_artifacts_excerpt.strip()
     if pae:
@@ -2779,6 +2929,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 "RULE: Do NOT generate empty stat_cards=[], column_cards=[], or table.rows=[]. Always populate with real data.\n"
             ),
         )
+        sb = _append_archetype_prompt(sb, ctx, "pptx")
         plan_discovery = (ctx.plan_payload or {}).get("discovery") if isinstance((ctx.plan_payload or {}).get("discovery"), dict) else {}
         # Fill narrative_arc from deck_outline_preview when plan discovery omits it.
         if not plan_discovery.get("narrative_arc"):
@@ -3119,16 +3270,24 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
         fix_indices = _pptx_visual_feedback_indices(visual_feedback) if visual_feedback and isinstance(visual_feedback, list) else set()
         repair_mode = bool(prior_slides and fix_indices)
         if repair_mode and prior_slides:
+            # Bound the prompt: non-fixed slides are restored verbatim from the
+            # prior deck by _merge_pptx_slides_repair, so only the slides being
+            # fixed need full JSON — the rest are positional stubs.
+            deck_for_prompt = [
+                s if (i + 1) in fix_indices
+                else {"slide_index": i + 1, "title": s.get("title"), "slide_type": s.get("slide_type"), "unchanged": True}
+                for i, s in enumerate(prior_slides)
+            ]
             user += (
                 "\n\n## VISUAL QA REPAIR (targeted slides only)\n"
                 f"Return JSON {{\"slides\": [...]}} with exactly {len(prior_slides)} slides "
                 "in the same order as PRIOR_DECK below.\n"
                 f"Replace ONLY slides at these 1-based indices: {sorted(fix_indices)} "
                 "to satisfy the Visual QA feedback above.\n"
-                "For all other positions, copy each slide from PRIOR_DECK unchanged "
-                "(identical structure and content).\n\n"
+                "For all other positions, return the PRIOR_DECK stub at that position unchanged "
+                "(slides marked \"unchanged\": true keep their prior content automatically).\n\n"
                 "PRIOR_DECK:\n"
-                + json.dumps(prior_slides, ensure_ascii=False)
+                + json.dumps(deck_for_prompt, ensure_ascii=False)
             )
         # ── Batched generation (when the user approved a deck outline) ──
         # We lower the threshold to 3 slides so any reasonable approved outline

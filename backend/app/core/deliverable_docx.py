@@ -233,11 +233,23 @@ class DOCXDeliverable(IDeliverable):
         out = run_dir / "output.docx"
         text = safe_text(payload.get("docx_markdown") or payload.get("narrative_md"), "Process document")
 
+        # Last line of defence: never render generator source code as the body.
+        from app.core.markdown_guard import detect_code_document
+
+        code_issues = detect_code_document(text)
+        if code_issues:
+            logger.warning("DOCX body looks like generator code (%s); using narrative fallback", code_issues)
+            fallback = safe_text(payload.get("narrative_md"), "")
+            text = fallback if fallback and not detect_code_document(fallback) else "Process document"
+
+        from app.core.deliverable_pptx import _merge_branding_dict
+
+        brand = _merge_branding_dict(branding)
         pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
         title = safe_text(pm.get("process_name") if pm else None, "Process Output")
-        font_family = str(getattr(branding, "font_family", "Calibri") or "Calibri")
-        primary_rgb = _rgb_tuple(getattr(branding, "primary_color", None))
-        company = str(getattr(branding, "company_name", None) or "")
+        font_family = str(brand.get("font_family") or "Calibri")
+        primary_rgb = _rgb_tuple(brand.get("primary_color"))
+        company = str(brand.get("company_name") or "Deloitte")
         author = str(payload.get("owner_name") or company or "ProcessDoc Studio")
 
         doc = Document()

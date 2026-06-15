@@ -473,7 +473,11 @@ def _load_persistent_graph(
             return None, {}, None
 
         graph_data = _normalize_graph_payload(json.loads(graph_file.read_text()))
-        G = json_graph.node_link_graph(graph_data["graph"])
+        # Payloads saved before networkx 3.6 use "links" for the edge list; newer
+        # saves use "edges" (the changed node_link default). Accept both.
+        graph_payload = graph_data["graph"]
+        edges_key = "links" if "links" in graph_payload else "edges"
+        G = json_graph.node_link_graph(graph_payload, edges=edges_key)
         page_titles = graph_data.get("page_titles", {})
         metadata = graph_data.get("metadata", {})
 

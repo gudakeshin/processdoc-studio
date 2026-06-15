@@ -528,26 +528,23 @@ class Coordinator:
 
         if remediation_texts:
             state["qa_remediation_notes"] = "\n".join(remediation_texts)
-            state["user_instruction"] = f"{state.get('user_instruction', '')}\n\nQA remediation:\n{state['qa_remediation_notes']}".strip()
-            state["raw_text"] = f"{state.get('raw_text', '')}\n\nQA remediation:\n{state['qa_remediation_notes']}".strip()
-            # Quality remediation must flow into *generation context*.
-            # Many sub-agents (including proposal DOCX) only consume `assembled_context`,
-            # so updating `user_instruction`/`raw_text` alone may not change outputs.
-            # PREPEND remediation (not append) so it's never truncated by the 12K cap
-            # and the model sees it first — the tail of assembled_context is expendable
-            # context, but remediation instructions are critical for convergence.
+            # Quality remediation flows only through assembled_context (sentinel-wrapped)
+            # so user_instruction/raw_text stay clean for process extraction.
             ac = str(state.get("assembled_context") or "")
 
-            # Format remediation with personality for collaborative feedback
             from app.services.agent_personality import format_remediation_with_personality
+            from app.services.qa_remediation_channel import wrap_qa_feedback
+
             action_items = remediation_texts
-            feedback_block = format_remediation_with_personality(
-                issues=[],  # Issues summary is in action_items
-                action_items=action_items
-            ) + "\n\n"
+            feedback_block = wrap_qa_feedback(
+                format_remediation_with_personality(
+                    issues=[],
+                    action_items=action_items,
+                )
+            )
 
             if ac.strip():
-                state["assembled_context"] = (feedback_block + ac)[:12000]
+                state["assembled_context"] = (feedback_block + "\n\n" + ac)[:12000]
             else:
                 state["assembled_context"] = feedback_block[:12000]
 
@@ -634,13 +631,30 @@ class Coordinator:
             outputs["pptx_slides"] = _json.dumps(state.get("pptx_slides") or [])
         return outputs
 
-    def _initialize_framework_context(self, state: ProcessDocState, wanted: list[str]) -> None:
-        if not (
-            settings.enable_deliverable_registry
-            or settings.enable_content_enrichment_engine
-            or settings.enable_unified_quality_framework
-        ):
+    def _ensure_deliverable_archetype(self, state: ProcessDocState) -> None:
+        if not settings.deliverable_archetype_enabled:
             return
+        if state.get("deliverable_archetype"):
+            return
+        instruction = str(
+            state.get("user_intent_original")
+            or state.get("user_instruction")
+            or state.get("raw_text")
+            or ""
+        )
+        plan_payload = state.get("plan_payload") if isinstance(state.get("plan_payload"), dict) else None
+        skill_card = state.get("skill_card") if isinstance(state.get("skill_card"), dict) else None
+        from app.services.deliverable_archetype import detect_deliverable_archetype
+
+        state["deliverable_archetype"] = detect_deliverable_archetype(
+            instruction,
+            plan_payload=plan_payload,
+            skill_card=skill_card,
+        )
+
+    def _initialize_framework_context(self, state: ProcessDocState, wanted: list[str]) -> None:
+        # Branding must reach the renderers regardless of the framework flags;
+        # without it each renderer falls back to a different default company name.
         db = SessionLocal()
         try:
             branding = BrandingService(db).get_branding_for_run(
@@ -651,6 +665,12 @@ class Coordinator:
             state["branding_context"] = branding
         finally:
             db.close()
+        if not (
+            settings.enable_deliverable_registry
+            or settings.enable_content_enrichment_engine
+            or settings.enable_unified_quality_framework
+        ):
+            return
         if settings.enable_content_enrichment_engine:
             enrichment = self.enrichment_engine.enrich(
                 user_instruction=str(state.get("user_instruction") or ""),
@@ -1541,6 +1561,7 @@ class Coordinator:
         _coordinator_poll_abort()
 
         # Process extraction
+        self._ensure_deliverable_archetype(state)
         state = run_process_extraction(state)
         _coordinator_poll_abort()
 
@@ -2077,6 +2098,7 @@ class Coordinator:
             if not state.get("user_instruction"):
                 state["user_instruction"] = state.get("raw_text", "")
 
+            self._ensure_deliverable_archetype(state)
             state = run_process_extraction(state)
             _coordinator_poll_abort()
             planner_query = (

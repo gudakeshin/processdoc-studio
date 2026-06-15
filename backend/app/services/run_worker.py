@@ -262,22 +262,33 @@ def _build_evaluator_pipeline(
     qa_report: dict[str, Any],
     visual_qa_report: dict[str, Any],
     guardrail_report: dict[str, Any],
+    final_artifact_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     requested_set = {str(x).strip().lower() for x in (requested_outputs or []) if str(x).strip()}
-    base_textual_outputs = {"narrative", "raci", "sop", "process_map"}
+    gateable_outputs = {"narrative", "raci", "sop", "process_map", "docx", "pptx", "pdf", "xlsx"}
     proposal_policy = proposal_quality_policy(plan_payload, requested_outputs)
     if proposal_policy.get("active"):
-        base_textual_outputs |= set(proposal_policy.get("required_outputs") or [])
-    has_textual_outputs = bool(requested_set & base_textual_outputs)
-    qa_passed = True if not has_textual_outputs else bool((qa_report or {}).get("passed"))
+        gateable_outputs |= set(proposal_policy.get("required_outputs") or [])
+    has_gateable_outputs = bool(requested_set & gateable_outputs)
+    qa_passed = True if not has_gateable_outputs else bool((qa_report or {}).get("passed"))
     visual_status = str((visual_qa_report or {}).get("status") or "").lower()
     visual_passed = visual_status in set(proposal_policy.get("visual_pass_statuses") or {"pass", "warn", "skip"})
-    guardrail_passed = True if not has_textual_outputs else str((guardrail_report or {}).get("status") or "").lower() == "pass"
+    guardrail_passed = (
+        True
+        if not has_gateable_outputs
+        else str((guardrail_report or {}).get("status") or "").lower() == "pass"
+    )
+    final_artifact_passed = True
+    if isinstance(final_artifact_report, dict) and final_artifact_report:
+        final_artifact_passed = bool(final_artifact_report.get("passed"))
     return {
         "qa_passed": qa_passed,
         "visual_qa_passed": visual_passed,
         "guardrails_passed": guardrail_passed,
-        "status": "pass" if (qa_passed and visual_passed and guardrail_passed) else "fail",
+        "final_artifact_qa_passed": final_artifact_passed,
+        "status": "pass"
+        if (qa_passed and visual_passed and guardrail_passed and final_artifact_passed)
+        else "fail",
         "quality_policy": proposal_policy,
     }
 
@@ -1458,6 +1469,43 @@ def _execute_run_job(
             )
             save_run_artifacts(project_id, run_id, state)
 
+            run_dir = workspace_path(project_id) / "runs" / run_id
+            final_artifact_report: dict[str, Any] = {}
+            if settings.final_artifact_qa_enabled:
+                from app.services.final_artifact_qa import verify_final_artifacts, write_final_artifact_qa
+                from app.services.langfuse_tracing import langfuse_span
+
+                try:
+                    final_artifact_report = verify_final_artifacts(
+                        run_dir,
+                        qa_report=state.get("qa_report") if isinstance(state.get("qa_report"), dict) else {},
+                        guardrail_report=state.get("guardrail_report")
+                        if isinstance(state.get("guardrail_report"), dict)
+                        else {},
+                        remediation_notes=str(state.get("qa_remediation_notes") or ""),
+                    )
+                    write_final_artifact_qa(run_dir, final_artifact_report)
+                    langfuse_span(
+                        trace_id=str(project_id),
+                        name="final_artifact_qa",
+                        input_payload={"run_id": run_id},
+                        output_payload={
+                            "passed": bool(final_artifact_report.get("passed")),
+                            "issues": final_artifact_report.get("issues") or [],
+                        },
+                    )
+                except Exception as exc:
+                    _log.warning("final_artifact_qa failed for run %s: %s", run_id, exc)
+                if (
+                    isinstance(final_artifact_report, dict)
+                    and not final_artifact_report.get("passed")
+                    and isinstance(state.get("qa_report"), dict)
+                ):
+                    qa_state = dict(state["qa_report"])
+                    qa_state["remediation_converged"] = False
+                    qa_state["final_artifact_qa_failed"] = True
+                    state["qa_report"] = qa_state
+
             # Stream output chunks after generation completes (coarse-grained chunking for now).
             raci_pref = output_type_representations.get("raci")
             if raci_pref in {"markdown", "xlsx"}:
@@ -1488,7 +1536,6 @@ def _execute_run_job(
                             "chunk": chunk,
                         },
                     )
-            run_dir = workspace_path(project_id) / "runs" / run_id
             if run_todos:
                 todo_set_status(run_todos, "visual_qa", "running")
                 _emit_and_sync_todo_snapshot(
@@ -1597,6 +1644,7 @@ def _execute_run_job(
                 qa_report=state.get("qa_report") if isinstance(state.get("qa_report"), dict) else {},
                 visual_qa_report=visual_qa_report if isinstance(visual_qa_report, dict) else {},
                 guardrail_report=guardrail_report if isinstance(guardrail_report, dict) else {},
+                final_artifact_report=final_artifact_report if isinstance(final_artifact_report, dict) else {},
             )
             append_run_event(session, run_id, "evaluator_pipeline", evaluator_pipeline)
             if hard_gate_enabled and evaluator_pipeline["status"] != "pass":
@@ -1743,6 +1791,38 @@ def _execute_run_job(
                     session.commit()
                     enqueue_run_execution(project_id, run_id)
                     return True, None
+                guardrails_only_failure = (
+                    not evaluator_pipeline.get("guardrails_passed")
+                    and evaluator_pipeline.get("qa_passed", True)
+                    and evaluator_pipeline.get("visual_qa_passed", True)
+                    and evaluator_pipeline.get("final_artifact_qa_passed", True)
+                )
+                if guardrails_only_failure:
+                    _write_token_usage(run, _run_usage, _run_cost)
+                    run.status = "review_ready"
+                    run.error_message = (
+                        "Completed with guardrail failures — review recommended before distribution."
+                    )
+                    run.plan_payload = _strip_visual_remediation_from_plan(run.plan_payload)
+                    session.commit()
+                    append_run_event(
+                        session,
+                        run_id,
+                        "completed_with_guardrail_failures",
+                        {"evaluator_pipeline": evaluator_pipeline},
+                    )
+                    session.commit()
+                    if run_todos:
+                        todo_set_status(run_todos, "finalize", "done")
+                        _emit_and_sync_todo_snapshot(
+                            session,
+                            project_id=project_id,
+                            run_id=run_id,
+                            run_todos=run_todos,
+                        )
+                    observe_latency("run_execution", (perf_counter() - started_at) * 1000.0)
+                    return True, None
+
                 run.status = "failed"
                 run.error_message = (
                     f"Pre-review evaluator pipeline failed after {MAX_EVALUATOR_REMEDIATION_ROUNDS} "

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -29,28 +27,9 @@ def _render_pdf_pages_to_png(pdf_path: Path, output_dir: Path, prefix: str) -> l
 
 
 def _convert_office_to_pdf(source_path: Path, output_dir: Path) -> Path | None:
-    soffice_path = shutil.which("soffice")
-    if not soffice_path:
-        return None
-    try:
-        subprocess.run(
-            [
-                soffice_path,
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                str(output_dir),
-                str(source_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        return None
-    candidate = output_dir / f"{source_path.stem}.pdf"
-    return candidate if candidate.exists() else None
+    from app.core.soffice_convert import convert_office_to_pdf
+
+    return convert_office_to_pdf(source_path, output_dir)
 
 
 def _render_text_lines_to_images(
@@ -107,10 +86,15 @@ def _extract_pptx_metadata(path: Path) -> dict[str, Any]:
         H = prs.slide_height.inches
         canvas_area = W * H
         slides_meta: list[dict[str, Any]] = []
+        per_slide_char_budget = 2400
+        per_block_cap = 400
         for idx, slide in enumerate(prs.slides, start=1):
             fills: list[str] = []
             texts: list[str] = []
             covered = 0.0
+            has_table = False
+            table_dims: list[str] = []
+            slide_chars = 0
             for shape in slide.shapes:
                 with contextlib.suppress(Exception):
                     covered += shape.width.inches * shape.height.inches
@@ -119,17 +103,42 @@ def _extract_pptx_metadata(path: Path) -> dict[str, Any]:
                     fills.append(str(rgb).upper())
                 except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
-                try:
-                    txt = str(shape.text or "").strip()
-                    if txt:
-                        texts.append(txt[:120])
-                except Exception:  # noqa: S110 — best-effort, non-fatal
-                    pass
+                if getattr(shape, "has_table", False):
+                    has_table = True
+                    try:
+                        rows = len(shape.table.rows)
+                        cols = len(shape.table.columns)
+                        table_dims.append(f"{rows}x{cols}")
+                        for row in shape.table.rows:
+                            for cell in row.cells:
+                                t = str(cell.text_frame.text or "").strip()
+                                if not t or slide_chars >= per_slide_char_budget:
+                                    continue
+                                chunk = t[:per_block_cap]
+                                if len(t) > per_block_cap:
+                                    chunk += " …[truncated by extractor]"
+                                texts.append(chunk)
+                                slide_chars += len(chunk)
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
+                        pass
+                else:
+                    try:
+                        txt = str(shape.text or "").strip()
+                        if txt and slide_chars < per_slide_char_budget:
+                            chunk = txt[:per_block_cap]
+                            if len(txt) > per_block_cap:
+                                chunk += " …[truncated by extractor]"
+                            texts.append(chunk)
+                            slide_chars += len(chunk)
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
+                        pass
             unique_fills = list(set(fills))
             slides_meta.append({
                 "index": idx,
                 "shape_count": len(list(slide.shapes)),
                 "text_blocks": texts,
+                "has_table": has_table,
+                "table_dims": table_dims,
                 "fill_colors": unique_fills,
                 "has_green_chrome": "86BC25" in unique_fills,
                 "has_dark_chrome": "1A1A1A" in unique_fills,
@@ -173,8 +182,11 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
 
     system = (
         "You are a slide design QA reviewer for executive presentations. "
-        "You receive structured per-slide metadata (shape counts, fill colours, content density, text blocks) "
-        "and evaluate layout quality against the design standard described in the user message. "
+        "You receive structured per-slide metadata (shape counts, fill colours, content density, text blocks, "
+        "table dimensions when present) and evaluate layout quality against the design standard described in the user message. "
+        "Text blocks may end with '…[truncated by extractor]' — that is an extraction limit, NOT missing deck content; "
+        "never report extractor clipping as slide truncation. "
+        "When has_table is true or table_dims is non-empty, do not claim the slide is blank. "
         "Return strict JSON only with keys: "
         "status (pass|warn|fail), "
         "summary (one sentence), "

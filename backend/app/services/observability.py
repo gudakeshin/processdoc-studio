@@ -44,6 +44,9 @@ _PROMETHEUS_COUNTER_HELP: dict[str, str] = {
     "conversation_digest_tiered_compaction_total": "Runs where tiered conversation digest compaction was applied.",
     "planner_excerpt_chars_total": "Sum of character lengths of planner retrieval excerpts attached to coordinator planning.",
     "narrative_thinking_used_total": "Narrative subagent calls that used extended thinking (when flag enabled).",
+    # Per-agent variants also exist: subagent_context_offered_chars_<agent>_total /
+    # subagent_context_consumed_chars_<agent>_total (agent = pptx, docx, xlsx, pdf, narrative).
+    "subagent_context_truncated_total": "Subagent prompt-context assemblies where offered context exceeded the consumed excerpt cap.",
 }
 
 

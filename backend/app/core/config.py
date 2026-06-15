@@ -298,9 +298,21 @@ class Settings(BaseSettings):
     # Feature flag for new artifact-tool-based PPTX renderer (executive-quality slides with composed layouts).
     # When enabled, uses artifact-tool Presentation with compose-first layouts instead of fixed python-pptx templates.
     pptx_artifact_renderer_enabled: bool = True
+    # Feature flag for the editorial deck theme (typography-led consulting design language).
+    # When enabled, decks with an unset deck_theme default to "editorial"; classic remains
+    # reachable via brand_override.deck_theme. Fail-soft: falls back to classic on any error.
+    pptx_editorial_theme_enabled: bool = False
     # When True, unsupported numeric claims from PPTX evidence validation fail the render QA gate.
     # When False, evidence signals remain advisory metadata.
     pptx_evidence_hard_fail_enabled: bool = False
+    # When True, deck.pdf is produced by converting the rendered PPTX with LibreOffice
+    # (pixel-faithful); the ReportLab outline renderer remains the fail-open fallback.
+    deck_pdf_via_soffice_enabled: bool = True
+    soffice_convert_timeout_sec: float = 120.0
+    # Post-render artifact verification (citations, code-as-document, sparse PPTX text).
+    final_artifact_qa_enabled: bool = True
+    # Intent-aware deliverable archetype (advisory POV vs process doc vs proposal).
+    deliverable_archetype_enabled: bool = True
     # Feature flag for narrative-coherence LLM critique blend (fail-open when disabled or unavailable).
     # When enabled, a short LLM critique augments the deterministic issues list
     # before the narrative score is aggregated.
@@ -355,7 +367,11 @@ class Settings(BaseSettings):
         "enable_content_enrichment_engine",
         "pptx_visual_critic_enabled",
         "pptx_artifact_renderer_enabled",
+        "pptx_editorial_theme_enabled",
         "pptx_evidence_hard_fail_enabled",
+        "deck_pdf_via_soffice_enabled",
+        "final_artifact_qa_enabled",
+        "deliverable_archetype_enabled",
         "narrative_llm_critique_enabled",
         "structured_logging_enabled",
         "run_queue_embed_redis_consumer",

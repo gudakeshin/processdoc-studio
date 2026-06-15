@@ -78,7 +78,9 @@ def _pick_topic_palette(process_name: str) -> dict[str, str]:
 def _merge_branding_dict(branding: Any) -> dict[str, Any]:
     """Normalize BrandingContext, plain dict, or None into flat keys for the renderer."""
     if branding is None:
-        return {}
+        # Same defaults as an empty dict so PPTX, deck.html, and deck.pdf agree
+        # on company name/palette even when no branding row exists.
+        branding = {}
     if isinstance(branding, dict):
         body_font = str(branding.get("font_family") or "Calibri")
         return {
@@ -178,6 +180,7 @@ class PPTXDeliverable(IDeliverable):
                         slides if isinstance(slides, list) else [],
                         run_dir,
                         brand_dict,
+                        pptx_path=Path(output_path) if output_path else None,
                     )
                 except Exception as exporter_exc:
                     logger.warning("deck_exporter sidecar failed: %s", exporter_exc)
@@ -309,6 +312,7 @@ class PPTXDeliverable(IDeliverable):
                     slides if isinstance(slides, list) else [],
                     run_dir,
                     self._brand,
+                    pptx_path=out,
                 )
             except Exception as exporter_exc:  # fail-open; never block PPTX success
                 logger.warning("deck_exporter sidecar failed: %s", exporter_exc)

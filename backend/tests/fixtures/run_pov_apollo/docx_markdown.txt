@@ -1,0 +1,251 @@
+```javascript
+const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, WidthType, Table, TableRow, TableCell, BorderStyle, ShadingType, RGBColor } = require('docx');
+const fs = require('fs');
+
+const doc = new Document({
+  numbering: {
+    config: [
+      {
+        reference: "bullets",
+        levels: [
+          {
+            level: 0,
+            format: "bullet",
+            text: "•",
+            alignment: AlignmentType.LEFT,
+            style: { paragraph: { indent: { left: 720, hanging: 360 } } }
+          }
+        ]
+      },
+      {
+        reference: "numbers",
+        levels: [
+          {
+            level: 0,
+            format: "decimal",
+            text: "%1.",
+            alignment: AlignmentType.LEFT,
+            style: { paragraph: { indent: { left: 720, hanging: 360 } } }
+          }
+        ]
+      }
+    ]
+  },
+  styles: {
+    default: {
+      document: {
+        run: { font: "Lora", size: 22, color: "141413" }
+      }
+    },
+    paragraphStyles: [
+      {
+        id: "Heading1",
+        name: "Heading 1",
+        basedOn: "Normal",
+        next: "Normal",
+        quickFormat: true,
+        run: { size: 48, bold: true, font: "Poppins", color: "141413" },
+        paragraph: { spacing: { before: 240, after: 120 }, outlineLevel: 0 }
+      },
+      {
+        id: "Heading2",
+        name: "Heading 2",
+        basedOn: "Normal",
+        next: "Normal",
+        quickFormat: true,
+        run: { size: 32, bold: true, font: "Poppins", color: "d97757" },
+        paragraph: { spacing: { before: 200, after: 100 }, outlineLevel: 1 }
+      }
+    ]
+  },
+  sections: [{
+    properties: {
+      page: {
+        size: { width: 12240, height: 15840 },
+        margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+      }
+    },
+    children: [
+      // H1 Title
+      new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        children: [new TextRun("Agentic AI Interventions for Record to Report Cycle")]
+      }),
+      new Paragraph({ text: "" }),
+
+      // Purpose
+      new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun("Purpose")]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 200 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "This procedure establishes a structured approach to identifying, designing, and validating agentic AI interventions across Apollo Tyres' Record to Report (R2R) cycle. The process reduces manual intervention, improves operational efficiency, and strengthens process controls by mapping the full R2R scope, identifying automation opportunities, designing AI workflows, and obtaining stakeholder validation before implementation."
+        })]
+      }),
+      new Paragraph({ text: "" }),
+
+      // Scope
+      new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun("Scope")]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 200 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "This procedure covers all activities within the complete Record to Report cycle, including transaction recording, account reconciliation, journal entry validation, consolidation, and financial reporting. The scope encompasses the identification of AI intervention touchpoints, workflow design, and validation of findings across all finance systems and processes involved in the monthly close cycle."
+        })]
+      }),
+      new Paragraph({ text: "" }),
+
+      // Roles and Responsibilities
+      new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun("Roles and Responsibilities")]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 100 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "The following roles are accountable for execution and oversight:"
+        })]
+      }),
+      new Paragraph({
+        numbering: { reference: "bullets", level: 0 },
+        spacing: { after: 100 },
+        children: [
+          new TextRun({ bold: true, font: "Poppins", size: 22, color: "d97757", text: "Process Owner" }),
+          new TextRun({ font: "Lora", size: 22, color: "141413", text: ": Defines R2R cycle scope, identifies AI intervention opportunities, designs point of view documentation, and serves as the primary liaison between technical AI design and finance stakeholder validation." })
+        ]
+      }),
+      new Paragraph({
+        numbering: { reference: "bullets", level: 0 },
+        spacing: { after: 100 },
+        children: [
+          new TextRun({ bold: true, font: "Poppins", size: 22, color: "d97757", text: "AI Agent" }),
+          new TextRun({ font: "Lora", size: 22, color: "141413", text: ": Translates intervention opportunities into detailed AI workflow specifications, including agent logic, decision trees, data inputs, and integration requirements." })
+        ]
+      }),
+      new Paragraph({
+        numbering: { reference: "bullets", level: 0 },
+        spacing: { after: 200 },
+        children: [
+          new TextRun({ bold: true, font: "Poppins", size: 22, color: "d97757", text: "Finance Team" }),
+          new TextRun({ font: "Lora", size: 22, color: "141413", text: ": Reviews and validates AI workflow designs, confirms alignment with control requirements and business rules, and approves findings for advancement to implementation planning." })
+        ]
+      }),
+      new Paragraph({ text: "" }),
+
+      // Procedure
+      new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun("Procedure")]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 200 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "The following five sequential steps establish the pathway from R2R scope definition through Finance Team validation. Each step builds on the prior deliverable, ensuring that AI intervention opportunities are grounded in process reality, translated into executable workflows, and validated against business and control requirements before proceeding to implementation."
+        })]
+      }),
+
+      // Step 1
+      new Paragraph({
+        numbering: { reference: "numbers", level: 0 },
+        spacing: { before: 100, after: 80 },
+        children: [new TextRun({ bold: true, font: "Poppins", size: 26, color: "141413", text: "Define R2R Cycle Scope and Touchpoints" })]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 200 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "The Process Owner conducts a horizontal mapping of the complete Record to Report cycle, documenting all key activities, systems, data flows, and control points from transaction recording through financial statement publication. This scope document serves as the foundation for identifying where agentic AI can reduce manual effort and improve process reliability."
+        })]
+      }),
+
+      // Step 2
+      new Paragraph({
+        numbering: { reference: "numbers", level: 0 },
+        spacing: { before: 100, after: 80 },
+        children: [new TextRun({ bold: true, font: "Poppins", size: 26, color: "141413", text: "Identify Agentic AI Intervention Opportunities" })]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 200 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "Using the R2R scope document as input, the Process Owner applies a case-led approach to identify specific touchpoints where agentic AI can automate manual tasks, reduce cycle time, or strengthen controls. The output is an AI intervention map that prioritizes opportunities by business impact and technical feasibility, creating a clear roadmap for workflow design."
+        })]
+      }),
+
+      // Step 3
+      new Paragraph({
+        numbering: { reference: "numbers", level: 0 },
+        spacing: { before: 100, after: 80 },
+        children: [new TextRun({ bold: true, font: "Poppins", size: 26, color: "141413", text: "Design AI Agent Workflows" })]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 200 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "The AI Agent receives the intervention map and develops detailed workflow specifications for each identified opportunity. These specifications define agent logic, decision criteria, data inputs and outputs, exception handling, and integration points with existing finance systems. This technical design ensures that AI workflows are executable, auditable, and aligned with R2R process requirements."
+        })]
+      }),
+
+      // Step 4
+      new Paragraph({
+        numbering: { reference: "numbers", level: 0 },
+        spacing: { before: 100, after: 80 },
+        children: [new TextRun({ bold: true, font: "Poppins", size: 26, color: "141413", text: "Develop Point of View Documentation" })]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 200 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "The Process Owner synthesizes the AI workflow specifications into a comprehensive point of view note, formatted as a PowerPoint presentation. This document articulates the business case for each intervention, illustrates the AI-enabled workflow, quantifies expected benefits (cycle time reduction, manual effort savings, control improvements), and provides a clear narrative for stakeholder engagement and decision-making."
+        })]
+      }),
+
+      // Step 5
+      new Paragraph({
+        numbering: { reference: "numbers", level: 0 },
+        spacing: { before: 100, after: 80 },
+        children: [new TextRun({ bold: true, font: "Poppins", size: 26, color: "141413", text: "Review and Validate Findings" })]
+      }),
+      new Paragraph({
+        spacing: { line: 360, after: 200 },
+        children: [new TextRun({
+          font: "Lora",
+          size: 22,
+          color: "141413",
+          text: "The Finance Team reviews the point of view document, validates that proposed AI workflows align with control requirements, business rules, and regulatory obligations, and confirms technical feasibility. Upon approval, the Finance Team authorizes advancement to implementation planning, where detailed build specifications, testing protocols, and go-live timelines are established."
+        })]
+      }),
+      new Paragraph({ text: "" }),
+
+      // References
+      new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun("References")]
+      }),
+      new Paragraph({
+        numbering: { reference: "bullets", level: 0 },
+        spacing: { after: 100 },

@@ -154,12 +154,18 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
             suffix = ".md" if key.endswith("_md") else ".txt"
             (run_dir / f"{key}{suffix}").write_text(value, encoding="utf-8")
 
+    archetype = payload.get("deliverable_archetype")
+    if archetype:
+        (run_dir / "deliverable_archetype.txt").write_text(str(archetype).strip(), encoding="utf-8")
+
     for output_type in requested_set:
         try:
             deliverable = DeliverableRegistry.get(output_type)
         except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
-        deliverable.render(payload, run_dir, branding=payload.get("branding"))
+        deliverable.render(
+            payload, run_dir, branding=payload.get("branding_context") or payload.get("branding")
+        )
 
     def _rows_from_markdown(md: str) -> list[list[str]]:
         rows: list[list[str]] = []

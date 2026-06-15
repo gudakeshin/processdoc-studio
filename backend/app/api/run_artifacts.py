@@ -151,7 +151,28 @@ def get_run_artifacts(
         "guardrail_report": _read_json(run_dir / "guardrail_report.json")
         or _latest_run_event_payload(db, run_id, "guardrail_report"),
         "evaluator_pipeline": _latest_run_event_payload(db, run_id, "evaluator_pipeline"),
+        "final_artifact_qa": _read_json(run_dir / "final_artifact_qa.json"),
     }
+    qa_report_obj = artifacts.get("qa_report") if isinstance(artifacts.get("qa_report"), dict) else {}
+    guardrail_obj = artifacts.get("guardrail_report") if isinstance(artifacts.get("guardrail_report"), dict) else {}
+    final_qa_obj = artifacts.get("final_artifact_qa") if isinstance(artifacts.get("final_artifact_qa"), dict) else {}
+    evaluator_obj = artifacts.get("evaluator_pipeline") if isinstance(artifacts.get("evaluator_pipeline"), dict) else {}
+    guardrail_failure_event = db.scalar(
+        select(RunEvent).where(
+            RunEvent.run_id == run_id,
+            RunEvent.event_type == "completed_with_guardrail_failures",
+        )
+    )
+    if guardrail_failure_event:
+        artifacts["quality_status"] = "completed_with_guardrail_failures"
+    elif evaluator_obj.get("status") == "fail":
+        artifacts["quality_status"] = "evaluator_failed"
+    elif final_qa_obj.get("status") == "fail":
+        artifacts["quality_status"] = "final_artifact_qa_failed"
+    elif qa_report_obj.get("passed") and str(guardrail_obj.get("status") or "").lower() == "pass":
+        artifacts["quality_status"] = "passed"
+    else:
+        artifacts["quality_status"] = "review_recommended"
     try:
         plan_payload_obj = json.loads(run.plan_payload) if run.plan_payload else {}
     except json.JSONDecodeError:

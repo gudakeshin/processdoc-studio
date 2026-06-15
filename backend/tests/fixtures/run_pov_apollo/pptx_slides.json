@@ -1,0 +1,208 @@
+[
+  {
+    "title": "Agentic AI Interventions for Record to Report Cycle",
+    "slide_type": "title",
+    "subtitle": "Process Overview",
+    "badges": [
+      "5 Process Steps",
+      "3 Key Roles",
+      "Horizontal R2R Scope"
+    ],
+    "slide_id": "slide_01",
+    "slide_index": 1
+  },
+  {
+    "title": "Process Scale and Scope",
+    "slide_type": "stat_cards",
+    "stat_cards": [
+      {
+        "stat": "5",
+        "label": "Process Steps",
+        "description": "End-to-end workflow from R2R scope definition through Finance Team validation and approval.",
+        "fill": "dark",
+        "card_id": "slide_02_stat_cards_01"
+      },
+      {
+        "stat": "3",
+        "label": "Key Roles",
+        "description": "Process Owner, AI Agent, and Finance Team collaborate across design, development, and review phases.",
+        "fill": "mid_dark",
+        "card_id": "slide_02_stat_cards_02"
+      },
+      {
+        "stat": "3",
+        "label": "System Touchpoints",
+        "description": "PowerPoint and core R2R applications enable workflow specification, documentation, and stakeholder communication.",
+        "fill": "gray",
+        "card_id": "slide_02_stat_cards_03"
+      }
+    ],
+    "slide_id": "slide_02",
+    "slide_index": 2
+  },
+  {
+    "title": "R2R Cycle Intervention Framework",
+    "slide_type": "process_flow",
+    "process_flow": {
+      "steps": [
+        {
+          "label": "Define Scope",
+          "description": "Map full Record to Report cycle and identify touchpoints.",
+          "fill": "green"
+        },
+        {
+          "label": "Identify Opportunities",
+          "description": "Case-led analysis of agentic AI intervention points.",
+          "fill": "dark"
+        },
+        {
+          "label": "Design Workflows",
+          "description": "Develop AI agent specifications and automation logic.",
+          "fill": "mid_dark"
+        },
+        {
+          "label": "Document POV",
+          "description": "Create point of view note with findings and recommendations.",
+          "fill": "dark_green"
+        },
+        {
+          "label": "Validate & Approve",
+          "description": "Finance Team review and sign-off on proposed interventions.",
+          "fill": "gray"
+        }
+      ]
+    },
+    "slide_id": "slide_03",
+    "slide_index": 3
+  },
+  {
+    "title": "Workflow Phases and Ownership",
+    "slide_type": "stack_layers",
+    "stack_layers": [
+      {
+        "label": "Discovery",
+        "description": "Process Owner defines R2R scope and identifies AI intervention opportunities across the cycle.",
+        "fill": "green",
+        "layer_id": "slide_04_stack_layers_01"
+      },
+      {
+        "label": "Design",
+        "description": "AI Agent develops detailed workflow specifications and automation logic for each intervention point.",
+        "fill": "mid_dark",
+        "layer_id": "slide_04_stack_layers_02"
+      },
+      {
+        "label": "Documentation",
+        "description": "Process Owner synthesizes findings into point of view note with business case and implementation roadmap.",
+        "fill": "dark",
+        "layer_id": "slide_04_stack_layers_03"
+      },
+      {
+        "label": "Validation",
+        "description": "Finance Team reviews, validates, and approves proposed agentic AI interventions before implementation planning.",
+        "fill": "gray",
+        "layer_id": "slide_04_stack_layers_04"
+      }
+    ],
+    "slide_id": "slide_04",
+    "slide_index": 4
+  },
+  {
+    "title": "Role Mandates and Accountability",
+    "slide_type": "bullets",
+    "bullets": [
+      "Process Owner: Define R2R scope, identify opportunities, develop POV documentation, and drive stakeholder alignment.",
+      "AI Agent: Design workflow specifications and automation logic based on identified intervention opportunities.",
+      "Finance Team: Review findings, validate business case, and approve proposed interventions for implementation."
+    ],
+    "slide_id": "slide_05",
+    "slide_index": 5,
+    "bullet_ids": [
+      "slide_05_bullets_01",
+      "slide_05_bullets_02",
+      "slide_05_bullets_03"
+    ]
+  },
+  {
+    "title": "Workflow Walkthrough: Steps and Handoffs",
+    "slide_type": "table",
+    "table": {
+      "headers": [
+        "Step",
+        "Owner",
+        "Inputs → Outputs"
+      ],
+      "rows": [
+        [
+          "Define R2R cycle scope and touchpoints",
+          "Process Owner",
+          "None → R2R cycle scope document"
+        ],
+        [
+          "Identify agentic AI intervention opportunities",
+          "Process Owner",
+          "R2R cycle scope document → AI intervention map"
+        ],
+        [
+          "Design AI agent workflows",
+          "AI Agent",
+          "AI intervention map → AI workflow specifications"
+        ],
+        [
+          "Develop point of view documentation",
+          "Process Owner",
+          "AI workflow specifications → Point of view note"
+        ],
+        [
+          "Review and validate findings",
+          "Finance Team",
+          "Point of view note → Validated point of view document"
+        ]
+      ]
+    },
+    "slide_id": "slide_06",
+    "slide_index": 6
+  },
+  {
+    "title": "Business Impact and Success Criteria",
+    "slide_type": "column_cards",
+    "column_cards": [
+      {
+        "heading": "Operational Efficiency",
+        "accent": "green",
+        "body": "Agentic AI reduces manual intervention across R2R touchpoints, enabling faster close cycles and freeing Finance Team capacity for higher-value analysis and strategic planning.",
+        "card_id": "slide_07_column_cards_01"
+      },
+      {
+        "heading": "Process Control Strengthening",
+        "accent": "dark",
+        "body": "Automated workflows enforce consistent control execution, reduce human error, and provide audit-ready documentation of every intervention point across the full Record to Report cycle.",
+        "card_id": "slide_07_column_cards_02"
+      },
+      {
+        "heading": "Stakeholder Alignment",
+        "accent": "gray",
+        "body": "Case-led point of view documentation grounds recommendations in Apollo Tyres' specific R2R context, enabling Finance Team validation and executive approval before implementation.",
+        "card_id": "slide_07_column_cards_03"
+      }
+    ],
+    "slide_id": "slide_07",
+    "slide_index": 7
+  },
+  {
+    "title": "Recommended Next Actions",
+    "slide_type": "bullets",
+    "bullets": [
+      "1. Conduct R2R scope mapping workshop with Process Owner and Finance Team to validate cycle boundaries and identify initial intervention candidates.",
+      "2. Develop detailed AI intervention map using case-led approach; prioritize high-impact, low-complexity automation opportunities for Phase 1 pilot.",
+      "3. Schedule Finance Team validation review; obtain formal approval on point of view findings and implementation roadmap before proceeding to design phase."
+    ],
+    "slide_id": "slide_08",
+    "slide_index": 8,
+    "bullet_ids": [
+      "slide_08_bullets_01",
+      "slide_08_bullets_02",
+      "slide_08_bullets_03"
+    ]
+  }
+]

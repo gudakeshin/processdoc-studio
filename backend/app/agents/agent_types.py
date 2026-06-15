@@ -26,11 +26,13 @@ class AgentContext:
     skill_instructions_by_output: dict[str, str]
     skill_card: dict[str, Any]
     plan_payload: dict[str, Any]
+    retrieval_excerpt: str = ""
     prior_artifacts_excerpt: str = ""
     conversation_digest: str = ""
     enrichment: Any | None = None
     branding: Any | None = None
     deliverable_metadata: Any | None = None
+    deliverable_archetype: str = "process_doc"
     emit_event: Callable[[str, dict[str, Any]], None] | None = None
     swarm_teammate_id: str | None = None
 
@@ -104,6 +106,7 @@ def build_agent_context(state: ProcessDocState, output_type: str) -> AgentContex
         user_intent_original=str(state.get("user_intent_original") or state.get("user_instruction") or ""),
         process_model=pm,
         assembled_context=str(state.get("assembled_context") or ""),
+        retrieval_excerpt=str(state.get("planner_retrieval_excerpt") or ""),
         output_type_representations=otr,
         skill_instructions_by_output={str(k): str(v) for k, v in si.items()},
         skill_card=sc,
@@ -115,6 +118,7 @@ def build_agent_context(state: ProcessDocState, output_type: str) -> AgentContex
         deliverable_metadata=state.get("deliverable_metadata_by_output_type", {}).get(output_type)
         if isinstance(state.get("deliverable_metadata_by_output_type"), dict)
         else None,
+        deliverable_archetype=str(state.get("deliverable_archetype") or "process_doc"),
         emit_event=state.get("_emit_run_event"),
         swarm_teammate_id=swarm_teammate_id,
     )
