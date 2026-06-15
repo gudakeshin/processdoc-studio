@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -144,10 +145,15 @@ def _extract_pptx_text(pptx_path: Path) -> dict[int, list[str]]:
 
 
 def _find_truncations(text: str) -> list[str]:
-    """Find likely truncation signatures in text blocks."""
+    """Find likely truncation signatures in text blocks.
+
+    Only flags a signature if it is NOT immediately followed by more word characters —
+    avoids false positives on full words like "continuous" matching the "continuou" sig.
+    """
     found = []
     for sig in TRUNCATION_SIGNATURES:
-        if sig.lower() in text.lower():
+        pattern = re.escape(sig.lower()) + r"(?![a-zA-Z])"
+        if re.search(pattern, text.lower()):
             found.append(sig)
     return found
 
@@ -300,11 +306,12 @@ def validate_pptx_against_slides(
 
         # Extract expected text from slide JSON
         expected_texts = _extract_expected_text_from_slide(expected_slide)
-        actual_texts = " ".join(text_by_slide.get(slide_idx, []))
+        # Case-insensitive join: editorial chrome uppercases micro-labels (caps=True in add_run).
+        actual_texts = " ".join(text_by_slide.get(slide_idx, [])).lower()
 
         # Check for missing text
         for exp_text in expected_texts:
-            if exp_text and len(exp_text) > 3 and exp_text not in actual_texts:
+            if exp_text and len(exp_text) > 3 and exp_text.lower() not in actual_texts:
                 missing_text.append(f"Slide {slide_idx + 1}: Missing '{exp_text[:50]}'")
 
         # Check for truncations and placeholders
