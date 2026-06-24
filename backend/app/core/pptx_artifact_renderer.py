@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,8 @@ from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
 
 from app.core.config import settings
-from app.core.deliverable_utils import fetch_logo_source
+from app.core.deliverable_utils import apply_pptx_core_properties, fetch_logo_source
+from app.core.tz import IST
 from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
 from app.core.pptx_qa import validate_pptx_against_slides
 from app.core.evidence_validator import validate_pptx_slides_evidence
@@ -335,6 +337,24 @@ class SlideComposer:
             badges_frame.paragraphs[0].font.color.rgb = self.colors["text_inverse"]
             badges_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
             badges_frame.word_wrap = True
+
+        # Cover metadata band (PREPARED FOR / DATE), if supplied.
+        meta = slide_dict.get("metadata") or slide_dict.get("cover_meta")
+        if isinstance(meta, list) and meta:
+            parts = [
+                f"{item.get('label')}: {item.get('value')}"
+                for item in meta
+                if isinstance(item, dict) and item.get("value")
+            ]
+            if parts:
+                meta_box = slide.shapes.add_textbox(
+                    Inches(MARGIN_H), Inches(badges_y + 0.7), Inches(CONTENT_W), Inches(0.4)
+                )
+                meta_frame = meta_box.text_frame
+                meta_frame.text = "    ".join(parts)
+                meta_frame.paragraphs[0].font.size = Pt(12)
+                meta_frame.paragraphs[0].font.color.rgb = self.colors["accent_light"]
+                meta_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
 
         # Brand logo (best-effort, non-fatal)
         self._add_logo(slide)
@@ -1096,6 +1116,41 @@ class SlideComposer:
         title_frame.word_wrap = True
 
 
+def _resolve_client_name(payload: dict[str, Any]) -> str:
+    """Best-effort client/engagement name from whichever payload shape carries it."""
+    pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
+    discovery = payload.get("discovery") if isinstance(payload.get("discovery"), dict) else {}
+    candidates = [
+        payload.get("client_name"),
+        (pm.get("client") or {}).get("name") if isinstance(pm.get("client"), dict) else None,
+        pm.get("client_name"),
+        (discovery.get("client") or {}).get("name") if isinstance(discovery.get("client"), dict) else None,
+        payload.get("project_name"),
+    ]
+    for c in candidates:
+        c = str(c or "").strip()
+        if c:
+            return c
+    return ""
+
+
+def _enrich_title_slide(slide_dict: dict[str, Any], client_name: str) -> None:
+    """Populate the cover metadata band (PREPARED FOR / DATE) when the LLM omitted it.
+
+    The editorial composer renders ``slide_dict["metadata"]`` as the cover band but
+    falls back to badges when it is missing, so an exec cover otherwise ships with no
+    client name or date. We only fill gaps — never overwrite LLM-provided metadata.
+    """
+    existing = slide_dict.get("metadata") or slide_dict.get("cover_meta")
+    if existing:
+        return
+    band: list[dict[str, str]] = []
+    if client_name:
+        band.append({"label": "PREPARED FOR", "value": client_name})
+    band.append({"label": "DATE", "value": datetime.now(IST).strftime("%d %B %Y")})
+    slide_dict["metadata"] = band
+
+
 def render_pptx_with_artifact_tool(
     payload: dict[str, Any],
     run_dir: Path,
@@ -1161,6 +1216,7 @@ def render_pptx_with_artifact_tool(
             ]
 
         # Compose slides
+        client_name = _resolve_client_name(payload)
         total_slides = len(pptx_slides)
         for idx, slide_dict in enumerate(pptx_slides[:20]):  # max 20 slides
             if not isinstance(slide_dict, dict):
@@ -1187,6 +1243,7 @@ def render_pptx_with_artifact_tool(
 
             try:
                 if slide_type == "title":
+                    _enrich_title_slide(slide_dict, client_name)
                     composer.compose_title_slide(slide_dict)
                 else:
                     composer.compose_content_slide(
@@ -1198,6 +1255,19 @@ def render_pptx_with_artifact_tool(
             except Exception as e:
                 errors.append(f"Slide {idx + 1} ({slide_type}): {str(e)}")
                 logger.warning("Failed to compose slide %d: %s", idx + 1, e)
+
+        # Document properties — without this the deck ships python-pptx template
+        # defaults (empty title/creator, "Steve Canny", a 2013 timestamp).
+        pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
+        deck_title = str(
+            (pptx_slides[0] or {}).get("title") if isinstance(pptx_slides[0], dict) else ""
+        ).strip() or str(pm.get("process_name") or "").strip() or "Presentation"
+        apply_pptx_core_properties(
+            prs,
+            title=deck_title,
+            subject=client_name or str(payload.get("project_name") or "Process documentation"),
+            author=str(branding_dict.get("company_name") or "ProcessDoc Studio"),
+        )
 
         # Save PPTX
         prs.save(str(output_path))

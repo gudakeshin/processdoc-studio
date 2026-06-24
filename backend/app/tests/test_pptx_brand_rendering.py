@@ -15,7 +15,12 @@ from app.services.storage import save_run_artifacts
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def _build_pptx(slides: list[dict[str, Any]], *, branding: dict[str, Any] | None = None) -> Presentation:
+def _build_pptx(
+    slides: list[dict[str, Any]],
+    *,
+    branding: dict[str, Any] | None = None,
+    extra_payload: dict[str, Any] | None = None,
+) -> Presentation:
     """Save a minimal artifact payload and parse the resulting PPTX."""
     project_id = "test_brand_proj"
     run_id = "test_brand_run"
@@ -26,6 +31,8 @@ def _build_pptx(slides: list[dict[str, Any]], *, branding: dict[str, Any] | None
     }
     if branding is not None:
         payload["branding"] = branding
+    if extra_payload:
+        payload.update(extra_payload)
     save_run_artifacts(project_id, run_id, payload)
     from app.services.storage import workspace_path
     run_dir = workspace_path(project_id) / "runs" / run_id
@@ -516,3 +523,29 @@ def test_chart_slide_missing_data_shows_placeholder() -> None:
     prs = _build_pptx(slides)
     text = _text_content(prs.slides[0])
     assert "Empty Chart" in text
+
+
+# ── Document properties (no python-pptx template leak) ────────────────────────
+
+def test_core_properties_populated_no_template_leak() -> None:
+    """Generated decks must not ship python-pptx template defaults."""
+    prs = _build_pptx(
+        [{"title": "Revenue Cycle", "slide_type": "title"}],
+        extra_payload={"project_name": "Acme P2P", "branding": {"company_name": "Deloitte"}},
+    )
+    cp = prs.core_properties
+    assert cp.title, "core title should be populated"
+    assert cp.author and cp.author != "Steve Canny"
+    assert cp.last_modified_by == "ProcessDoc Studio"
+    assert "python-pptx" not in (cp.title + (cp.subject or "") + (cp.author or ""))
+
+
+def test_title_slide_includes_client_and_date() -> None:
+    """Cover should name the client and carry a date when the LLM omitted them."""
+    prs = _build_pptx(
+        [{"title": "Process Overview", "slide_type": "title", "subtitle": "EXEC BRIEF"}],
+        extra_payload={"client_name": "Indus Apex Bank Ltd"},
+    )
+    text = _text_content(prs.slides[0])
+    assert "Indus Apex Bank Ltd" in text
+    assert "PREPARED FOR" in text

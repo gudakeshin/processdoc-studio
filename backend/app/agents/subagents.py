@@ -2930,6 +2930,25 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             ),
         )
         sb = _append_archetype_prompt(sb, ctx, "pptx")
+        # Executive-deck consistency & altitude rules (applied on every pptx path).
+        sb = _SkillBuild(
+            system=sb.system + (
+                "\n\nCONSISTENCY & ALTITUDE RULES:\n"
+                "1. OWNERSHIP IS SINGLE-SOURCED. Take each step's owner verbatim from the process "
+                "model's step.role. State an activity's owner identically on every slide it appears "
+                "on — never reassign or paraphrase ownership differently across slides.\n"
+                "2. OUTCOME METRICS, NOT PROCESS DESCRIPTORS. stat_cards and big_number must show "
+                "business outcomes (time saved, cycle time, cost per unit, accuracy %, throughput, "
+                "$ impact). Do NOT headline raw process counts (number of steps/roles) as if they "
+                "were efficiency metrics; if only a count is available, pair it with the outcome it "
+                "drives.\n"
+                "3. NO RAW ACCOUNTING CODES. Do not surface GL codes, cost-center codes, or GST/tax "
+                "treatment codes on executive slides unless the user explicitly asked for them; "
+                "express governance and compliance in business terms.\n"
+            ),
+            temperature=sb.temperature,
+            max_rounds=sb.max_rounds,
+        )
         plan_discovery = (ctx.plan_payload or {}).get("discovery") if isinstance((ctx.plan_payload or {}).get("discovery"), dict) else {}
         # Fill narrative_arc from deck_outline_preview when plan discovery omits it.
         if not plan_discovery.get("narrative_arc"):

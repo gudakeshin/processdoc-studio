@@ -3,8 +3,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from datetime import datetime
-from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +14,7 @@ from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches, Pt
 
 from app.core.deliverable import DeliverableMetadata, IDeliverable
-from app.core.deliverable_utils import fetch_logo_source
+from app.core.deliverable_utils import apply_pptx_core_properties, fetch_logo_source
 from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
 from app.services.deliverable_quality import _validate_pptx_completeness
 
@@ -388,17 +386,9 @@ class PPTXDeliverable(IDeliverable):
         subject = str(meta.get("subject") or payload.get("project_name") or "Process documentation").strip()
         author = str(meta.get("author") or payload.get("owner_name") or "ProcessDoc Studio").strip()
         keywords = str(meta.get("keywords") or "processdoc,pptx").strip()
-        try:
-            cp = prs.core_properties
-            cp.title = title[:255]
-            cp.subject = subject[:255]
-            cp.author = author[:255]
-            cp.keywords = keywords[:255]
-            cp.last_modified_by = "ProcessDoc Studio"
-            if getattr(cp, "created", None) is None:
-                cp.created = datetime.now(IST)
-        except Exception as exc:
-            logger.debug("Core properties skipped: %s", exc)
+        apply_pptx_core_properties(
+            prs, title=title, subject=subject, author=author, keywords=keywords
+        )
 
     def _record_pending(self, *, page_num: int, slide_type: str, title: str, reason: str) -> None:
         self._signals.append(

@@ -3,14 +3,47 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from app.core.tz import IST
 
 logger = logging.getLogger(__name__)
 
 
 def safe_text(value: object, default: str = "") -> str:
     return str(value or default).strip()
+
+
+def apply_pptx_core_properties(
+    prs: Any,
+    *,
+    title: str,
+    subject: str,
+    author: str,
+    keywords: str = "processdoc,pptx",
+    last_modified_by: str = "ProcessDoc Studio",
+) -> None:
+    """Populate OOXML core document properties on a presentation.
+
+    Shared by both PPTX render paths so client-facing decks never ship the
+    python-pptx template defaults (empty title/creator, "Steve Canny",
+    a 2013 timestamp). Best-effort: failures log and leave the deck intact.
+    """
+    try:
+        cp = prs.core_properties
+        cp.title = str(title or "Presentation").strip()[:255]
+        cp.subject = str(subject or "Process documentation").strip()[:255]
+        cp.author = str(author or "ProcessDoc Studio").strip()[:255]
+        cp.keywords = str(keywords or "").strip()[:255]
+        cp.last_modified_by = last_modified_by
+        now = datetime.now(IST)
+        if getattr(cp, "created", None) is None:
+            cp.created = now
+        cp.modified = now
+    except Exception as exc:  # noqa: BLE001 - core properties are best-effort
+        logger.debug("Core properties skipped: %s", exc)
 
 
 def fetch_logo_source(logo_url: str) -> str | None:
