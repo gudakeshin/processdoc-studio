@@ -1473,7 +1473,6 @@ def _execute_run_job(
             final_artifact_report: dict[str, Any] = {}
             if settings.final_artifact_qa_enabled:
                 from app.services.final_artifact_qa import verify_final_artifacts, write_final_artifact_qa
-                from app.services.langfuse_tracing import langfuse_span
 
                 try:
                     final_artifact_report = verify_final_artifacts(
