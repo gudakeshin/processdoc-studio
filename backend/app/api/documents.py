@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import zipfile
 from pathlib import Path
@@ -15,9 +16,12 @@ from app.core.upload_validation import validate_document_upload
 from app.db.models import User
 from app.db.session import get_db
 from app.services.cache import cache_service
+from app.services.langfuse_tracing import langfuse_span
 from app.services.storage import ensure_workspace, workspace_path
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 _SAFE_PROJECT_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -74,9 +78,10 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
             )
             return text, "zip_xml"
         except TimeoutError:
-            # Timeout during extraction, fallback to binary
+            logger.warning("docx/pptx text extraction timed out for %s", filename)
             return content.decode("utf-8", errors="ignore"), "zip_timeout_fallback"
         except Exception:
+            logger.warning("docx/pptx text extraction failed for %s", filename, exc_info=True)
             return content.decode("utf-8", errors="ignore"), "zip_error_fallback"
 
     if lower.endswith(".pdf"):
@@ -107,9 +112,10 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
             )
             return text, "pypdf"
         except TimeoutError:
-            # PDF extraction timeout, return empty text
+            logger.warning("PDF text extraction timed out for %s", filename)
             return f"[PDF extraction timeout for {filename}]", "pdf_timeout_fallback"
         except Exception:
+            logger.warning("PDF text extraction failed for %s", filename, exc_info=True)
             return f"[Unable to extract PDF for {filename}]", "pdf_error_fallback"
 
     if lower.endswith(".xlsx"):
@@ -138,8 +144,10 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
             )
             return text, "openpyxl"
         except TimeoutError:
+            logger.warning("XLSX text extraction timed out for %s", filename)
             return f"[XLSX extraction timeout for {filename}]", "xlsx_timeout_fallback"
         except Exception:
+            logger.warning("XLSX text extraction failed for %s", filename, exc_info=True)
             return f"[Unable to extract XLSX for {filename}]", "xlsx_error_fallback"
 
     return content.decode("utf-8", errors="ignore"), "binary_fallback"
@@ -181,6 +189,7 @@ async def upload_document(
         try:
             page_count = len(PdfReader(_io.BytesIO(content)).pages)
         except Exception:
+            logger.warning("could not read PDF page count for %s; skipping page-limit check", safe_name, exc_info=True)
             page_count = 0
         if page_count > 50:
             raise HTTPException(
@@ -205,8 +214,17 @@ async def upload_document(
             )
         except TimeoutError:
             # Fall back to basic decode on timeout
+            logger.warning("document parse timed out for %s in project %s", safe_name, project_id)
             text = content.decode("utf-8", errors="ignore")
             parse_mode = "timeout_fallback"
+
+        langfuse_span(
+            trace_id=project_id,
+            name="document.upload",
+            input_payload={"filename": safe_name, "bytes": len(content)},
+            output_payload={"parse_mode": parse_mode, "text_len": len(text or "")},
+            status_message=parse_mode if (parse_mode or "").endswith("fallback") else None,
+        )
 
         def chunk_text(t: str, *, chunk_chars: int = 1200, overlap_chars: int = 120) -> list[str]:
             t = t.strip()

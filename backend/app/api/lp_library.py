@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from app.services.leading_practices import leading_practice_library_service
 from app.services.storage import workspace_path
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 class BookmarkRequest(BaseModel):
@@ -33,6 +36,7 @@ def _read_bookmarks(project_id: str) -> list[dict[str, Any]]:
         raw = json.loads(p.read_text(encoding="utf-8"))
         return raw if isinstance(raw, list) else []
     except Exception:
+        logger.warning("could not read lp bookmarks for project %s; treating as empty", project_id, exc_info=True)
         return []
 
 

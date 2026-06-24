@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from app.core.tz import IST
@@ -15,6 +16,8 @@ from app.db.session import get_db
 from app.services.observability import increment
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 class UpsertMemoryItemRequest(BaseModel):
@@ -49,6 +52,7 @@ def _parse_profile_row(row: ProjectMemoryProfile | None) -> dict | None:
         data = json.loads(row.summary_json)
         return data if isinstance(data, dict) else None
     except Exception:
+        logger.warning("could not parse memory profile for project %s", getattr(row, "project_id", "?"), exc_info=True)
         return None
 
 

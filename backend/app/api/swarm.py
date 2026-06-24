@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from app.core.tz import IST
@@ -31,6 +32,8 @@ from app.services.swarm import (
 from app.services.swarm_scheduler import SwarmScheduler
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _swarm_enabled() -> None:
@@ -322,6 +325,7 @@ def swarm_lead_plan_preview(
     try:
         wanted = json.loads(run.output_types or "[]")
     except json.JSONDecodeError:
+        logger.warning("run %s has malformed output_types; defaulting to empty plan", run_id)
         wanted = []
     if not isinstance(wanted, list):
         wanted = []
