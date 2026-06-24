@@ -286,7 +286,10 @@ class EditorialSlideComposer:
                     para.font.size = Pt(10)
                     para.font.name = t.font_body
                     para.font.color.rgb = rgb(t.color("ink"))
-                    cell.fill.fore_color.rgb = rgb(t.color("inverse"))
+                    # Zebra striping: faint tint on alternate body rows for scannability.
+                    body_idx = ri - (1 if headers else 0)
+                    band = t.color("inverse") if body_idx % 2 == 0 else t.color("tint")
+                    cell.fill.fore_color.rgb = rgb(band)
 
     def _chart_palette(self) -> list[RGBColor]:
         t = self.theme
@@ -368,10 +371,19 @@ class EditorialSlideComposer:
         for idx, step in enumerate(steps):
             x = r.x + idx * (sw + gut)
             top_color = self._accent_for(step.get("fill"))
-            add_rect(slide, x, sy, sw, sh, fill=t.color("inverse"), line=t.color("hairline"), line_pt=0.75)
+            card_bg = add_rect(slide, x, sy, sw, sh, fill=t.color("inverse"), line=t.color("hairline"), line_pt=0.75)
+            C.soft_shadow(card_bg)
             add_rect(slide, x, sy, sw, 0.05, fill=top_color)
             C.numbered_circle(slide, t, x + 0.16, sy + 0.18, idx + 1, d=0.4)
             label = str(step.get("label", ""))
+            # Semantic glyph (top-right) — explicit icon wins, else derive from the label.
+            from app.core.pptx_artifact_renderer import _icon_for_step_label
+            glyph = str(step.get("icon") or "").strip() or _icon_for_step_label(label)
+            if glyph:
+                itf = textbox(slide, x + sw - 0.56, sy + 0.16, 0.4, 0.4, anchor=MSO_ANCHOR.MIDDLE)
+                ip = itf.paragraphs[0]
+                ip.alignment = PP_ALIGN.CENTER
+                C.add_run(ip, glyph, font=t.font_header, size=t.type_scale.get("card_title", 14), color=top_color)
             ltf = textbox(slide, x + 0.16, sy + 0.7, sw - 0.32, 0.5)
             lf = tm.fit_text(label, box_w_in=sw - 0.32, box_h_in=0.5, family=t.font_header,
                              max_pt=t.type_scale["card_title"], min_pt=10, bold=True, max_lines=2)
@@ -413,7 +425,8 @@ class EditorialSlideComposer:
     def _compose_section_divider(self, slide_dict: dict[str, Any]) -> None:
         slide = self._blank()
         t = self.theme
-        add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, fill=t.color("panel"))
+        bg = add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, fill=t.color("panel"))
+        C.linear_gradient(bg, t.color("panel"), t.color("primary"))
         with contextlib.suppress(Exception):
             C.concentric_circles_motif(slide, t, cx=SLIDE_W - 2.6, cy=SLIDE_H * 0.5, on_dark=True)
         m_h = t.spacing["margin_h"]

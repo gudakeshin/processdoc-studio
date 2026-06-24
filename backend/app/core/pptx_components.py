@@ -83,6 +83,31 @@ def add_rect(
     return sp
 
 
+def soft_shadow(shape: Any) -> None:
+    """Best-effort subtle drop shadow for visual depth. Fail-open."""
+    with contextlib.suppress(Exception):
+        shadow = shape.shadow
+        shadow.inherit = False
+        shadow.visible = True
+
+
+def linear_gradient(shape: Any, color_a: str, color_b: str, *, angle: float = 35.0) -> None:
+    """Best-effort linear gradient fill for hero/section shapes. Falls back to solid."""
+    try:
+        fill = shape.fill
+        fill.gradient()
+        with contextlib.suppress(Exception):
+            fill.gradient_angle = angle
+        stops = list(fill.gradient_stops)
+        if len(stops) >= 2:
+            stops[0].color.rgb = rgb(color_a)
+            stops[1].color.rgb = rgb(color_b)
+    except Exception:
+        with contextlib.suppress(Exception):
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = rgb(color_a)
+
+
 def _set_letter_spacing(run: Any, pt: float) -> None:
     """Apply tracking via the OOXML ``spc`` attr (1/100 pt). Fail-open."""
     if not pt:
@@ -332,6 +357,9 @@ def stat_block(
 ) -> None:
     """Colored left border + big number + caps label + description."""
     accent = accent or theme.color("primary")
+    panel = add_rect(slide, r.x, r.y, r.w, r.h, fill=theme.color("inverse"),
+                     line=theme.color("hairline"), line_pt=0.75)
+    soft_shadow(panel)
     add_rect(slide, r.x, r.y, 0.06, r.h, fill=accent)
     tx = r.x + 0.22
     tw = r.w - 0.3
@@ -358,7 +386,8 @@ def card(
 ) -> None:
     """Top-bordered card with heading, body, optional OWNER micro-label + status chip."""
     top_color = top_color or theme.color("primary")
-    add_rect(slide, r.x, r.y, r.w, r.h, fill=theme.color("inverse"), line=theme.color("hairline"), line_pt=0.75)
+    bg = add_rect(slide, r.x, r.y, r.w, r.h, fill=theme.color("inverse"), line=theme.color("hairline"), line_pt=0.75)
+    soft_shadow(bg)
     add_rect(slide, r.x, r.y, r.w, 0.05, fill=top_color)
     pad = 0.16
     tx = r.x + pad
@@ -460,6 +489,7 @@ def concentric_circles_motif(slide: Any, theme: DeckTheme, cx: float, cy: float,
     line_color = theme.color("tint") if not on_dark else theme.color("primary")
     for d in (4.4, 3.2):
         add_rect(slide, cx - d / 2, cy - d / 2, d, d, fill=None, line=line_color, line_pt=1.0, shape=MSO_SHAPE.OVAL)
-    # Light filled disc + primary core.
+    # Light filled disc + gradient primary core for focal depth.
     add_rect(slide, cx - 1.5, cy - 1.5, 3.0, 3.0, fill=theme.color("tint"), shape=MSO_SHAPE.OVAL)
-    add_rect(slide, cx - 0.55, cy - 0.55, 1.1, 1.1, fill=theme.color("primary"), shape=MSO_SHAPE.OVAL)
+    core = add_rect(slide, cx - 0.55, cy - 0.55, 1.1, 1.1, fill=theme.color("primary"), shape=MSO_SHAPE.OVAL)
+    linear_gradient(core, theme.color("primary"), theme.color("accent"))
