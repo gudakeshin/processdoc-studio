@@ -1,6 +1,7 @@
 import json
 import shutil
 import uuid
+from dataclasses import asdict
 
 from fastapi import BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -28,6 +29,7 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.schemas.common import ProjectSummary
+from app.services.branding_service import BrandingService
 from app.services.storage import ensure_workspace, workspace_path
 
 
@@ -217,3 +219,19 @@ def get_project_token_usage(
         "cache_creation_tokens": usage["cache_creation_tokens"],
         "cost_usd": cost,
     }
+
+
+@router.get("/{pid}/branding")
+def get_project_branding(
+    pid: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Resolve the project's branding (color palette, fonts, logo) for the UI.
+
+    Returns the same BrandingContext the deliverable renderers consume, so the
+    frontend can honor a project's custom brand instead of static defaults.
+    """
+    require_project_role(pid, {"Owner", "Editor", "Viewer"}, user, db)
+    ctx = BrandingService(db).get_branding_for_run(str(pid))
+    return {"project_id": pid, **asdict(ctx)}
