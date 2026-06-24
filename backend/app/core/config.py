@@ -312,6 +312,10 @@ class Settings(BaseSettings):
     # (pixel-faithful); the ReportLab outline renderer remains the fail-open fallback.
     deck_pdf_via_soffice_enabled: bool = True
     soffice_convert_timeout_sec: float = 120.0
+    # Optional explicit path to the LibreOffice ``soffice`` binary. When unset,
+    # discovery falls back to PATH then common install locations. Set this when
+    # the worker runs with a minimal PATH and cannot find soffice automatically.
+    soffice_binary_path: str = ""
     # Feature flags for the DOCX/XLSX composer paths (theme tokens, topic palette,
     # per-format QA). When enabled, the deliverable uses the composer; on any error
     # it falls back to the legacy render path. Mirrors pptx_editorial_theme_enabled.

@@ -8,6 +8,7 @@ the default profile deadlock on its lock file), a timeout, and fail-open
 
 from __future__ import annotations
 
+import glob
 import logging
 import shutil
 import subprocess
@@ -16,10 +17,44 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Common LibreOffice install locations checked when ``soffice`` is not on PATH.
+# A worker launched outside an interactive shell (launchd/IDE/make) often lacks
+# the homebrew/local bin entries, so relying on PATH alone silently disables the
+# pixel-faithful PDF path.
+_SOFFICE_CANDIDATES = (
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "/usr/bin/soffice",
+    "/usr/local/bin/soffice",
+    "/opt/homebrew/bin/soffice",
+)
+_SOFFICE_GLOBS = ("/opt/libreoffice*/program/soffice",)
+
 
 def soffice_path() -> str | None:
-    """Return the ``soffice`` binary path, or ``None`` when LibreOffice is absent."""
-    return shutil.which("soffice")
+    """Return the ``soffice`` binary path, or ``None`` when LibreOffice is absent.
+
+    Resolution order: explicit config override → ``shutil.which`` (PATH) →
+    common install locations. This keeps the pixel critic and deck PDF exporter
+    working even when the worker process has a minimal PATH.
+    """
+    from app.core.config import settings
+
+    override = str(getattr(settings, "soffice_binary_path", "") or "").strip()
+    if override and Path(override).exists():
+        return override
+
+    found = shutil.which("soffice")
+    if found:
+        return found
+
+    for candidate in _SOFFICE_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    for pattern in _SOFFICE_GLOBS:
+        for match in sorted(glob.glob(pattern)):
+            if Path(match).exists():
+                return match
+    return None
 
 
 def convert_office_to_pdf(

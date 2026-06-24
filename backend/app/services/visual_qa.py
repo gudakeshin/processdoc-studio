@@ -172,7 +172,7 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
     Returns per-slide findings and remediation_hints that the PPTX generation
     agent can consume on a retry pass.
     """
-    _empty = {"status": "skip", "summary": "", "per_slide_findings": [], "remediation_hints": []}
+    _empty = {"status": "skip", "summary": "", "per_slide_findings": [], "remediation_hints": [], "critic_path": "skip"}
     if not bool(getattr(settings, "pptx_visual_critic_enabled", True)):
         return {**_empty, "summary": "PPTX visual critic disabled by configuration"}
     if not path.exists():
@@ -181,6 +181,9 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
         return {**_empty, "summary": "Claude API not configured"}
 
     critic_mode = str(getattr(settings, "pptx_visual_critic_mode", "auto") or "auto").lower()
+    # Records why the pixel path was not taken, so the saved report is
+    # self-describing instead of silently degrading to the metadata path.
+    degraded_reason = ""
 
     # Pixel path: soffice → PDF → PNG → vision LLM.
     if critic_mode in {"auto", "pixel"}:
@@ -188,8 +191,12 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
                 pdf_path = _convert_office_to_pdf(path, tmp_path)
+                if not (pdf_path and pdf_path.exists()):
+                    degraded_reason = "soffice unavailable or PPTX→PDF conversion failed"
                 if pdf_path and pdf_path.exists():
                     page_images = _render_pdf_pages_to_png(pdf_path, tmp_path, "pptx")
+                    if not page_images:
+                        degraded_reason = "PDF rendered no pages (pypdfium2 unavailable or empty deck)"
                     if page_images:
                         pixel_system = (
                             "You are a slide design QA reviewer for executive presentations. "
@@ -207,6 +214,10 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
                             "- Status-color consistency: same status should use the same color throughout the deck.\n"
                             "- Footer cadence: footer text and page number should appear consistently on every non-title slide.\n"
                             "- Content density: slides should be neither blank nor overloaded.\n"
+                            "- Whitespace balance: each slide should have breathing room; flag cramped slides where elements touch edges or each other.\n"
+                            "- Readability/contrast: text on filled shapes must have sufficient contrast; flag low-contrast or hard-to-read text.\n"
+                            "- One idea per slide: each slide should carry a single clear message; flag slides juggling multiple unrelated points.\n"
+                            "- Visual variety: across the deck, flag monotony (e.g. every slide is a bullet list) — vary layouts to sustain attention.\n"
                             "Flag real layout problems — not stylistic preferences. "
                             "If a slide looks clean, do not manufacture findings."
                         )
@@ -230,11 +241,15 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
                                 "remediation_hints": result.get("remediation_hints") or [],
                                 "critic_path": "pixel",
                             }
-        except Exception:
-            pass  # fall through to metadata path
+        except Exception as exc:
+            degraded_reason = f"pixel vision pass failed: {exc}"  # fall through to metadata path
 
     if critic_mode == "pixel":
-        return {**_empty, "summary": "Pixel critic unavailable (soffice/pypdfium2 not present)"}
+        return {
+            **_empty,
+            "summary": "Pixel critic unavailable (soffice/pypdfium2 not present)",
+            "critic_degraded_reason": degraded_reason or "soffice/pypdfium2 not present",
+        }
 
     # Metadata path (structural, no images).
     metadata = _extract_pptx_metadata(path)
@@ -292,13 +307,18 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
     status = str(result.get("status") or "warn").lower()
     if status not in {"pass", "warn", "fail"}:
         status = "warn"
-    return {
+    out: dict[str, Any] = {
         "status": status,
         "summary": str(result.get("summary") or ""),
         "per_slide_findings": result.get("per_slide_findings") or [],
         "remediation_hints": result.get("remediation_hints") or [],
         "metadata": metadata,
+        "critic_path": "metadata",
     }
+    # Only present when the pixel path was eligible (auto/pixel mode) but degraded.
+    if degraded_reason:
+        out["critic_degraded_reason"] = degraded_reason
+    return out
 
 
 def _extract_docx_metadata(path: Path) -> dict[str, Any]:

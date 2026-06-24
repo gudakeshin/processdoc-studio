@@ -82,3 +82,56 @@ def test_evaluate_pptx_prompt_avoids_hardcoded_brand_bias(monkeypatch, tmp_path:
     assert out["status"] == "pass"
     assert "10.0" not in seen_user["text"]
     assert "#86BC25" not in seen_user["text"]
+
+
+def test_evaluate_pptx_uses_pixel_path_when_deps_present(monkeypatch, tmp_path: Path) -> None:
+    """When soffice + pypdfium2 + vision model all succeed, the report is tagged pixel."""
+    pptx_path = tmp_path / "output.pptx"
+    pptx_path.write_bytes(b"placeholder")
+    monkeypatch.setattr(settings, "pptx_visual_critic_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "pptx_visual_critic_mode", "auto", raising=False)
+    monkeypatch.setattr("app.services.visual_qa.is_claude_enabled", lambda: True)
+
+    def _fake_pdf(_src: Path, outdir: Path) -> Path:
+        pdf = Path(outdir) / "out.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        return pdf
+
+    monkeypatch.setattr("app.services.visual_qa._convert_office_to_pdf", _fake_pdf)
+    monkeypatch.setattr("app.services.visual_qa._render_pdf_pages_to_png", lambda *a, **k: [b"img"])
+    monkeypatch.setattr(
+        "app.services.visual_qa.claude_generate_json_with_images",
+        lambda **_: {
+            "status": "warn",
+            "summary": "uneven density",
+            "per_slide_findings": [{"index": 1, "issue": "cramped", "severity": "medium"}],
+            "remediation_hints": [{"slide_index": 1, "instruction": "add whitespace"}],
+        },
+    )
+
+    out = _evaluate_pptx(pptx_path, "p1", "r1")
+    assert out["critic_path"] == "pixel"
+    assert out["status"] == "warn"
+    assert out["remediation_hints"]
+
+
+def test_evaluate_pptx_marks_metadata_degradation_when_soffice_missing(monkeypatch, tmp_path: Path) -> None:
+    """Auto mode that cannot run the pixel path must label the metadata fallback and say why."""
+    pptx_path = tmp_path / "output.pptx"
+    pptx_path.write_bytes(b"placeholder")
+    monkeypatch.setattr(settings, "pptx_visual_critic_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "pptx_visual_critic_mode", "auto", raising=False)
+    monkeypatch.setattr("app.services.visual_qa.is_claude_enabled", lambda: True)
+    monkeypatch.setattr("app.services.visual_qa._convert_office_to_pdf", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.services.visual_qa._extract_pptx_metadata",
+        lambda _: {"slide_count": 1, "slides": [{"index": 1, "shape_count": 4, "text_blocks": 3, "fill_colors": []}]},
+    )
+    monkeypatch.setattr(
+        "app.services.visual_qa.claude_generate_json",
+        lambda **_: {"status": "pass", "summary": "ok", "per_slide_findings": [], "remediation_hints": []},
+    )
+
+    out = _evaluate_pptx(pptx_path, "p1", "r1")
+    assert out["critic_path"] == "metadata"
+    assert "soffice" in str(out.get("critic_degraded_reason", "")).lower()

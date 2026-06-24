@@ -52,11 +52,15 @@ _DARK_FILLS = {"dark", "mid_dark", "green", "dark_green"}
 
 _SEMANTIC_STEP_ICON_MAP: list[tuple[tuple[str, ...], str]] = [
     (("assess", "discover", "diagnose", "baseline"), "\u2699"),
+    (("plan", "roadmap", "strategy", "prioriti", "scope", "define"), "\u2691"),
     (("design", "blueprint", "architect", "model"), "\u270D"),
+    (("data", "analy", "measure", "report", "metric", "insight"), "\u2261"),
     (("implement", "build", "deploy", "execute"), "\u2692"),
     (("test", "validate", "verify", "pilot"), "\u2713"),
+    (("launch", "go-live", "golive", "release", "rollout", "adopt"), "\u27A4"),
+    (("review", "approve", "sign", "iterate", "refine", "feedback"), "\u21BB"),
     (("stabilize", "optimize", "scale", "improve"), "\u2605"),
-    (("govern", "control", "monitor", "assure"), "\u2696"),
+    (("govern", "control", "monitor", "assure", "support", "sustain"), "\u2696"),
 ]
 
 
@@ -624,17 +628,17 @@ class SlideComposer:
                 desc_frame.word_wrap = True
 
     def _compose_column_cards(self, slide: Any, slide_dict: dict[str, Any], y: float, h: float) -> None:
-        """Compose 3-column card layout."""
+        """Compose 2–4 column card layout."""
         cards = slide_dict.get("column_cards", [])
         if not cards:
             self._add_placeholder(slide, y, h, "Content pending")
             return
 
-        cols = min(3, len(cards))
+        cols = min(4, len(cards))
         card_w = (CONTENT_W - ((cols - 1) * GUTTER)) / cols
         card_h = h
 
-        for idx, card in enumerate(cards[:3]):
+        for idx, card in enumerate(cards[:4]):
             x = MARGIN_H + idx * (card_w + GUTTER)
 
             # Card background — honor accent token for visual rhythm
@@ -757,6 +761,10 @@ class SlideComposer:
             "bar": XL_CHART_TYPE.BAR_CLUSTERED,
             "pie": XL_CHART_TYPE.PIE,
             "area": XL_CHART_TYPE.AREA,
+            "doughnut": XL_CHART_TYPE.DOUGHNUT,
+            "column_stacked": XL_CHART_TYPE.COLUMN_STACKED,
+            "percent_stacked": XL_CHART_TYPE.COLUMN_STACKED_100,
+            "bar_stacked": XL_CHART_TYPE.BAR_STACKED,
         }
         chart_type = type_map.get(chart_type_str, XL_CHART_TYPE.COLUMN_CLUSTERED)
 

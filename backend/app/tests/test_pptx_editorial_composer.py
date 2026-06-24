@@ -88,6 +88,51 @@ def test_editorial_renders_every_type_without_errors() -> None:
     assert len(prs.slides) == len(_SLIDES)
 
 
+def test_editorial_renders_phase3_features() -> None:
+    """Phase 3: 2–4 column cards, stacked chart variants, and expanded process_flow icons."""
+    slides = [
+        {"slide_type": "title", "title": "Phase 3 smoke", "subtitle": "x"},
+        {
+            "slide_type": "column_cards", "title": "Four levers.",
+            "column_cards": [
+                {"heading": "Plan", "body": "a", "accent": "green"},
+                {"heading": "Build", "body": "b", "accent": "dark"},
+                {"heading": "Launch", "body": "c", "accent": "gray"},
+                {"heading": "Sustain", "body": "d", "accent": "mid_dark"},
+            ],
+        },
+        {
+            "slide_type": "chart", "title": "Composition.",
+            "chart": {
+                "type": "percent_stacked", "categories": ["Q1", "Q2", "Q3"],
+                "series": [{"name": "A", "values": [3, 4, 5]}, {"name": "B", "values": [2, 2, 1]}],
+            },
+        },
+        {
+            "slide_type": "chart", "title": "Stacked bars.",
+            "chart": {
+                "type": "bar_stacked", "categories": ["X", "Y"],
+                "series": [{"name": "A", "values": [1, 2]}, {"name": "B", "values": [3, 1]}],
+            },
+        },
+    ]
+    prs = _render("editorial", slides)
+    assert len(prs.slides) == len(slides)
+    cards_text = _all_text(prs.slides[1])
+    for heading in ("Plan", "Build", "Launch", "Sustain"):
+        assert heading in cards_text  # 4th card is rendered, not truncated at 3
+    for idx in (2, 3):
+        assert any(getattr(sh, "has_chart", False) for sh in prs.slides[idx].shapes)
+
+
+def test_semantic_icon_map_covers_new_keywords() -> None:
+    from app.core.pptx_artifact_renderer import _icon_for_step_label
+
+    fallback = "●"
+    for label in ("Plan scope", "Analyze data", "Launch product", "Review & approve"):
+        assert _icon_for_step_label(label) != fallback
+
+
 def test_editorial_content_slide_has_no_green_topbar() -> None:
     prs = _render("editorial")
     content = prs.slides[1]  # stat_cards

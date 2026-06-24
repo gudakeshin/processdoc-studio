@@ -817,6 +817,8 @@ class PPTXDeliverable(IDeliverable):
                 "line": XL_CHART_TYPE.LINE,
                 "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
                 "column_stacked": XL_CHART_TYPE.COLUMN_STACKED,
+                "percent_stacked": XL_CHART_TYPE.COLUMN_STACKED_100,
+                "bar_stacked": XL_CHART_TYPE.BAR_STACKED,
                 "bar": XL_CHART_TYPE.BAR_CLUSTERED,
                 "pie": XL_CHART_TYPE.PIE,
                 "area": XL_CHART_TYPE.AREA,
@@ -876,7 +878,7 @@ class PPTXDeliverable(IDeliverable):
                         ser.format.line.fill.solid()
                         ser.format.line.fill.fore_color.rgb = color
 
-            if chart_type_str in ("column", "bar", "column_stacked"):
+            if chart_type_str in ("column", "bar", "column_stacked", "percent_stacked", "bar_stacked"):
                 with contextlib.suppress(Exception):
                     for ser in chart.series:
                         ser.data_labels.showValue = True

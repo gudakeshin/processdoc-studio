@@ -86,8 +86,8 @@ def validate_slide_schema(slides: list[dict[str, Any]]) -> list[str]:
             cards = slide.get("column_cards", [])
             if not isinstance(cards, list) or len(cards) < 2:
                 violations.append(f"{sn}: column_cards needs ≥2 items")
-            elif len(cards) > 3:
-                violations.append(f"{sn}: column_cards has {len(cards)} items; max 3")
+            elif len(cards) > 4:
+                violations.append(f"{sn}: column_cards has {len(cards)} items; max 4")
 
         elif st == "stack_layers":
             layers = slide.get("stack_layers", [])

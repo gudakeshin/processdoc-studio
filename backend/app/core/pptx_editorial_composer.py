@@ -238,7 +238,7 @@ class EditorialSlideComposer:
             )
 
     def _compose_column_cards(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
-        cards = slide_dict.get("column_cards", [])[:3]
+        cards = slide_dict.get("column_cards", [])[:4]
         if not cards:
             return
         cols = len(cards)
@@ -306,6 +306,8 @@ class EditorialSlideComposer:
         type_map = {
             "column": XL_CHART_TYPE.COLUMN_CLUSTERED, "line": XL_CHART_TYPE.LINE,
             "bar": XL_CHART_TYPE.BAR_CLUSTERED, "pie": XL_CHART_TYPE.PIE, "area": XL_CHART_TYPE.AREA,
+            "doughnut": XL_CHART_TYPE.DOUGHNUT, "column_stacked": XL_CHART_TYPE.COLUMN_STACKED,
+            "percent_stacked": XL_CHART_TYPE.COLUMN_STACKED_100, "bar_stacked": XL_CHART_TYPE.BAR_STACKED,
         }
         ctype = type_map.get(str(data.get("type", "column")).lower(), XL_CHART_TYPE.COLUMN_CLUSTERED)
         cd = CategoryChartData()
