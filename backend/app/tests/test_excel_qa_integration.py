@@ -235,16 +235,42 @@ class TestExcelQAEvaluatorIntegration:
             )
             assert isinstance(result, dict)
 
-    def test_evaluate_graceful_fallback_when_qa_unavailable(self):
-        """QA evaluation returns neutral result gracefully when service unavailable."""
+    def test_evaluate_reports_not_assessed_on_runtime_error(self):
+        """A QA runtime error must report 'not assessed' (passed=None), never a false pass."""
+        from unittest.mock import patch
+
         cells = [{"sheet": "Test", "row": 1, "col": 1}]
 
-        # The function should handle missing QAAgentLoop gracefully
-        result = ExcelQAEvaluator.evaluate_export_quality(
-            xlsx_cells=cells,
-            model_summary={"assumptions": 10, "periods": 5},
-        )
+        # Simulate the QA loop failing at runtime: export must not be silently waved through.
+        with patch("app.services.qa.QAAgentLoop.run", side_effect=RuntimeError("QA service unavailable")):
+            result = ExcelQAEvaluator.evaluate_export_quality(
+                xlsx_cells=cells,
+                model_summary={"assumptions": 10, "periods": 5},
+            )
 
-        # Should return neutral/safe result
-        assert result["passed"] is True
+        assert result["passed"] is None
+        assert result["status"] == "error"
+        assert "error" in result
         assert result["iterations"] >= 0
+
+    def test_evaluate_reports_skipped_when_qa_import_unavailable(self):
+        """When QAAgentLoop cannot be imported, QA is 'skipped' (passed=None), not a pass."""
+        import builtins
+        from unittest.mock import patch
+
+        cells = [{"sheet": "Test", "row": 1, "col": 1}]
+        real_import = builtins.__import__
+
+        def _fail_qa_import(name, *args, **kwargs):
+            if name == "app.services.qa":
+                raise ImportError("simulated missing QA module")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_fail_qa_import):
+            result = ExcelQAEvaluator.evaluate_export_quality(
+                xlsx_cells=cells,
+                model_summary={"assumptions": 10, "periods": 5},
+            )
+
+        assert result["passed"] is None
+        assert result["status"] == "skipped"

@@ -256,6 +256,54 @@ class XLSXDeliverable(IDeliverable):
         )
 
     def render(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
+        from app.core.config import settings
+
+        if getattr(settings, "xlsx_composer_enabled", True):
+            try:
+                return self._render_composed(payload, run_dir, branding)
+            except Exception as exc:  # noqa: BLE001 - fail-soft to the legacy path
+                logger.warning("XLSX composer path failed (%s); falling back to legacy render", exc)
+        return self._render_legacy(payload, run_dir, branding)
+
+    def _render_composed(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
+        import json
+
+        from app.core.doc_theme import resolve_doc_theme
+        from app.core.xlsx_composer import XlsxComposer
+
+        out = run_dir / "output.xlsx"
+        wb = Workbook()
+
+        pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
+        process_name = str((pm or {}).get("process_name") or payload.get("presentation_title") or "")
+        # Resolve through the shared token layer — fixes dict-shaped branding (the old
+        # getattr path silently fell back to default green) and applies the topic palette.
+        theme = resolve_doc_theme(branding, process_name)
+
+        self._apply_workbook_properties(wb, payload, branding)
+        composer = XlsxComposer(wb, theme)
+        composer.compose(payload)
+        wb.save(out)
+
+        try:
+            (run_dir / "xlsx_render_signals.json").write_text(
+                json.dumps({"fit_report": composer.fit_report}, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("xlsx_render_signals persist skipped: %s", exc)
+
+        try:
+            from app.core.xlsx_qa import validate_xlsx
+
+            (run_dir / "xlsx_qa.json").write_text(
+                json.dumps(validate_xlsx(out), indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("xlsx_qa skipped: %s", exc)
+
+        return out
+
+    def _render_legacy(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
         out = run_dir / "output.xlsx"
         wb = Workbook()
 

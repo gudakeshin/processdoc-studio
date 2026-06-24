@@ -230,6 +230,73 @@ class DOCXDeliverable(IDeliverable):
         )
 
     def render(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
+        from app.core.config import settings
+
+        if getattr(settings, "docx_composer_enabled", True):
+            try:
+                return self._render_composed(payload, run_dir, branding)
+            except Exception as exc:  # noqa: BLE001 - fail-soft to the legacy path
+                logger.warning("DOCX composer path failed (%s); falling back to legacy render", exc)
+        return self._render_legacy(payload, run_dir, branding)
+
+    def _render_composed(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
+        import json
+
+        from app.core import docx_components as C
+        from app.core.deliverable_utils import parse_markdown_blocks
+        from app.core.doc_theme import resolve_doc_theme
+        from app.core.docx_composer import DocxComposer
+        from app.core.markdown_guard import detect_code_document
+
+        out = run_dir / "output.docx"
+        text = safe_text(payload.get("docx_markdown") or payload.get("narrative_md"), "Process document")
+        code_issues = detect_code_document(text)
+        if code_issues:
+            logger.warning("DOCX body looks like generator code (%s); using narrative fallback", code_issues)
+            fallback = safe_text(payload.get("narrative_md"), "")
+            text = fallback if fallback and not detect_code_document(fallback) else "Process document"
+
+        pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
+        process_name = safe_text(pm.get("process_name") if pm else None, "Process Output")
+        theme = resolve_doc_theme(branding, process_name)
+        company = theme.company_name
+        author = str(payload.get("owner_name") or company or "ProcessDoc Studio")
+
+        doc = Document()
+        C.apply_theme_styles(doc, theme)
+        C.set_page_margins(doc)
+        C.apply_core_properties(doc, process_name, company, author)
+        C.cover_page(doc, theme, process_name, company)
+
+        toc_heading = doc.add_heading("Table of Contents", level=1)
+        for run in toc_heading.runs:
+            run.font.name = theme.font_header
+        C.insert_toc(doc)
+        C.page_footer(doc, theme, company)
+
+        composer = DocxComposer(doc, theme)
+        composer.compose(parse_markdown_blocks(text))
+        doc.save(out)
+
+        try:
+            (run_dir / "docx_render_signals.json").write_text(
+                json.dumps({"fit_report": composer.fit_report}, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("docx_render_signals persist skipped: %s", exc)
+
+        try:
+            from app.core.docx_qa import validate_docx
+
+            (run_dir / "docx_qa.json").write_text(
+                json.dumps(validate_docx(out), indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("docx_qa skipped: %s", exc)
+
+        return out
+
+    def _render_legacy(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
         out = run_dir / "output.docx"
         text = safe_text(payload.get("docx_markdown") or payload.get("narrative_md"), "Process document")
 

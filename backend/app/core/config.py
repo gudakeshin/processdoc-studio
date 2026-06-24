@@ -312,6 +312,11 @@ class Settings(BaseSettings):
     # (pixel-faithful); the ReportLab outline renderer remains the fail-open fallback.
     deck_pdf_via_soffice_enabled: bool = True
     soffice_convert_timeout_sec: float = 120.0
+    # Feature flags for the DOCX/XLSX composer paths (theme tokens, topic palette,
+    # per-format QA). When enabled, the deliverable uses the composer; on any error
+    # it falls back to the legacy render path. Mirrors pptx_editorial_theme_enabled.
+    docx_composer_enabled: bool = True
+    xlsx_composer_enabled: bool = True
     # Post-render artifact verification (citations, code-as-document, sparse PPTX text).
     final_artifact_qa_enabled: bool = True
     # Intent-aware deliverable archetype (advisory POV vs process doc vs proposal).
@@ -373,6 +378,8 @@ class Settings(BaseSettings):
         "pptx_editorial_theme_enabled",
         "pptx_evidence_hard_fail_enabled",
         "deck_pdf_via_soffice_enabled",
+        "docx_composer_enabled",
+        "xlsx_composer_enabled",
         "final_artifact_qa_enabled",
         "deliverable_archetype_enabled",
         "narrative_llm_critique_enabled",

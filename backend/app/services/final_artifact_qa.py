@@ -56,6 +56,20 @@ def extract_artifact_text(run_dir: Path) -> dict[str, str]:
         except Exception as exc:
             logger.debug("final_artifact_qa: pdf extract skipped: %s", exc)
 
+    xlsx_path = run_dir / "output.xlsx"
+    if xlsx_path.is_file():
+        try:
+            from openpyxl import load_workbook
+
+            wb = load_workbook(str(xlsx_path), read_only=True, data_only=True)
+            parts: list[str] = []
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    parts.extend(str(v) for v in row if v is not None)
+            out["xlsx"] = "\n".join(parts)
+        except Exception as exc:
+            logger.warning("final_artifact_qa: xlsx extract failed: %s", exc)
+
     md_path = run_dir / "docx_markdown.md"
     if not md_path.is_file():
         md_path = run_dir / "docx_markdown.txt"
@@ -129,6 +143,10 @@ def verify_final_artifacts(
     pptx_text = texts.get("pptx") or ""
     if (run_dir / "output.pptx").is_file() and len(pptx_text.strip()) < 40:
         issues.append("rendered PPTX text extraction is unexpectedly sparse")
+
+    xlsx_text = texts.get("xlsx") or ""
+    if (run_dir / "output.xlsx").is_file() and len(xlsx_text.strip()) < 10:
+        issues.append("rendered XLSX has no extractable cell content")
 
     status = "pass" if not issues else "fail"
     return {

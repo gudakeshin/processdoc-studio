@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import re
 from datetime import datetime
 from app.core.tz import IST
 from pathlib import Path
@@ -18,6 +17,7 @@ from pptx.util import Inches, Pt
 
 from app.core.deliverable import DeliverableMetadata, IDeliverable
 from app.core.deliverable_utils import fetch_logo_source
+from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
 from app.services.deliverable_quality import _validate_pptx_completeness
 
 logger = logging.getLogger(__name__)
@@ -37,42 +37,6 @@ def _hex_to_rgb(raw: str) -> RGBColor:
         except ValueError:
             pass
     return RGBColor(0x86, 0xBC, 0x25)
-
-
-_TOPIC_PALETTES: list[tuple[tuple[str, ...], dict[str, str]]] = [
-    # (keyword triggers, palette overrides matching SKILL.md palette table)
-    (("finance", "cfo", "audit", "tax", "treasury", "accounting", "close", "record"),
-     {"primary_color": "#990011", "accent_light": "#FCF6F5", "accent_dark": "#7A0010"}),
-    (("technology", "digital", "data", "ai", "cloud", "cyber", "it ", "iot", "platform"),
-     {"primary_color": "#065A82", "accent_light": "#C6E2F0", "accent_dark": "#1C7293"}),
-    (("people", "hr", "talent", "culture", "workforce", "learning", "change"),
-     {"primary_color": "#6D2E46", "accent_light": "#ECE2D0", "accent_dark": "#A26769"}),
-    (("sustainability", "esg", "environment", "climate", "green", "carbon", "energy"),
-     {"primary_color": "#2C5F2D", "accent_light": "#D8EED8", "accent_dark": "#97BC62"}),
-    # Default: operations / process / supply / procurement keep Deloitte chrome unchanged.
-]
-
-
-def _pick_topic_palette(process_name: str) -> dict[str, str]:
-    """Return palette overrides for a topic-matched process name, or {} to keep defaults.
-
-    Uses word-boundary matching (avoids "ai" inside "sustainability"/"chain") and
-    picks the palette with the highest keyword-hit count so that ambiguous names
-    like "Carbon Tax Audit" resolve to the palette with the most evidence (finance:
-    "tax"+"audit"=2 > ESG: "carbon"=1) rather than whichever palette comes first.
-    """
-    lowered = (process_name or "").lower()
-    best_overrides: dict[str, str] = {}
-    best_count = 0
-    for keywords, overrides in _TOPIC_PALETTES:
-        count = sum(
-            1 for kw in keywords
-            if re.search(r"\b" + re.escape(kw.strip()) + r"\b", lowered)
-        )
-        if count > best_count:
-            best_count = count
-            best_overrides = overrides
-    return best_overrides
 
 
 def _merge_branding_dict(branding: Any) -> dict[str, Any]:

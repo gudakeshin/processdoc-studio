@@ -141,6 +141,41 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
     return len(issues) == 0, issues
 
 
+def _validate_docx_completeness(docx_markdown: str) -> tuple[bool, list[str]]:
+    """Conservative completeness check for the DOCX intermediate (markdown body).
+
+    Mirrors ``_validate_pptx_completeness`` but for reflowable text: only fails on
+    degenerate content (effectively empty, or structureless) so healthy documents
+    pass untouched.
+    """
+    issues: list[str] = []
+    text = (docx_markdown or "").strip()
+    if len(text) < 40:
+        issues.append("docx_markdown is empty/minimal")
+        return False, issues
+    has_heading = any(line.lstrip().startswith("#") for line in text.splitlines())
+    if not has_heading and len(text) > 600:
+        issues.append("docx_markdown has substantial body but no headings (flat structure)")
+    return len(issues) == 0, issues
+
+
+def _validate_xlsx_completeness(raw: Any) -> tuple[bool, list[str]]:
+    """Conservative completeness check for the XLSX intermediate.
+
+    Accepts the markdown-table string or typed-cell list; fails only when there is
+    no usable tabular content.
+    """
+    issues: list[str] = []
+    if isinstance(raw, list):
+        if not raw:
+            issues.append("xlsx_cells is empty")
+        return len(issues) == 0, issues
+    text = str(raw or "").strip()
+    if "|" not in text or len(text) < 10:
+        issues.append("xlsx content has no usable table rows")
+    return len(issues) == 0, issues
+
+
 def _to_text(value: Any) -> str:
     if value is None:
         return ""
@@ -572,6 +607,38 @@ def run_deliverable_quality_loop(
                         "rewrite_prompt": (
                             f"Regenerate pptx_slides: {'; '.join(issues[:3])}. "
                             f"Ensure stat_cards/column_cards/stack_layers/table have required items."
+                        ),
+                    }
+                    continue
+
+            # DOCX completeness check (parity with PPTX): gate degenerate bodies.
+            if ok == "docx_markdown" and isinstance(raw, str):
+                is_complete, issues = _validate_docx_completeness(raw)
+                if not is_complete:
+                    increment("deliverable_quality_docx_incomplete")
+                    gated_failures[ok] = {
+                        "reason": f"DOCX completeness check failed: {'; '.join(issues[:3])}",
+                        "target_score": 0.85,
+                        "actions": issues,
+                        "rewrite_prompt": (
+                            f"Regenerate docx_markdown: {'; '.join(issues[:3])}. "
+                            "Provide structured headings and substantive body content."
+                        ),
+                    }
+                    continue
+
+            # XLSX completeness check (parity with PPTX): gate empty workbooks.
+            if ok in ("xlsx_markdown", "xlsx_cells"):
+                is_complete, issues = _validate_xlsx_completeness(raw)
+                if not is_complete:
+                    increment("deliverable_quality_xlsx_incomplete")
+                    gated_failures[ok] = {
+                        "reason": f"XLSX completeness check failed: {'; '.join(issues[:3])}",
+                        "target_score": 0.85,
+                        "actions": issues,
+                        "rewrite_prompt": (
+                            f"Regenerate {ok}: {'; '.join(issues[:3])}. "
+                            "Provide a populated table with header and data rows."
                         ),
                     }
                     continue

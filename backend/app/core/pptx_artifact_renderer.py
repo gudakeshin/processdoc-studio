@@ -9,7 +9,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,7 @@ from pptx.util import Inches, Pt
 
 from app.core.config import settings
 from app.core.deliverable_utils import fetch_logo_source
+from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
 from app.core.pptx_qa import validate_pptx_against_slides
 from app.core.evidence_validator import validate_pptx_slides_evidence
 
@@ -48,17 +48,6 @@ GUTTER = 0.15     # space between elements
 # Fill tokens that require white/inverse text for contrast
 _DARK_FILLS = {"dark", "mid_dark", "green", "dark_green"}
 
-_TOPIC_PALETTES: list[tuple[tuple[str, ...], dict[str, str]]] = [
-    (("finance", "cfo", "audit", "tax", "treasury", "accounting", "close", "record"),
-     {"primary_color": "#990011", "accent_light": "#FCF6F5", "accent_dark": "#7A0010"}),
-    (("technology", "digital", "data", "ai", "cloud", "cyber", "it ", "iot", "platform"),
-     {"primary_color": "#065A82", "accent_light": "#C6E2F0", "accent_dark": "#1C7293"}),
-    (("people", "hr", "talent", "culture", "workforce", "learning", "change"),
-     {"primary_color": "#6D2E46", "accent_light": "#ECE2D0", "accent_dark": "#A26769"}),
-    (("sustainability", "esg", "environment", "climate", "green", "carbon", "energy"),
-     {"primary_color": "#2C5F2D", "accent_light": "#D8EED8", "accent_dark": "#97BC62"}),
-]
-
 _SEMANTIC_STEP_ICON_MAP: list[tuple[tuple[str, ...], str]] = [
     (("assess", "discover", "diagnose", "baseline"), "\u2699"),
     (("design", "blueprint", "architect", "model"), "\u270D"),
@@ -78,20 +67,6 @@ def _hex_to_rgb(raw: str) -> RGBColor:
         except ValueError:
             pass
     return RGBColor(0x86, 0xBC, 0x25)  # Deloitte green
-
-
-def _pick_topic_palette(process_name: str) -> dict[str, str]:
-    lowered = (process_name or "").lower()
-    best_overrides: dict[str, str] = {}
-    best_count = 0
-    for keywords, overrides in _TOPIC_PALETTES:
-        count = sum(
-            1 for kw in keywords if re.search(r"\b" + re.escape(kw.strip()) + r"\b", lowered)
-        )
-        if count > best_count:
-            best_count = count
-            best_overrides = overrides
-    return best_overrides
 
 
 def _icon_for_step_label(step_label: str, fallback: str = "\u25CF") -> str:

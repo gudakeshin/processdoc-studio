@@ -946,11 +946,17 @@ def excel_export(
                     threshold=0.8,
                     project_id=pid,
                 )
-                if not qa_result.get("passed", True):
+                passed = qa_result.get("passed")
+                if passed is True:
+                    increment("excel_export_qa_passed")
+                elif passed is False:
                     log.warning(f"QA evaluation failed: {qa_result.get('remediation_instructions')}")
                     increment("excel_export_qa_failed")
                 else:
-                    increment("excel_export_qa_passed")
+                    # passed is None: QA could not run (skipped/error) — record as
+                    # not-assessed rather than counting it as a pass.
+                    log.warning(f"QA evaluation not assessed: status={qa_result.get('status')}")
+                    increment("excel_export_qa_skipped")
             except Exception as e:
                 log.error(f"QA evaluation error: {e}", exc_info=True)
                 increment("excel_export_qa_error")
@@ -966,7 +972,8 @@ def excel_export(
         # Include QA result if evaluation ran
         if qa_result:
             response_payload["qa_result"] = {
-                "passed": qa_result.get("passed", False),
+                "passed": qa_result.get("passed"),
+                "status": qa_result.get("status"),
                 "iterations": qa_result.get("iterations", 0),
             }
 
