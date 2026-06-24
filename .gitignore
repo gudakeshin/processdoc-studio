@@ -37,3 +37,6 @@ frontend/tsconfig.tsbuildinfo
 # Logs and temp files
 *.log
 *.tmp
+
+# Claude Code worktree checkouts
+.claude/worktrees/
