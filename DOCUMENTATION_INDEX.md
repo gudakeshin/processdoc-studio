@@ -1,6 +1,6 @@
 # ProcessDoc Studio Cowork Implementation - Complete Documentation
 
-**Status**: All 4 phases implemented and tested (151 tests passing)
+**Status**: All 4 phases implemented and tested. (The "151 tests passing" figure here was a point-in-time count from the original Cowork implementation; the suite has grown substantially since — run `pytest app/tests --collect-only -q` from `backend/` for the current count rather than trusting a number in this doc.)
 
 **Archive:** Historical status and implementation write-ups that previously lived at the repository root are under `docs/archive/`.
 
