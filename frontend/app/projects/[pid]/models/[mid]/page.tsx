@@ -333,7 +333,26 @@ export default function ModelEditorPage() {
               const blob = new Blob([JSON.stringify(events, null, 2)], { type: "application/json" });
               window.open(URL.createObjectURL(blob));
             } else {
-              console.warn("PDF export not yet implemented");
+              // PDF: render a printable table and let the browser "Save as PDF".
+              const headers = ["id", "timestamp", "eventType", "user", "modelId", "cellRef", "severity"];
+              const esc = (v: unknown) =>
+                String(v ?? "").replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
+              const head = headers.map((h) => `<th>${h}</th>`).join("");
+              const rows = events
+                .map((e) => `<tr>${headers.map((h) => `<td>${esc((e as Record<string, unknown>)[h])}</td>`).join("")}</tr>`)
+                .join("");
+              const html =
+                `<!doctype html><meta charset="utf-8"><title>Audit Log</title>` +
+                `<style>body{font-family:sans-serif;padding:24px}table{border-collapse:collapse;width:100%}` +
+                `th,td{border:1px solid #ccc;padding:6px 8px;font-size:12px;text-align:left}th{background:#f3f4f6}</style>` +
+                `<h2>Audit Log</h2><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+              const win = window.open("", "_blank");
+              if (win) {
+                win.document.write(html);
+                win.document.close();
+                win.focus();
+                win.print();
+              }
             }
           }}
         />

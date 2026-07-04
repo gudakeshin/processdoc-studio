@@ -22,11 +22,20 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const noShell = noShellRoutes.some((prefix) => pathname.startsWith(prefix));
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem("processdoc.desktopNavCollapsed") === "true";
-  });
-  const [matrixTheme, setMatrixTheme] = useState(readMatrixThemeFromStorage);
+  // Persisted UI prefs are read in a mount effect (not in useState initializers)
+  // so the first client render matches the server HTML and hydration does not
+  // mismatch. localStorage is unavailable during SSR.
+  const [hydrated, setHydrated] = useState(false);
+  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(false);
+  const [matrixTheme, setMatrixTheme] = useState(false);
+
+  useEffect(() => {
+    setDesktopNavCollapsed(
+      window.localStorage.getItem("processdoc.desktopNavCollapsed") === "true",
+    );
+    setMatrixTheme(readMatrixThemeFromStorage());
+    setHydrated(true);
+  }, []);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -47,9 +56,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    // Skip until persisted prefs have been read, otherwise the initial default
+    // would overwrite the stored value before the mount effect loads it.
+    if (!hydrated) return;
     window.localStorage.setItem("processdoc.desktopNavCollapsed", desktopNavCollapsed ? "true" : "false");
-  }, [desktopNavCollapsed]);
+  }, [desktopNavCollapsed, hydrated]);
 
   useEffect(() => {
     // Close the mobile nav whenever the route changes. Syncing with router
