@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from app.core.config import settings
+from app.core.run_control import RunAborted, poll_abort
 from app.services.run_budget import charge_llm_usage, extract_usage_counts
 
 _CB_LOCK = threading.Lock()
@@ -190,7 +191,12 @@ def claude_generate(
             kwargs["system"] = _build_cached_system(system)
         else:
             kwargs["system"] = system
-        msg = client.messages.create(**kwargs)
+        with client.messages.stream(**kwargs) as stream:
+            for _ in stream:
+                poll_abort()
+            msg = stream.get_final_message()
+    except RunAborted:
+        raise
     except Exception:
         _record_failure()
         raise
@@ -218,7 +224,7 @@ def claude_generate_with_thinking(
     if not is_claude_enabled():
         raise RuntimeError("Claude disabled: missing ANTHROPIC_API_KEY")
 
-    from anthropic import Anthropic  # type: ignore
+    from anthropic import Anthropic, BadRequestError  # type: ignore
 
     budget = int(budget_tokens if budget_tokens is not None else settings.anthropic_thinking_budget_tokens)
     cap = max_tokens if max_tokens is not None else settings.anthropic_coordinator_plan_max_tokens
@@ -227,15 +233,39 @@ def claude_generate_with_thinking(
 
     client = Anthropic(api_key=settings.anthropic_api_key)
     _guard_circuit()
+    resolved_model = model or settings.anthropic_claude_model
+    create_kwargs = dict(
+        model=resolved_model,
+        max_tokens=cap,
+        system=_build_cached_system(system),
+        messages=[{"role": "user", "content": user}],
+        timeout=max(1, float(settings.anthropic_timeout_sec)),
+    )
     try:
-        msg = client.messages.create(
-            model=model or settings.anthropic_claude_model,
-            max_tokens=cap,
-            system=_build_cached_system(system),
-            messages=[{"role": "user", "content": user}],
-            thinking={"type": "enabled", "budget_tokens": budget},
-            timeout=max(1, float(settings.anthropic_timeout_sec)),
-        )
+        try:
+            with client.messages.stream(
+                thinking={"type": "enabled", "budget_tokens": budget},
+                **create_kwargs,
+            ) as stream:
+                for _ in stream:
+                    poll_abort()
+                msg = stream.get_final_message()
+        except BadRequestError as exc:
+            # Newer models (e.g. claude-opus-4-8) dropped "enabled"/budget_tokens
+            # in favor of "adaptive" thinking + an output_config effort tier.
+            if "thinking.type" not in str(exc):
+                raise
+            effort = "low" if budget < 4000 else "medium" if budget < 10000 else "high" if budget < 20000 else "max"
+            with client.messages.stream(
+                thinking={"type": "adaptive"},
+                output_config={"effort": effort},
+                **create_kwargs,
+            ) as stream:
+                for _ in stream:
+                    poll_abort()
+                msg = stream.get_final_message()
+    except RunAborted:
+        raise
     except Exception:
         _record_failure()
         raise
@@ -299,14 +329,19 @@ def claude_generate_json_with_images(
     client = Anthropic(api_key=settings.anthropic_api_key)
     _guard_circuit()
     try:
-        msg = client.messages.create(
+        with client.messages.stream(
             model=model or settings.anthropic_claude_model,
             max_tokens=max_tokens or settings.anthropic_max_tokens,
             temperature=temperature if temperature is not None else settings.anthropic_temperature,
             system=system,
             messages=[{"role": "user", "content": content_blocks}],
             timeout=max(1, float(settings.anthropic_timeout_sec)),
-        )
+        ) as stream:
+            for _ in stream:
+                poll_abort()
+            msg = stream.get_final_message()
+    except RunAborted:
+        raise
     except Exception:
         _record_failure()
         raise
