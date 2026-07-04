@@ -233,10 +233,13 @@ _EXECUTE_NOW_PATTERNS = frozenset({
 _EXECUTE_NOW_SUBSTRINGS = (
     "go ahead and draft", "go ahead and build", "go ahead and create",
     "go ahead and generate", "go ahead and start", "go ahead and make",
+    "go ahead make", "go ahead build", "go ahead create", "go ahead generate",
     "please go ahead", "please draft", "please build the", "please create the",
     "please generate the", "start building", "start drafting", "start creating",
     "start generating", "begin building", "begin drafting", "begin creating",
     "kick it off", "kick off the", "get it started", "get started on",
+    "run this now", "run it now", "run this", "make the deliverable",
+    "create the deliverable", "build the deliverable", "generate the deliverable",
 )
 
 
@@ -253,7 +256,14 @@ def _is_execute_now_intent(content: str) -> bool:
             if prefix in {"ok", "okay", "yes", "yeah", "yep", "sure", "please", "alright", "great"}:
                 return True
     # Substring match for unambiguous execute phrases.
-    return any(sub in lowered for sub in _EXECUTE_NOW_SUBSTRINGS)
+    if any(sub in lowered for sub in _EXECUTE_NOW_SUBSTRINGS):
+        return True
+    # Natural sentences that wrap an unambiguous trigger phrase (e.g. "Go ahead
+    # make the deliverable now", "Lets go with the consolidation") still count,
+    # as long as the message isn't a question or hedging/exploratory language.
+    if "?" in lowered or any(hedge in lowered for hedge in _EXPLORATORY_PHRASES):
+        return False
+    return any(phrase in lowered for phrase in _EXECUTE_NOW_PATTERNS if len(phrase) >= 4)
 
 
 _PROPOSAL_DISCOVERY_OUTPUT_TYPES = {"pptx", "docx"}

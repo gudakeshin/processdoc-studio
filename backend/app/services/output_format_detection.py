@@ -176,6 +176,20 @@ def detect_standalone_excel_intent(instruction: str) -> bool:
     return True
 
 
+def detect_standalone_deck_intent(instruction: str) -> bool:
+    """True when the user clearly wants a deck/slides without also asking for Excel."""
+    text = instruction or ""
+    if not _DECK_FORMAT_RE.search(text):
+        return False
+    if _DECK_INSTEAD_RE.search(text):
+        return True
+    if _STANDALONE_EXCEL_RE.search(text) and not _EXCEL_INSTEAD_RE.search(text):
+        # Both mentioned — require deck to win via explicit phrasing or "instead"
+        lowered = text.lower()
+        return bool(_DECK_INSTEAD_RE.search(text) or "in pptx" in lowered or "as pptx" in lowered)
+    return True
+
+
 def is_financial_model_intent(instruction: str) -> bool:
     lowered = (instruction or "").lower()
     return bool(_FINANCIAL_MODEL_RE.search(lowered) or "financial model" in lowered)
@@ -199,6 +213,7 @@ def resolve_output_formats(
     explicit = detect_explicit_output_formats(lowered)
     deliverable = detect_deliverable_keyword_formats(lowered)
     standalone_excel = detect_standalone_excel_intent(lowered)
+    standalone_deck = detect_standalone_deck_intent(lowered)
     financial_only = is_financial_model_intent(lowered)
 
     if explicit:
@@ -214,6 +229,9 @@ def resolve_output_formats(
     elif standalone_excel:
         chosen = ["xlsx"]
         rationale = "Spreadsheet (Excel) format requested."
+    elif standalone_deck:
+        chosen = ["pptx"]
+        rationale = "Presentation (deck) format requested."
     elif deliverable:
         chosen = deliverable
         rationale = "Deliverable intent maps to preferred output types."
