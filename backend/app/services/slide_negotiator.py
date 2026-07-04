@@ -19,6 +19,9 @@ from app.db.models import MemoryItem
 from app.services.claude import claude_generate_json
 from app.services.leading_practices import leading_practice_library_service as _lp
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Slide type display labels
 SLIDE_TYPE_LABELS: dict[str, str] = {
     "title": "Title slide",
@@ -258,8 +261,8 @@ def load_agreed_slides(db: Session, *, project_id: str) -> list[dict[str, Any]]:
             data = json.loads(row.value)
             if isinstance(data, dict):
                 slides.append(data)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", 'load_agreed_slides', exc)
     slides.sort(key=lambda s: int(s.get("slide_num") or 0))
     return slides
 

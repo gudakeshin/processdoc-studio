@@ -78,7 +78,8 @@ def check_pptx_geometry(pptx_path: Path) -> list[dict[str, Any]]:
                     name = str(sh.name or "")
                     has_text = sh.has_text_frame
                     bboxes.append((l, t, l + w, t + h, name, has_text))
-                except Exception:
+                except Exception as exc:
+                    logger.debug("%s: suppressed error: %s", 'check_pptx_geometry', exc)
                     continue
 
             for l, t, r, b, name, has_text in bboxes:

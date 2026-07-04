@@ -19,6 +19,9 @@ from app.services.langfuse_tracing import langfuse_event, langfuse_span
 from app.services.wiki_integrations import WikiConversationIntegration, WikiRunIntegration
 from app.services.wiki_operations import wiki_ingest_with_retry
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ===== Ingest Operations =====
 
@@ -396,7 +399,8 @@ async def cleanup_orphan_wiki_pages(
             for m in link_re.finditer(f.read_text(encoding="utf-8")):
                 if m.group(1) != f.stem:
                     referenced.add(m.group(1))
-        except Exception:
+        except Exception as exc:
+            logger.debug("%s: suppressed error: %s", 'cleanup_orphan_wiki_pages', exc)
             continue
 
     deleted: list[str] = []

@@ -12,6 +12,9 @@ from app.db.models import RunEvent
 from app.services.langfuse_tracing import langfuse_event
 from app.services.run_events import build_event_payload, canonical_event_aliases
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class RunEventService:
     """Persists run events and exposes event-log resume helpers."""
@@ -54,7 +57,8 @@ class RunEventService:
             return None
         try:
             obj = json.loads(payload_str)
-        except Exception:
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", '_step_status', exc)
             return None
         if not isinstance(obj, dict):
             return None

@@ -10,6 +10,9 @@ from typing import Any, Protocol
 
 from app.services.storage import workspace_path
 
+import logging
+logger = logging.getLogger(__name__)
+
 # India DPDP Act 2023 - pragmatic PII regex approximations (phase 1).
 # This is intentionally conservative and does not attempt full NER accuracy yet.
 AADHAAR_RE = re.compile(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}\b")
@@ -263,7 +266,8 @@ def update_breach_incident_state(
         return None
     try:
         payload = json.loads(incident_path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'update_breach_incident_state', exc)
         return None
     now = datetime.now(IST).isoformat()
     payload["state"] = state

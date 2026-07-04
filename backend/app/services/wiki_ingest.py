@@ -650,7 +650,8 @@ def _read_frontmatter_field(page_file: Path, field: str) -> str | None:
             if stripped.startswith(f"{field}:"):
                 value = stripped.split(":", 1)[1].strip()
                 return value.strip('"').strip("'")
-    except Exception:
+    except Exception as exc:
+        _LOG.warning("%s: suppressed error: %s", '_read_frontmatter_field', exc)
         return None
     return None
 

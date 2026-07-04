@@ -72,8 +72,8 @@ class WebSearchService:
             if settings_path.exists():
                 data = json.loads(settings_path.read_text(encoding="utf-8"))
                 return data if isinstance(data, dict) else {}
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("%s: suppressed error: %s", '_load_project_settings', exc)
         return {}
 
     def _resolve_provider_chain(self, project_id: str | None) -> list[tuple[str, str]]:

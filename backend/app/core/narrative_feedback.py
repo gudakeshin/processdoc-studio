@@ -115,7 +115,8 @@ def persist_narrative_signals(run_dir: Path, signals: dict[str, dict[str, Any]])
     if not isinstance(run_dir, Path):
         try:
             run_dir = Path(str(run_dir))
-        except Exception:
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", 'persist_narrative_signals', exc)
             return None
     try:
         run_dir.mkdir(parents=True, exist_ok=True)

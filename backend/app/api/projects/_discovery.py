@@ -55,14 +55,14 @@ def _normalize_discovery(raw: object) -> dict:
             pptx = int(length_budget.get("pptx")) if length_budget.get("pptx") is not None else None
             if pptx and 4 <= pptx <= 30:
                 lb["pptx"] = pptx
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("%s: suppressed error: %s", '_normalize_discovery', exc)
         try:
             docx_pages = int(length_budget.get("docx_pages")) if length_budget.get("docx_pages") is not None else None
             if docx_pages and 2 <= docx_pages <= 120:
                 lb["docx_pages"] = docx_pages
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("%s: suppressed error: %s", '_normalize_discovery', exc)
         if lb:
             out["length_budget"] = lb
     edited_by_user = raw.get("edited_by_user")

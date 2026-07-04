@@ -104,7 +104,8 @@ def _load_font(family_key: str, bold: bool, italic: bool, px: int):
     """
     try:
         from PIL import ImageFont
-    except Exception:  # Pillow somehow unavailable -> heuristic tier
+    except Exception as exc: # Pillow somehow unavailable -> heuristic tier
+        logger.warning("%s: suppressed error: %s", '_load_font', exc)
         return None
 
     candidates: list[str] = []
@@ -124,7 +125,8 @@ def _load_font(family_key: str, bold: bool, italic: bool, px: int):
     for cand in candidates:
         try:
             return ImageFont.truetype(cand, px)
-        except Exception:
+        except Exception as exc:
+            logger.debug("%s: suppressed error: %s", '_load_font', exc)
             continue
     return None
 
@@ -140,8 +142,8 @@ def measure_text_width_in(
     if font is not None:
         try:
             return float(font.getlength(text)) / 72.0
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", 'measure_text_width_in', exc)
     # Heuristic tier: average advance width.
     em = _AVG_EM_BOLD if bold else _AVG_EM_REGULAR
     return (len(text) * em * pt) / 72.0

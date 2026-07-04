@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import logging
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
@@ -201,8 +204,8 @@ def generate_deck_outline_preview(
                         or ""
                     ).strip().lower(),
                 }
-        except Exception:
-            pass  # Fall through to LLM generation on any error.
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", 'generate_deck_outline_preview', exc)
 
     try:
         from app.services.claude import claude_generate_json, is_claude_enabled
@@ -279,7 +282,8 @@ def generate_deck_outline_preview(
             "skill_id": skill_id or PROPOSAL_SKILL_ID,
             "narrative_arc": str(brief.get("narrative_arc") or "").strip().lower(),
         }
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'generate_deck_outline_preview', exc)
         return None
 
 
@@ -393,7 +397,8 @@ def generate_document_outline_preview(
             "output_type": "docx",
             "skill_id": skill_id or PROPOSAL_SKILL_ID,
         }
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'generate_document_outline_preview', exc)
         return None
 
 

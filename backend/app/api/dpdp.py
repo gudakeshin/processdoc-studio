@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 
@@ -11,6 +12,8 @@ from app.db.models import ConsentLedger, DPDPRightsRequest, User
 from app.db.session import get_db
 from app.services.dpdp import update_breach_incident_state
 from app.services.storage import workspace_path
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -195,7 +198,8 @@ def list_incidents(
             return None
         try:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except Exception:
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", '_parse_ts', exc)
             return None
 
     from_dt = _parse_ts(from_ts)

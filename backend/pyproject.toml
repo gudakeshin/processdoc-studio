@@ -29,6 +29,7 @@ dependencies = [
   "psycopg[binary]",
   "anthropic",
   "pillow",
+  "cairosvg",
   "pypdfium2",
   "pypdf",
   "pyyaml",
@@ -40,7 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "pytest-asyncio", "fakeredis>=2.0"]
+dev = ["pytest", "pytest-cov", "pytest-asyncio", "fakeredis>=2.0", "lupa>=2.0", "ruff>=0.8"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -49,6 +50,7 @@ asyncio_mode = "auto"
 markers = [
     "slow: longer integration-style tests (minutes / heavy I/O); exclude with -m \"not slow\"",
     "live_llm: requires real Anthropic API; opt-in only",
+    "redis: exercises real Redis-backed code paths via fakeredis; opt-in only",
     "asyncio: marks tests as async (deselect with '-m \"not asyncio\"')",
 ]
 
@@ -89,7 +91,7 @@ known-first-party = ["app"]
 "app/main.py" = ["E402"]
 # Tests frequently use assert statements, hardcoded creds, and deliberate bare
 # `raise` patterns that are harmless in a test context.
-"app/tests/*" = ["S101", "S105", "S106", "S107", "S108", "S311", "S324", "B017", "F841", "E741", "SIM105", "SIM117"]
+"app/tests/*" = ["S101", "S105", "S106", "S107", "S108", "S110", "S112", "S311", "S324", "B017", "F841", "E741", "SIM105", "SIM117"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -41,6 +41,10 @@ jobs:
       - name: pip-audit (dependency vulnerabilities)
         # pygments CVE-2026-4539: ReDoS in optional lexer; local-access only; no fixed release in DB yet.
         run: pip-audit --desc on --ignore-vuln CVE-2026-4539
+      - name: Ruff silent-handler gate (S110/S112)
+        # Blocks new try/except blocks that swallow exceptions without logging.
+        # Deliberate best-effort swallows must carry an explicit `# noqa: S110`.
+        run: ruff check app --select S110,S112
       - name: Pytest with coverage
         run: pytest app/tests -q --cov=app --cov-report=term-missing
       - name: Skill script smoke suite

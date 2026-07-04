@@ -1241,8 +1241,8 @@ def _persist_assistant_plan_message(
         if decision_answers.get("slide_length_budget"):
             try:
                 mapped["length_budget"] = {"pptx": int(str(decision_answers["slide_length_budget"][0]))}
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.warning("%s: suppressed error: %s", '_persist_assistant_plan_message', exc)
         discovery = _merge_discovery(discovery, mapped)
 
     # Backfill decision_answers from discovery for any fields not yet explicitly
@@ -2161,17 +2161,19 @@ def _post_project_conversation_message_inner(
         history_summary=state.history_summary,
         memory_profile=memory_profile,
     )
-    try:
-        record_routing_decision(
-            db,
-            project_id=pid,
-            user_id=user.id,
-            decision_type=decision.intent,
-            confidence=decision.confidence,
-            outcome=decision.rationale or "router_decision",
-        )
-    except Exception:
-        _LOG.warning("record_routing_decision failed for project %s", pid)
+
+    def _record_decision(d) -> None:
+        try:
+            record_routing_decision(
+                db,
+                project_id=pid,
+                user_id=user.id,
+                decision_type=d.intent,
+                confidence=d.confidence,
+                outcome=d.rationale or "router_decision",
+            )
+        except Exception:
+            _LOG.warning("record_routing_decision failed for project %s", pid)
 
     merged_discovery = _merge_discovery(premerged_slots, decision.extracted_slots)
     if decision.extracted_slots and not (extracted_fast or extracted_llm):
@@ -2255,12 +2257,19 @@ def _post_project_conversation_message_inner(
             stamp_router(state, intent=decision.intent, confidence=decision.confidence, rationale=rationale)
             save_state(conv, state)
             db.flush()
+            _record_decision(decision)
             return _persist_out_of_scope_message(db, conv, content)
+        # A deliverable signal (e.g. "xlsx") is present in recent turns, so the
+        # router's out_of_scope call was a misclassification — discard it
+        # rather than recording/repeating it, which would otherwise keep
+        # reinforcing the same wrong judgment via the memory profile.
         decision = fallback_decision(
             state=state.state,
             slots=state.slots,
             reason="out_of_scope_low_conf_or_deliverable_detected",
         )
+        rationale = decision.rationale or "Recommended by conversation router."
+    _record_decision(decision)
 
     proposal_detected = (
         _is_proposal_instruction(combined_instruction, template_ids)
@@ -2521,8 +2530,8 @@ def post_project_conversation_decisions(
                 discovery,
                 {"length_budget": {"pptx": int(str(merged_answers["slide_length_budget"][0]))}},
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("%s: suppressed error: %s", 'post_project_conversation_decisions', exc)
     assistant_instruction = str(plan_meta.get("instruction") or "").strip()
     if not assistant_instruction:
         raise HTTPException(

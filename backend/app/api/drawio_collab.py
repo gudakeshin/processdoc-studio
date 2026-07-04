@@ -1,3 +1,4 @@
+import logging
 import asyncio
 import html
 import json
@@ -18,6 +19,8 @@ from app.db.session import SessionLocal
 from app.services.run_worker import append_run_event
 from app.services.storage import workspace_path
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 _redis_client: redis.Redis | None = None
 _redis_drawio_prefix = settings.drawio_collab_channel_prefix
@@ -31,7 +34,7 @@ class DocState:
     # Lock state (single writer).
     lock_owner_user_id: str | None = None
     lock_owner_email: str | None = None
-    # In-memory XML revision. Persistence happens in the next to-do.
+    # Latest XML + revision. Autosaves are persisted to runs/<run_id>/drawio.xml.
     revision: int = 0
     xml: str = ""
     # Connected websocket clients.
@@ -61,7 +64,8 @@ def _get_redis_client() -> redis.Redis | None:
         client.ping()
         _redis_client = client
         return _redis_client
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", '_get_redis_client', exc)
         return None
 
 
@@ -360,7 +364,7 @@ async def drawio_ws(websocket: WebSocket, project_id: str, run_id: str) -> None:
                             )
 
             elif msg_type == "autosave":
-                # Persistence happens in backend-drawio-persist; for now keep updates in memory and broadcast.
+                # Persist the latest XML to disk and broadcast to collaborators.
                 xml = body.get("xml")
                 if not isinstance(xml, str):
                     continue

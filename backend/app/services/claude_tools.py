@@ -8,14 +8,37 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from app.core.config import settings
+from app.core.run_control import poll_abort
 from app.services.bash_executor import get_bash_executor, new_session_id
 from app.services.claude import is_claude_enabled
 from app.services.langfuse_tracing import langfuse_span
 from app.services.observability import increment
+from app.services.run_budget import charge_llm_usage, extract_usage_counts
 from app.services.text_editor_executor import execute_text_editor_tool
 from app.services.tool_registry import resolve_tool_call, tool_result_to_text
 
 _LOG = logging.getLogger(__name__)
+
+
+def _record_message_usage(message: Any) -> None:
+    """Charge per-round token usage from a raw Anthropic tool-loop response.
+
+    Mirrors ``app.services.claude._record_message_usage``: these tool loops call
+    the Anthropic client directly (for bash/text-editor/custom tool support) and
+    so bypass the ``claude_generate*`` helpers that normally charge usage.
+    """
+    inp, out = extract_usage_counts(message)
+    usage = getattr(message, "usage", None)
+    raw_inp = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
+    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0
+    cache_create = int(getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0
+    if inp or out:
+        charge_llm_usage(
+            input_tokens=raw_inp,
+            output_tokens=out,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_create,
+        )
 
 
 def _tool_error_response(tool_name: str, exc: Exception, *, timed_out: bool = False) -> str:
@@ -43,7 +66,8 @@ def _trace_preview_for_tool(tool_name: str, output_text: str) -> dict[str, Any] 
         return None
     try:
         payload = json.loads(output_text)
-    except Exception:
+    except Exception as exc:
+        _LOG.warning("%s: suppressed error: %s", '_trace_preview_for_tool', exc)
         return None
     if not isinstance(payload, dict):
         return None
@@ -172,6 +196,7 @@ def run_claude_tools_loop(
     rounds_completed = 0
 
     for round_i in range(settings.bash_max_tool_rounds):
+        poll_abort()
         rounds_completed = round_i + 1
         kwargs: dict[str, Any] = {
             "model": model,
@@ -184,6 +209,7 @@ def run_claude_tools_loop(
             kwargs["tools"] = tools
 
         msg = client.beta.messages.create(**kwargs)
+        _record_message_usage(msg)
 
         stop = str(getattr(msg, "stop_reason", "") or "")
         assistant_blocks = _assistant_blocks_to_params(msg.content)
@@ -322,6 +348,7 @@ def run_subagent_tool_loop(
     allowed = {str(t.get("name") or "") for t in tool_defs if isinstance(t, dict)}
 
     for round_i in range(cap):
+        poll_abort()
         rounds_completed = round_i + 1
         tm = str(native_context.get("swarm_teammate_id") or "").strip()
         rid = str(native_context.get("run_id") or run_id or "").strip()
@@ -350,6 +377,7 @@ def run_subagent_tool_loop(
             messages=msg_history,
             tools=tool_defs,
         )
+        _record_message_usage(msg)
         stop = str(getattr(msg, "stop_reason", "") or "")
         assistant_blocks = _assistant_blocks_to_params(msg.content)
         msg_history.append({"role": "assistant", "content": assistant_blocks})
@@ -454,4 +482,5 @@ def run_claude_text_only(
         system=system,
         messages=[{"role": "user", "content": user}],
     )
+    _record_message_usage(msg)
     return _extract_final_text_from_message(msg)

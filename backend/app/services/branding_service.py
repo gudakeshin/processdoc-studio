@@ -12,6 +12,9 @@ from sqlalchemy.orm import Session
 from app.db.models import ProjectBrand
 from app.services.storage import workspace_path
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class BrandingLevel(StrEnum):
     DELOITTE_DEFAULT = "deloitte_default"
@@ -95,7 +98,8 @@ class BrandingService:
             return None
         try:
             return max(9, min(18, int(round(float(m.group(1)) * 16))))
-        except Exception:
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", '_extract_tailwind_font_size_base', exc)
             return None
 
     def _extract_json_token_hex(self, payload: Any, keys: set[str]) -> str | None:

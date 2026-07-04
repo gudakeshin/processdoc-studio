@@ -14,6 +14,9 @@ from fastapi import WebSocket
 
 from app.core.config import settings
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _now_iso() -> str:
     return datetime.now(IST).isoformat()
@@ -91,7 +94,8 @@ def _get_redis_client() -> redis.Redis | None:
         client.ping()
         _redis_client = client
         return _redis_client
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", '_get_redis_client', exc)
         return None
 
 

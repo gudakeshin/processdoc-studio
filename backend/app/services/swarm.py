@@ -46,8 +46,8 @@ def get_teammate_role(*, run_id: str, teammate_id: str) -> str:
             for m in list_teammates(session, run_id=run_id):
                 if m.teammate_id == teammate_id:
                     return str(m.role or "worker").strip().lower()
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOG.warning("%s: suppressed error: %s", 'get_teammate_role', exc)
     return "worker"
 
 

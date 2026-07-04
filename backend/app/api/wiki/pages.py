@@ -19,6 +19,9 @@ from app.db.models import User
 from app.db.session import get_db
 from app.services.wiki_integrations import WikiLeadingPracticesIntegration
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ===== Browse Operations =====
 
@@ -320,8 +323,8 @@ async def get_related_wiki_pages(
                                 "confidence": 0.7,
                                 "source": "community"
                             })
-    except Exception:
-        pass  # Community data not available
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'get_related_wiki_pages', exc)
 
     # 3. Synthesis pages referencing this page
     try:
@@ -342,10 +345,10 @@ async def get_related_wiki_pages(
                             "confidence": 0.8,
                             "source": "synthesis"
                         })
-            except Exception:
-                pass
-    except Exception:
-        pass  # Synthesis scanning not available
+            except Exception as exc:
+                logger.warning("%s: suppressed error: %s", 'get_related_wiki_pages', exc)
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'get_related_wiki_pages', exc)
 
     return {"status": "success", "related_pages": related_pages}
 

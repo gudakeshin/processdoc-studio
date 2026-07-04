@@ -14,14 +14,14 @@ import redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.api.formats import _load_output_types
 from app.core.auth import get_current_user, get_current_user_sse, require_project_role
 from app.core.config import settings
 from app.core.rate_limit import limiter
-from app.db.models import Conversation, ConversationMessage, MemoryEvent, Run, RunEvent, RunTask, ScheduledTaskRun, User
+from app.db.models import Conversation, ConversationMessage, MemoryEvent, Run, RunEvent, RunTask, ScheduledTaskRun, User, utcnow
 from app.db.session import SessionLocal, get_db
 from app.schemas.common import RunSummary
 from app.services.claude import claude_generate_json, is_claude_enabled
@@ -33,6 +33,7 @@ from app.services.output_format_detection import (
 from app.services.hooks import disable_hook, list_registered_hooks, sync_disabled_hooks_from_db, upsert_hook_control
 from app.services.observability import increment
 from app.services.permission_pipeline import evaluate_permission_pipeline
+from app.services.run_budget import get_live_usage
 from app.services.run_events import lifecycle_event
 from app.services.run_tasks import serialize_run_task
 from app.services.run_worker import (
@@ -72,7 +73,8 @@ def _get_or_create_sse_redis_pool() -> redis.ConnectionPool | None:
                     decode_responses=True,
                     max_connections=settings.sse_redis_max_connections,
                 )
-            except Exception:
+            except Exception as exc:
+                _log.warning("%s: suppressed error: %s", '_get_or_create_sse_redis_pool', exc)
                 return None
     return _sse_redis_pool
 
@@ -579,6 +581,79 @@ def list_runs(
             for r in rows
         ]
     }
+
+
+# In-flight run states surfaced by the agentops health endpoint.
+_ACTIVE_RUN_STATES = ("approved", "running", "plan_ready", "plan_blocked")
+
+
+@router.get("/{project_id}/active")
+def list_active_runs(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """AgentOps health view: in-flight runs with staleness so an operator can tell a hung run
+    from one merely awaiting approval or queued behind a busy worker.
+
+    state: working | hung | awaiting_approval | blocked | queued.
+    """
+    require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    rows = db.scalars(
+        select(Run)
+        .where(Run.project_id == project_id, Run.status.in_(_ACTIVE_RUN_STATES))
+        .order_by(Run.created_at.desc())
+    ).all()
+    run_ids = [r.id for r in rows]
+    latest_event: dict[str, tuple[datetime, str]] = {}
+    if run_ids:
+        latest_ids = (
+            select(func.max(RunEvent.id).label("max_id"))
+            .where(RunEvent.run_id.in_(run_ids))
+            .group_by(RunEvent.run_id)
+            .subquery()
+        )
+        for rid, created_at, et in db.execute(
+            select(RunEvent.run_id, RunEvent.created_at, RunEvent.event_type).join(
+                latest_ids, RunEvent.id == latest_ids.c.max_id
+            )
+        ).all():
+            latest_event[rid] = (created_at, et)
+    now = utcnow()
+    timeout_sec = int(getattr(settings, "run_stuck_timeout_sec", 0) or 0)
+    items = []
+    for r in rows:
+        ev = latest_event.get(r.id)
+        last_at = ev[0] if ev else (r.approved_at or r.created_at)
+        secs = (now - last_at).total_seconds() if last_at else None
+        stale = bool(r.status == "running" and timeout_sec > 0 and secs is not None and secs > timeout_sec)
+        if r.status == "running":
+            state = "hung" if stale else "working"
+        elif r.status == "plan_ready":
+            state = "awaiting_approval"
+        elif r.status == "plan_blocked":
+            state = "blocked"
+        else:  # approved → admitted but not yet executing
+            state = "queued"
+        live = get_live_usage(r.id) or {}
+        items.append(
+            {
+                "id": r.id,
+                "status": r.status,
+                "state": state,
+                "stale": stale,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "approved_at": r.approved_at.isoformat() if r.approved_at else None,
+                "latest_event_at": last_at.isoformat() if last_at else None,
+                "latest_event_type": ev[1] if ev else None,
+                "seconds_since_last_event": int(secs) if secs is not None else None,
+                "instruction": r.instruction[:200] + ("…" if len(r.instruction) > 200 else ""),
+                "tokens_input": live.get("input_tokens", r.tokens_input),
+                "tokens_output": live.get("output_tokens", r.tokens_output),
+                "cost_usd": r.cost_usd,
+            }
+        )
+    return {"project_id": project_id, "stuck_timeout_sec": timeout_sec, "items": items}
 
 
 @router.delete("/{project_id}")
@@ -1161,7 +1236,8 @@ def stream_run(
                     _ps = _rc.pubsub(ignore_subscribe_messages=True)
                     _ps.subscribe(f"{settings.run_events_channel_prefix}:{run_id}")
                     return _ps
-                except Exception:
+                except Exception as exc:
+                    _log.warning("%s: suppressed error: %s", '_setup_pubsub', exc)
                     return None
             pubsub = await asyncio.to_thread(_setup_pubsub)
 

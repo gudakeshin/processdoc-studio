@@ -13,6 +13,8 @@ import redis as _redis_module
 from app.core.config import settings
 from app.services.model_realtime import broadcast_model_event
 
+logger = logging.getLogger(__name__)
+
 log = logging.getLogger("processdoc.lock")
 
 _LOCK_TTL_SECONDS = 120
@@ -30,7 +32,8 @@ def _get_redis() -> _redis_module.Redis | None:
         client.ping()
         _redis_client = client
         return _redis_client
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", '_get_redis', exc)
         return None
 
 

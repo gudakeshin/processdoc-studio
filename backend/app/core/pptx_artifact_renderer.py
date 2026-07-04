@@ -23,6 +23,7 @@ from pptx.util import Inches, Pt
 
 from app.core.config import settings
 from app.core.deliverable_utils import apply_pptx_core_properties, fetch_logo_source
+from app.core.icon_library import place_step_icon
 from app.core.tz import IST
 from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
 from app.core.pptx_qa import validate_pptx_against_slides
@@ -140,6 +141,112 @@ def _classic_fallback(slide_dict: dict[str, Any], slide_type: str) -> tuple[dict
     return slide_dict, slide_type
 
 
+# Figure slide types rendered by the shared raster figure engine (Pillar B). These
+# embed an identical PNG to the DOCX figures so a deck and its companion document
+# share one visual language. ``figure`` carries an explicit ``figure`` spec; the
+# named types carry their fields inline (e.g. a two_by_two slide has ``quadrants``).
+FIGURE_SLIDE_TYPES: frozenset[str] = frozenset(
+    {"figure", "two_by_two", "value_chain", "maturity_curve", "heat_map"}
+)
+
+
+def _figure_spec_from_slide(slide_dict: dict[str, Any], slide_type: str) -> dict[str, Any] | None:
+    """Extract a figure-engine spec from a slide dict, or None if absent."""
+    if slide_type == "figure":
+        spec = slide_dict.get("figure")
+        return spec if isinstance(spec, dict) and spec.get("type") else None
+    # Named figure slide types carry their data inline.
+    return {**{k: v for k, v in slide_dict.items() if k not in ("slide_type",)}, "type": slide_type}
+
+
+def _delete_last_slide(prs: Any) -> None:
+    """Remove the most-recently-added slide (used when a figure slide fails to
+    render at all, so the caller's degrade path can add a clean replacement
+    instead of leaving an empty chrome-only slide behind)."""
+    xml_slides = prs.slides._sldIdLst
+    slides = list(xml_slides)
+    if slides:
+        xml_slides.remove(slides[-1])
+
+
+def _compose_figure_slide(
+    prs: Any, colors: dict[str, str], slide_dict: dict[str, Any], slide_type: str,
+) -> bool:
+    """Render a figure slide (title bar + figure). Returns True on success.
+
+    Tries native, fully-editable python-pptx shapes first (so a user can open the
+    deck and move/recolor/edit the diagram); falls back to an embedded raster PNG
+    from the shared figure engine for types the native renderer doesn't cover yet,
+    or if native drawing raises.
+    """
+    import io as _io
+
+    from app.core.figure_engine import render_figure
+    from app.core.pptx_native_figures import draw_native_figure
+
+    spec = _figure_spec_from_slide(slide_dict, slide_type)
+    if not spec:
+        return False
+
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    primary = _hex_to_rgb(colors.get("primary", "#86BC25"))
+
+    # Top brand bar + title (mirrors the content-slide chrome).
+    bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(SLIDE_W), Inches(0.12))
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = primary
+    bar.line.fill.background()
+
+    title = str(slide_dict.get("title") or "").strip()
+    if title:
+        tb = slide.shapes.add_textbox(Inches(MARGIN_H), Inches(MARGIN_V), Inches(CONTENT_W), Inches(TITLE_H))
+        tf = tb.text_frame
+        tf.word_wrap = True
+        tf.text = title
+        p = tf.paragraphs[0]
+        p.font.size = Pt(28)
+        p.font.bold = True
+        p.font.color.rgb = primary
+
+    # Centred figure below the title.
+    fig_w = CONTENT_W
+    fig_h = fig_w * (5.0 / 11.0)
+    fig_y = MARGIN_V + TITLE_H + GUTTER
+    max_h = SLIDE_H - fig_y - 0.5
+    if fig_h > max_h:
+        fig_h = max_h
+        fig_w = fig_h * (11.0 / 5.0)
+    fig_x = (SLIDE_W - fig_w) / 2
+
+    native_ok = False
+    try:
+        native_ok = draw_native_figure(slide, colors, spec, fig_x, fig_y, fig_w, fig_h)
+    except Exception as exc:
+        logger.warning("native figure draw failed, falling back to raster (%s)", exc)
+
+    if not native_ok:
+        try:
+            png = render_figure(spec, colors, width_in=11.0, height_in=5.0)
+            slide.shapes.add_picture(_io.BytesIO(png), Inches(fig_x), Inches(fig_y), width=Inches(fig_w), height=Inches(fig_h))
+        except Exception as exc:
+            logger.warning("figure slide render failed (%s)", exc)
+            _delete_last_slide(prs)
+            return False
+
+    takeaway = str(slide_dict.get("takeaway") or slide_dict.get("footer_note") or "").strip()
+    if takeaway:
+        tk = slide.shapes.add_textbox(Inches(MARGIN_H), Inches(SLIDE_H - 0.55), Inches(CONTENT_W), Inches(0.4))
+        tkf = tk.text_frame
+        tkf.word_wrap = True
+        tkf.text = takeaway
+        tkf.paragraphs[0].font.size = Pt(12)
+        tkf.paragraphs[0].font.italic = True
+        tkf.paragraphs[0].font.color.rgb = _hex_to_rgb(colors.get("muted", "#5A6066"))
+    return True
+
+
 class SlideComposer:
     """Composition-based slide builder using grid/row/column abstractions."""
 
@@ -197,8 +304,8 @@ class SlideComposer:
             fill.gradient()
             try:
                 fill.gradient_angle = 35
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("%s: suppressed error: %s", '_apply_shape_gradient', exc)
             stops = list(fill.gradient_stops)
             if len(stops) >= 2:
                 stops[0].color.rgb = color_a
@@ -208,8 +315,8 @@ class SlideComposer:
             try:
                 shape.fill.solid()
                 shape.fill.fore_color.rgb = color_a
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("%s: suppressed error: %s", '_apply_shape_gradient', exc)
 
     def _apply_soft_shadow(self, shape: Any) -> None:
         """Best-effort subtle shadow for visual depth."""
@@ -217,8 +324,8 @@ class SlideComposer:
             shadow = shape.shadow
             shadow.inherit = False
             shadow.visible = True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", '_apply_soft_shadow', exc)
 
     def _chart_series_palette(self) -> list[RGBColor]:
         return [
@@ -953,23 +1060,26 @@ class SlideComposer:
                 text_color if fill_token in _DARK_FILLS else self.colors["primary"]
             )
             # Icon marker inside each step.
+            icon_d = 0.24
+            icon_x, icon_y = x + step_w - 0.35, y + 0.08
             icon_bubble = slide.shapes.add_shape(
                 MSO_SHAPE.OVAL,
-                Inches(x + step_w - 0.35),
-                Inches(y + 0.08),
-                Inches(0.24),
-                Inches(0.24),
+                Inches(icon_x),
+                Inches(icon_y),
+                Inches(icon_d),
+                Inches(icon_d),
             )
             icon_bubble.fill.solid()
             icon_bubble.fill.fore_color.rgb = self.colors["accent_light"]
             icon_bubble.line.fill.background()
-            ibf = icon_bubble.text_frame
             label = str(step.get("label") or "")
-            ibf.text = str(step.get("icon") or _icon_for_step_label(label, fallback="\u25CF"))
-            ibf.paragraphs[0].alignment = PP_ALIGN.CENTER
-            ibf.paragraphs[0].font.size = Pt(9)
-            ibf.paragraphs[0].font.bold = True
-            ibf.paragraphs[0].font.color.rgb = self.colors["primary"]
+            place_step_icon(
+                slide, icon_x, icon_y, icon_d,
+                label=label,
+                color_hex="#" + str(self.colors["primary"]),
+                explicit_icon=str(step.get("icon") or "").strip() or None,
+                fallback_glyph=_icon_for_step_label(label, fallback="\u25CF"),
+            )
 
             # Label
             label = str(step.get("label", ""))
@@ -1211,8 +1321,12 @@ def render_pptx_with_artifact_tool(
             logger.warning("Editorial composer unavailable, using classic: %s", exc)
             composer = SlideComposer(prs, branding_dict)
 
-        # Get slides
-        pptx_slides = payload.get("pptx_slides", [])
+        # Get slides — strip any internal wiki-link grammar / pipeline filenames
+        # before composition so no `[[page_id|…]]`, `wiki://`, or `index.md`/`log.md`
+        # token can reach the rendered deck.
+        from app.core.deliverable_utils import humanize_deep
+
+        pptx_slides = humanize_deep(payload.get("pptx_slides", []))
         if not (isinstance(pptx_slides, list) and pptx_slides):
             pptx_slides = [
                 {"title": "Process Output", "slide_type": "title", "subtitle": "Generated by ProcessDoc"},
@@ -1244,6 +1358,26 @@ def render_pptx_with_artifact_tool(
                         break
                 else:
                     slide_type = "bullets"
+
+            # Figure slides (raster diagrams) render the same in both composers.
+            if slide_type in FIGURE_SLIDE_TYPES:
+                try:
+                    from app.core.doc_theme import resolve_doc_theme
+
+                    fig_colors = resolve_doc_theme(
+                        branding_dict,
+                        str((payload.get("process_model") or {}).get("process_name") or ""),
+                    ).colors
+                    if _compose_figure_slide(prs, fig_colors, slide_dict, slide_type):
+                        continue
+                    # Fall through to a degraded layout if the figure couldn't render.
+                    slide_dict, slide_type = _classic_fallback(
+                        {**slide_dict, "slide_type": "bullets"}, "bullets"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"Slide {idx + 1} (figure): {e}")
+                    logger.warning("Failed to compose figure slide %d: %s", idx + 1, e)
+                    continue
 
             # For classic composer, remap Phase-3 types to supported equivalents.
             if not _editorial_active:
@@ -1320,6 +1454,19 @@ def render_pptx_with_artifact_tool(
                 qa_report.setdefault("remediation", []).append(
                     "Replace unsupported numeric claims with sourced evidence or remove the claim."
                 )
+
+        # Unified design review (Pillar C): arc coherence + action titles + evidence,
+        # producing prescriptive per-slide hints and an auditable design_review.json.
+        try:
+            from app.services.design_review import review_deck
+            from app.services.storyline_builder import load_storyline_contract
+
+            contract = load_storyline_contract(run_dir)
+            design = review_deck(pptx_slides, process_model if isinstance(process_model, dict) else None, contract)
+            qa_report["design_review"] = design
+            (run_dir / "design_review.json").write_text(json.dumps(design, indent=2), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 — review is advisory, never blocks render
+            logger.warning("design review skipped: %s", exc)
 
         # Store QA report
         qa_path = run_dir / "pptx_render_quality.json"
