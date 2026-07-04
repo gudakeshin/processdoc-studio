@@ -269,6 +269,20 @@ class TeammateExecutor:
             except (OSError, ValueError):
                 pass
 
+        # Lifetime-average CPU% via /proc (Linux only): (utime+stime)/runtime.
+        cpu_percent = 0.0
+        if alive and runtime_sec > 0 and os.path.exists(f"/proc/{teammate_proc.pid}/stat"):
+            try:
+                with open(f"/proc/{teammate_proc.pid}/stat") as f:
+                    stat = f.read()
+                # Fields after the (comm) — comm may contain spaces/parens.
+                fields = stat[stat.rfind(")") + 2:].split()
+                utime, stime = int(fields[11]), int(fields[12])  # ticks
+                clk_tck = os.sysconf("SC_CLK_TCK")
+                cpu_percent = 100.0 * ((utime + stime) / clk_tck) / runtime_sec
+            except (OSError, ValueError, IndexError):
+                pass
+
         error = None
         if not alive and teammate_proc.error:
             error = teammate_proc.error[:200]  # Truncate for logging
@@ -278,7 +292,7 @@ class TeammateExecutor:
             pid=teammate_proc.pid,
             runtime_sec=runtime_sec,
             memory_mb=memory_mb,
-            cpu_percent=0.0,  # TODO: Implement CPU measurement
+            cpu_percent=round(cpu_percent, 1),
             exit_code=teammate_proc.exit_code,
             error=error,
         )
