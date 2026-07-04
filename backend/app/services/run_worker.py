@@ -33,7 +33,7 @@ from app.core.narrative_feedback import (
 )
 from app.core.run_control import RunAborted
 from app.core.sanitization import sanitize_memory_payload_dict
-from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEvent, RunTask, UserProjectPreference
+from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEvent, RunTask, UserProjectPreference, utcnow
 from app.db.session import SessionLocal
 from app.schemas.coordinator_run import CoordinatorRunInput
 from app.schemas.run_payloads import GuardrailReportDoc, QaReportDoc
@@ -73,6 +73,17 @@ _embedded_redis_consumer_lock = threading.Lock()
 _embedded_redis_consumer_started = False
 _last_librarian_tick_ts = 0.0
 _librarian_tick_interval_sec = 7 * 24 * 60 * 60
+_stuck_sweep_interval_sec = 30.0
+_stuck_watchdog_lock = threading.Lock()
+_stuck_watchdog_started = False
+
+# Graceful shutdown: set by drain_execution_worker() on SIGTERM/SIGINT (via the
+# FastAPI lifespan shutdown hook) so dispatch loops stop pulling new jobs while
+# in-flight runs are given a bounded window to finish instead of being killed
+# mid-execution when the process exits.
+_draining = threading.Event()
+_active_futures: set[concurrent.futures.Future] = set()
+_active_futures_lock = threading.Lock()
 
 
 def _consume_wiki_rebuild_events() -> None:
@@ -171,14 +182,16 @@ def _load_pptx_render_signal_hints(run_dir: Any) -> tuple[list[dict[str, Any]], 
             for idx in clutter[:8]:
                 try:
                     n = int(idx)
-                except Exception:
+                except Exception as exc:
+                    _log.debug("%s: suppressed error: %s", '_load_pptx_render_signal_hints', exc)
                     continue
                 hints.append({"slide_index": n, "instruction": "Reduce text density and split long bullets into visual elements."})
                 findings.append(f"[PPTX Storytelling] Slide {n}: clutter/readability risk detected.")
             for idx in weak[:8]:
                 try:
                     n = int(idx)
-                except Exception:
+                except Exception as exc:
+                    _log.debug("%s: suppressed error: %s", '_load_pptx_render_signal_hints', exc)
                     continue
                 hints.append({"slide_index": n, "instruction": "Strengthen storyline with a specific insight title and evidence-backed takeaway."})
                 findings.append(f"[PPTX Storytelling] Slide {n}: weak storytelling signal detected.")
@@ -218,6 +231,48 @@ def _augment_visual_qa_with_render_hints(visual_qa_report: dict[str, Any], run_d
     report["status"] = "fail"
     base_summary = str(report.get("summary") or "").strip()
     report["summary"] = f"{base_summary} PPTX render checks found unresolved placeholders.".strip()
+    return report
+
+
+def _augment_visual_qa_with_design_review(visual_qa_report: dict[str, Any], run_dir: Any) -> dict[str, Any]:
+    """Fold the unified design-review hints (arc / action titles / evidence) into the
+    PPTX visual-QA assessment so the retry loop acts on prescriptive, per-slide fixes."""
+    path = run_dir / "design_review.json"
+    if not path.exists():
+        return visual_qa_report
+    try:
+        design = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return visual_qa_report
+    if not isinstance(design, dict):
+        return visual_qa_report
+    hints = design.get("remediation_hints") if isinstance(design.get("remediation_hints"), list) else []
+    status = str(design.get("status") or "skip").lower()
+    if not hints or status == "pass":
+        return visual_qa_report
+    report = dict(visual_qa_report or {})
+    per_artifact = report.get("per_artifact")
+    if not isinstance(per_artifact, dict):
+        per_artifact = {}
+        report["per_artifact"] = per_artifact
+    pptx_assessment = per_artifact.get("pptx") if isinstance(per_artifact.get("pptx"), dict) else {}
+    merged = pptx_assessment.get("remediation_hints")
+    merged = merged if isinstance(merged, list) else []
+    merged.extend(hints)
+    pptx_assessment["remediation_hints"] = merged
+    if status == "fail":
+        pptx_assessment["status"] = "fail"
+        report["status"] = "fail"
+    elif pptx_assessment.get("status") not in ("fail",):
+        pptx_assessment.setdefault("status", "warn")
+    prior = str(pptx_assessment.get("summary") or "").strip()
+    pptx_assessment["summary"] = f"{prior} Design review: {design.get('summary', '')}".strip()
+    per_artifact["pptx"] = pptx_assessment
+    report["pptx_assessment"] = pptx_assessment
+    findings = report.get("findings")
+    findings = findings if isinstance(findings, list) else []
+    findings.append(f"[Design Review] {design.get('summary', '')}")
+    report["findings"] = findings
     return report
 
 
@@ -567,7 +622,38 @@ def _start_embedded_redis_consumer_once() -> None:
     _log.info("Started embedded Redis run-execution consumer (RUN_QUEUE_EMBED_REDIS_CONSUMER=true).")
 
 
+def _stuck_watchdog_loop() -> None:
+    """Auto-fail stuck runs on a fixed timer, independent of queue activity.
+
+    The dispatch loop blocks in local_wait_pop_job() while the queue is idle — which is
+    exactly when a wedged run needs sweeping — so the watchdog runs in its own thread.
+    """
+    while True:
+        try:
+            auto_fail_stuck_runs()
+        except Exception as exc:  # never let the watchdog thread die
+            _log.warning("stuck-run watchdog tick error: %s", exc)
+        time.sleep(_stuck_sweep_interval_sec)
+
+
+def _start_stuck_watchdog_once() -> None:
+    global _stuck_watchdog_started
+    if int(getattr(settings, "run_stuck_timeout_sec", 0) or 0) <= 0:
+        return
+    with _stuck_watchdog_lock:
+        if _stuck_watchdog_started:
+            return
+        _stuck_watchdog_started = True
+    threading.Thread(target=_stuck_watchdog_loop, name="run-stuck-watchdog", daemon=True).start()
+    _log.info(
+        "Started stuck-run watchdog (interval=%ss, timeout=%ss).",
+        _stuck_sweep_interval_sec,
+        settings.run_stuck_timeout_sec,
+    )
+
+
 def start_execution_worker() -> None:
+    _start_stuck_watchdog_once()
     if _queue_rt.queue_backend == "redis":
         if not bool(getattr(settings, "run_queue_embed_redis_consumer", False)):
             _log.warning(
@@ -579,6 +665,34 @@ def start_execution_worker() -> None:
         _start_embedded_redis_consumer_once()
         return
     _queue_rt.start_local_daemon(_queue_worker_loop)
+
+
+def drain_execution_worker(timeout_sec: float = 30.0) -> None:
+    """Stop dispatching new local-queue jobs and wait (bounded) for in-flight runs to finish.
+
+    Called from the FastAPI lifespan shutdown hook so SIGTERM/SIGINT (docker stop,
+    rolling deploy) doesn't kill a run mid-composition. Daemon threads are otherwise
+    killed outright on process exit with no chance to persist state.
+    """
+    if _queue_rt.queue_backend == "redis":
+        # The embedded Redis consumer isn't the primary deployment path (a dedicated
+        # `run_execution_worker` process is); nothing local to drain here.
+        return
+    _draining.set()
+    with _active_futures_lock:
+        futures = list(_active_futures)
+    if not futures:
+        return
+    _log.warning("Draining %d in-flight run(s) before shutdown (up to %ss)...", len(futures), timeout_sec)
+    done, not_done = concurrent.futures.wait(futures, timeout=timeout_sec)
+    if not_done:
+        _log.critical(
+            "%d run(s) still executing after %ss drain timeout; process is exiting with work in flight.",
+            len(not_done),
+            timeout_sec,
+        )
+    else:
+        _log.info("Drained %d in-flight run(s) cleanly.", len(done))
 
 
 def enqueue_run_execution(project_id: str, run_id: str) -> bool:
@@ -702,10 +816,76 @@ def reconcile_stalled_approved_runs_on_startup() -> None:
             )
         if re_enqueued:
             _log.info("run_queue startup reconcile: total re_enqueued=%s", re_enqueued)
+        # A run still in status="running" on a fresh process is definitionally orphaned: the
+        # worker thread that owned it died with the previous process. Fail it so its admission
+        # slot frees and the UI stops showing it as active.
+        orphaned = session.scalars(select(Run).where(Run.status == "running")).all()
+        for run in orphaned:
+            run.status = "failed"
+            run.abort_requested = True
+            run.error_message = "Orphaned by restart: worker thread no longer running."
+            session.commit()
+            append_run_event(session, run.id, "stuck_auto_failed", {"reason": "orphaned_by_restart"})
+            session.commit()
+        if orphaned:
+            _log.info("run_queue startup reconcile: failed %s orphaned running run(s)", len(orphaned))
     except SQLAlchemyError as exc:
         _log.warning("run_queue startup reconcile failed: %s", exc)
     finally:
         session.close()
+
+
+def auto_fail_stuck_runs() -> int:
+    """Fail runs wedged in status="running" with no RunEvent newer than run_stuck_timeout_sec.
+
+    Backstop for the cooperative deadline in _execute_run_job: catches runs whose coordinator
+    never yields (so _abort_check is never polled) or whose worker thread died without flipping
+    status. Flipping status to "failed" frees the admission slot immediately; with the local
+    fixed thread pool a truly wedged OS thread is only reclaimed on process restart.
+    Returns the number of runs auto-failed.
+    """
+    timeout_sec = int(getattr(settings, "run_stuck_timeout_sec", 0) or 0)
+    if timeout_sec <= 0:
+        return 0
+    cutoff = utcnow() - timedelta(seconds=timeout_sec)
+    failed = 0
+    session = SessionLocal()
+    try:
+        running = session.scalars(select(Run).where(Run.status == "running")).all()
+        for run in running:
+            last_event_at = session.scalar(
+                select(func.max(RunEvent.created_at)).where(RunEvent.run_id == run.id)
+            )
+            ref = last_event_at or run.approved_at or run.created_at
+            if ref is None or ref > cutoff:
+                continue
+            run.abort_requested = True
+            run.status = "failed"
+            run.error_message = f"Auto-failed: no progress for over {timeout_sec}s (stuck-run watchdog)."
+            session.commit()
+            append_run_event(
+                session,
+                run.id,
+                "stuck_auto_failed",
+                {
+                    "reason": "no_progress",
+                    "timeout_sec": timeout_sec,
+                    "last_event_at": ref.isoformat() if ref else None,
+                },
+            )
+            session.commit()
+            failed += 1
+            _log.warning(
+                "stuck-run watchdog auto-failed run_id=%s project_id=%s (idle since %s)",
+                run.id,
+                run.project_id,
+                ref.isoformat() if ref else "n/a",
+            )
+    except SQLAlchemyError as exc:
+        _log.warning("stuck-run watchdog failed: %s", exc)
+    finally:
+        session.close()
+    return failed
 
 
 def admission_status(project_id: str, *, user_id: str | None = None) -> dict[str, Any]:
@@ -781,18 +961,20 @@ def _queue_worker_loop() -> None:
         max_workers=max_workers,
         thread_name_prefix="run-exec",
     )
-    while True:
+    while not _draining.is_set():
         _queue_rt.mark_worker_heartbeat()
         global _last_librarian_tick_ts
         now = time.time()
         if now - _last_librarian_tick_ts >= _librarian_tick_interval_sec:
             try:
                 run_weekly_librarian_tick("leading_practice", None)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.warning("%s: suppressed error: %s", '_queue_worker_loop', exc)
             _last_librarian_tick_ts = now
         _consume_wiki_rebuild_events()
-        job = _queue_rt.local_wait_pop_job()
+        job = _queue_rt.local_wait_pop_job(timeout=1.0)
+        if job is None:
+            continue
         project_id = str(job.get("project_id", ""))
         run_id = str(job.get("run_id", ""))
         attempt = int(job.get("attempt", 0) or 0)
@@ -827,8 +1009,12 @@ def _queue_worker_loop() -> None:
                 )
             finally:
                 _queue_rt.local_discard_key(_key)
+                with _active_futures_lock:
+                    _active_futures.discard(future)
 
         future = executor.submit(_execute_run_job, project_id, run_id, job)
+        with _active_futures_lock:
+            _active_futures.add(future)
         future.add_done_callback(_on_done)
 
 
@@ -864,7 +1050,8 @@ def replay_dead_letter_item(item_id: str) -> dict[str, Any] | None:
         try:
             parsed = json.loads(raw)
             payload = parsed if isinstance(parsed, dict) else None
-        except Exception:
+        except Exception as exc:
+            _log.warning("%s: suppressed error: %s", 'replay_dead_letter_item', exc)
             return None
         if payload is None:
             return None
@@ -931,7 +1118,8 @@ def reset_dead_letter_attempts(item_id: str, *, actor: str | None = None) -> dic
             return None
         try:
             payload = json.loads(raw)
-        except Exception:
+        except Exception as exc:
+            _log.warning("%s: suppressed error: %s", 'reset_dead_letter_attempts', exc)
             return None
         if not isinstance(payload, dict):
             return None
@@ -1299,7 +1487,16 @@ def _execute_run_job(
             if digest:
                 init_state["conversation_digest"] = digest
 
+            _timeout_sec = int(getattr(settings, "run_stuck_timeout_sec", 0) or 0)
+            _deadline = perf_counter() + _timeout_sec if _timeout_sec > 0 else None
+            _timeout_tripped = {"v": False}
+
             def _abort_check() -> bool:
+                # Wall-clock deadline first: a slow-but-yielding coordinator self-terminates
+                # via the existing RunAborted path (emitted as execution_timeout below).
+                if _deadline is not None and perf_counter() >= _deadline:
+                    _timeout_tripped["v"] = True
+                    return True
                 session.refresh(run)
                 return bool(run.abort_requested)
 
@@ -1353,15 +1550,24 @@ def _execute_run_job(
                         _run_cost = calculate_run_cost_usd(**_run_usage)
             except RunAborted:
                 session.refresh(run)
-                append_run_event(
-                    session,
-                    run_id,
-                    "run_control_applied",
-                    {"action": "abort", "checkpoint": "during_generation"},
-                )
+                if _timeout_tripped["v"]:
+                    append_run_event(
+                        session,
+                        run_id,
+                        "execution_timeout",
+                        {"timeout_sec": _timeout_sec, "checkpoint": "during_generation"},
+                    )
+                    run.error_message = f"Execution timed out after {_timeout_sec}s without completing."
+                else:
+                    append_run_event(
+                        session,
+                        run_id,
+                        "run_control_applied",
+                        {"action": "abort", "checkpoint": "during_generation"},
+                    )
+                    run.error_message = "Aborted during generation."
                 _write_token_usage(run, _run_usage, _run_cost)
                 run.status = "failed"
-                run.error_message = "Aborted during generation."
                 session.commit()
                 return False, run.error_message
             except RunBudgetExceeded as budget_exc:
@@ -1546,6 +1752,7 @@ def _execute_run_job(
             visual_qa_report = run_visual_quality_check(project_id, run_id, run_dir)
             if isinstance(visual_qa_report, dict):
                 visual_qa_report = _augment_visual_qa_with_render_hints(visual_qa_report, run_dir)
+                visual_qa_report = _augment_visual_qa_with_design_review(visual_qa_report, run_dir)
                 _persist_pptx_visual_critic_signals(run_dir, visual_qa_report)
             save_visual_qa_report(run_dir, visual_qa_report)
             try:

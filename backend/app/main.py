@@ -43,6 +43,7 @@ from app.services.observability import snapshot as observability_snapshot
 from app.services.otel_tracing import init_otel_if_enabled
 from app.services.run_worker import (
     admission_status,
+    drain_execution_worker,
     list_worker_heartbeats,
     queue_runtime_stats,
     reconcile_stalled_approved_runs_on_startup,
@@ -95,6 +96,7 @@ async def lifespan(_app: FastAPI):
     if settings.scheduler_enabled:
         start_scheduler_worker()
     yield
+    drain_execution_worker(timeout_sec=settings.run_drain_timeout_sec)
     await shutdown_mcp_servers()
 
 

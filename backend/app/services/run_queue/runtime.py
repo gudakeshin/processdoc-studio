@@ -16,6 +16,9 @@ from app.core.config import Settings
 from app.services.observability import increment, observe_latency
 from app.services.retry_policy import compute_rate_limit_backoff
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class RunQueueRuntime:
     """Owns queue backends, Redis client cache, dead-letter storage, and worker heartbeats."""
@@ -60,18 +63,49 @@ class RunQueueRuntime:
         self.worker_last_heartbeat_ms = 0
         self.worker_processed_total = 0
 
+        # Circuit breaker: once a connect attempt fails, skip further attempts for
+        # this cooldown window instead of re-running a full connect+ping (which can
+        # each take the OS TCP connect timeout) on every enqueue/heartbeat/publish
+        # call site while Redis is down.
+        self._redis_breaker_open_until = 0.0
+        self._redis_breaker_cooldown_sec = 5.0
+        self._redis_was_down = False
+
         self.dead_letter_local: dict[str, dict[str, Any]] = {}
         self.dead_letter_local_order: list[str] = []
 
     def get_redis_client(self) -> redis.Redis | None:
         if self._redis_client is not None:
             return self._redis_client
+        now = time.monotonic()
+        if now < self._redis_breaker_open_until:
+            return None
         try:
-            client = redis.Redis.from_url(self._redis_url, decode_responses=True)
+            client = redis.Redis.from_url(
+                self._redis_url,
+                decode_responses=True,
+                socket_connect_timeout=2.0,
+                socket_timeout=2.0,
+            )
             client.ping()
             self._redis_client = client
+            if self._redis_was_down:
+                logger.warning("Redis connection restored at %s.", self._redis_url)
+                self._redis_was_down = False
             return self._redis_client
-        except Exception:
+        except Exception as exc:
+            self._redis_breaker_open_until = now + self._redis_breaker_cooldown_sec
+            if not self._redis_was_down:
+                logger.critical(
+                    "Redis unreachable at %s (run_queue_backend=%s): %s. "
+                    "Suppressing reconnect attempts for %.0fs; runs will fail to enqueue/heartbeat "
+                    "until Redis is back.",
+                    self._redis_url,
+                    self.queue_backend,
+                    exc,
+                    self._redis_breaker_cooldown_sec,
+                )
+                self._redis_was_down = True
             return None
 
     def mark_worker_heartbeat(self) -> None:
@@ -131,10 +165,17 @@ class RunQueueRuntime:
             self.queue_cv.notify()
             return True
 
-    def local_wait_pop_job(self) -> dict[str, Any]:
+    def local_wait_pop_job(self, timeout: float | None = None) -> dict[str, Any] | None:
+        """Pop the next job, or return None if `timeout` elapses with an empty queue.
+
+        A finite timeout lets the dispatch loop periodically recheck a shutdown/drain
+        flag instead of blocking forever on `Condition.wait()`.
+        """
         with self.queue_cv:
-            while not self._queue:
-                self.queue_cv.wait()
+            if not self._queue:
+                self.queue_cv.wait(timeout=timeout)
+            if not self._queue:
+                return None
             return self._queue.pop(0)
 
     def local_discard_key(self, key: str) -> None:
@@ -327,9 +368,25 @@ class RunQueueRuntime:
         client = self.get_redis_client()
         if client is None:
             raise RuntimeError("RUN_QUEUE_BACKEND=redis but Redis is unavailable.")
+        reconnect_attempt = 0
         while True:
-            self.mark_worker_heartbeat()
-            item = client.blpop(self.redis_queue_name, timeout=5)
+            try:
+                self.mark_worker_heartbeat()
+                item = client.blpop(self.redis_queue_name, timeout=5)
+            except Exception:
+                # Transient Redis blip (connection dropped, timeout, etc.) — reconnect with
+                # backoff instead of letting the loop crash and stall the queue indefinitely.
+                increment("run_execution_redis_consumer_reconnect_total")
+                self._redis_client = None
+                reconnect_attempt += 1
+                delay = self.compute_backoff_sec(reconnect_attempt)
+                time.sleep(delay)
+                reconnected = self.get_redis_client()
+                if reconnected is not None:
+                    client = reconnected
+                    reconnect_attempt = 0
+                continue
+            reconnect_attempt = 0
             if not item:
                 continue
             _, raw = item

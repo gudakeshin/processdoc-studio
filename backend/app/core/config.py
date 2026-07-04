@@ -154,6 +154,19 @@ class Settings(BaseSettings):
     # Optional extended thinking for narrative subagent (extra cost when enabled).
     subagent_narrative_thinking_enabled: bool = False
     anthropic_subagent_thinking_budget_tokens: int = 8000
+
+    # Tiered model routing (Deloitte-quality program, Pillar A).
+    # Stronger models author the narrative spine and critique the output; the
+    # haiku default (anthropic_claude_model) still drafts the bulk slide/section copy.
+    model_tiering_enabled: bool = True
+    anthropic_planning_model: str = "claude-opus-4-8"
+    anthropic_critique_model: str = "claude-sonnet-4-6"
+    anthropic_planning_thinking_budget_tokens: int = 6000
+    # Storyline contract: a slide-by-slide narrative spine authored before rendering
+    # and enforced downstream. Set False to fall back to ad-hoc generation.
+    storyline_contract_enabled: bool = True
+    # Embed grounded figures (value chain, risk heat map, roadmap) in DOCX output.
+    docx_figures_enabled: bool = True
     anthropic_timeout_sec: float = 45.0
     anthropic_circuit_breaker_failures: int = 5
     anthropic_circuit_breaker_reset_sec: int = 60
@@ -214,6 +227,14 @@ class Settings(BaseSettings):
     # Parallel workers for the local (non-Redis) queue. Each worker is a thread executing one run.
     # At 500 users, use RUN_QUEUE_BACKEND=redis with external worker processes instead.
     run_queue_local_max_workers: int = 4
+    # A run in status="running" that emits no RunEvent for this many seconds is considered hung:
+    # the coordinator deadline aborts it mid-stream and the stuck-run watchdog auto-fails it,
+    # freeing the admission slot. Set 0 to disable both (no wall-clock timeout).
+    run_stuck_timeout_sec: int = 600
+    # On SIGTERM/SIGINT (docker stop, rolling deploy), the local dispatch loop stops
+    # pulling new jobs and waits up to this long for in-flight runs to finish before
+    # the process exits. See app.services.run_worker.drain_execution_worker.
+    run_drain_timeout_sec: float = 30.0
     run_dead_letter_max_replay_attempts: int = 3
     run_execution_retry_max_attempts: int = 3
     run_execution_retry_backoff_base_sec: float = 1.5
@@ -458,6 +479,12 @@ class Settings(BaseSettings):
                 )
             if self.bash_tool_enabled:
                 raise ValueError("BASH_TOOL_ENABLED must be false in production and staging.")
+            if self.run_queue_backend == "redis" and self.database_url.strip().lower().startswith("sqlite"):
+                raise ValueError(
+                    "RUN_QUEUE_BACKEND=redis with a sqlite DATABASE_URL is not supported in production/staging: "
+                    "SQLite's file-level locking will serialize concurrent request/SSE connections under load. "
+                    "Set DATABASE_URL to a Postgres URL (see docker-compose.yml) before enabling the Redis queue."
+                )
         return self
 
     @property
@@ -548,6 +575,13 @@ def log_run_queue_startup_config(*, repo_env_present: bool, backend_env_present:
         log.warning(
             "DATABASE_URL looks like a placeholder; the API will fail to connect. "
             "Use sqlite:///./processdoc.db for local dev or postgres credentials matching docker-compose."
+        )
+    if settings.run_queue_backend == "redis" and du.startswith("sqlite"):
+        log.warning(
+            "RUN_QUEUE_BACKEND=redis with a sqlite DATABASE_URL: SQLite's file-level locking will "
+            "serialize concurrent request/SSE connections under real load (500-user target). Fine for "
+            "local Redis-queue testing; switch DATABASE_URL to Postgres before staging/production "
+            "(enforced there — see Settings._validate_secrets_and_urls)."
         )
 
 

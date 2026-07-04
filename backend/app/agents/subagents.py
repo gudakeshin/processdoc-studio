@@ -56,7 +56,7 @@ _SWARM_LEAD_ONLY_TOOLS: tuple[str, ...] = (
 )
 _SWARM_TOOL_NAMES: tuple[str, ...] = _SWARM_READ_TOOLS + _SWARM_LEAD_ONLY_TOOLS  # backward compat
 
-_DEBUG_LOG_PATH = Path("/Users/pallavchaturvedi/Agentic Projects/Process Doc v2/.cursor/debug-a9841a.log")
+_DEBUG_LOG_PATH = Path(settings.processdoc_coordinator_debug_log).expanduser() if str(settings.processdoc_coordinator_debug_log or "").strip() else None
 _DEBUG_SESSION_ID = "a9841a"
 
 
@@ -94,6 +94,8 @@ def _append_conversation_digest_block(user: str, ctx: AgentContext) -> str:
 
 
 def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    if _DEBUG_LOG_PATH is None:
+        return
     try:
         payload = {
             "sessionId": _DEBUG_SESSION_ID,
@@ -2838,6 +2840,95 @@ def _resolve_presentation_title(
     return "Executive Briefing"
 
 
+def _resolve_arc_key(plan_discovery: dict[str, Any]) -> str:
+    """Map a free-form narrative_arc hint onto a canonical ARC_LIBRARY key."""
+    raw = str((plan_discovery or {}).get("narrative_arc") or "").strip().lower()
+    if "scqa" in raw or "situation" in raw or "complication" in raw:
+        return "scqa"
+    if "case" in raw or "momentum" in raw:
+        return "case_led"
+    return "pyramid"
+
+
+def _process_summary_for_storyline(pm: dict[str, Any]) -> str:
+    """Compact, evidence-bearing process summary fed to the storyline planner."""
+    if not isinstance(pm, dict):
+        return ""
+    parts: list[str] = []
+    name = str(pm.get("name") or pm.get("process_name") or "").strip()
+    if name:
+        parts.append(f"Process: {name}")
+    steps = pm.get("steps") if isinstance(pm.get("steps"), list) else []
+    if steps:
+        parts.append(f"Steps ({len(steps)}):")
+        for i, s in enumerate(steps[:14], 1):
+            if isinstance(s, dict):
+                lbl = str(s.get("name") or s.get("label") or s.get("activity") or "").strip()
+                role = str(s.get("role") or s.get("owner") or "").strip()
+                parts.append(f"  {i}. {lbl}" + (f" — {role}" if role else ""))
+    for key, title in (
+        ("roles", "Roles"), ("systems", "Systems"), ("metrics", "Metrics"),
+        ("kpis", "KPIs"), ("pain_points", "Pain points"),
+    ):
+        vals = pm.get(key)
+        if isinstance(vals, list) and vals:
+            flat = ", ".join(
+                str((v or {}).get("name") if isinstance(v, dict) else v) for v in vals[:8]
+            )
+            parts.append(f"{title}: {flat}")
+    return "\n".join(parts)[:3500]
+
+
+def _storyline_spine_block(
+    ctx: AgentContext, pm: dict[str, Any], plan_discovery: dict[str, Any], target_slides: int
+) -> str:
+    """Build/load the run's storyline contract and render it as a prompt spine.
+
+    Persists to ``<run_dir>/storyline.json`` so PPTX and DOCX share one spine.
+    Fail-open: returns "" on any error or when disabled.
+    """
+    if not getattr(settings, "storyline_contract_enabled", True):
+        return ""
+    try:
+        from app.services.storyline_builder import (
+            build_storyline_contract,
+            load_storyline_contract,
+            persist_storyline_contract,
+            render_contract_for_prompt,
+        )
+        from app.services.storage import workspace_path
+
+        run_dir = None
+        pid = str(ctx.project_id or "").strip()
+        rid = str(ctx.run_id or "").strip()
+        if pid and rid:
+            run_dir = workspace_path(pid) / "runs" / rid
+
+        contract = load_storyline_contract(run_dir) if run_dir else None
+        if not (isinstance(contract, dict) and contract.get("slides")):
+            enrichment: dict[str, Any] = {}
+            pa = getattr(ctx.enrichment, "process_analytics", None)
+            if pa is not None:
+                enrichment = {
+                    "steps_count": getattr(pa, "steps_count", None),
+                    "roles_count": getattr(pa, "roles_count", None),
+                    "decision_points": getattr(pa, "decision_points", None),
+                }
+            contract = build_storyline_contract(
+                arc_key=_resolve_arc_key(plan_discovery),
+                discovery_slots=plan_discovery if isinstance(plan_discovery, dict) else {},
+                process_summary=_process_summary_for_storyline(pm),
+                enrichment=enrichment,
+                target_slides=target_slides,
+            )
+            if run_dir and isinstance(contract, dict) and contract.get("slides"):
+                persist_storyline_contract(run_dir, contract)
+        return render_contract_for_prompt(contract) if isinstance(contract, dict) else ""
+    except Exception as exc:  # noqa: BLE001 — spine is best-effort
+        _LOG.warning("storyline spine injection skipped: %s", exc)
+        return ""
+
+
 def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
     pm = _model(ctx)
     primary = _primary_skill(ctx) or {}
@@ -2973,6 +3064,17 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
         else:
             n_slides_guidance = "8–10 slides"
 
+        # ── Storyline spine (Pillar A): planned, arc-anchored slide sequence ──
+        # Authored once per run by the planning-tier model and shared with DOCX.
+        _target_slides = max(8, min(14, n_steps + 4))
+        _spine_block = _storyline_spine_block(ctx, pm, plan_discovery, _target_slides)
+        if _spine_block:
+            sb = _SkillBuild(
+                system=sb.system + "\n\n" + _spine_block,
+                temperature=sb.temperature,
+                max_rounds=sb.max_rounds,
+            )
+
         # ── Inject enriched context metrics (Phase 1 fix) ──────────────────────
         enrichment = ctx.enrichment
         analytics = getattr(enrichment, "process_analytics", None) if enrichment else None
@@ -3050,8 +3152,8 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                     from app.core.config import settings as _s
                     _dt = "editorial" if getattr(_s, "pptx_editorial_theme_enabled", False) else "classic"
                 _editorial_theme = (_dt == "editorial")
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning("%s: suppressed error: %s", 'run_pptx_agent', exc)
 
         _slide_schema = (
             "Each slide object schema (omit fields that are null):\n"
