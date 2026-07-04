@@ -114,9 +114,9 @@ class MCPRegistry:
                 config=cfg,
             )
 
-            # TODO: Wrap stdio in async streams on first use
-            # For now, store raw pipes - will be wrapped when needed for actual I/O
-            # instance.stdin_writer and instance.stdout_reader will be created on demand
+            # Raw blocking pipes are stored; bridge.call_mcp_tool() performs the
+            # blocking read/write in a thread executor so the event loop is never
+            # stalled (see app/services/mcp/bridge.py).
 
             self.servers[str(server_id)] = instance
             logger.info(f"MCP: server {server_id} started (PID {process.pid})")
