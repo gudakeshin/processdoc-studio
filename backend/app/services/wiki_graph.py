@@ -12,6 +12,7 @@ from datetime import datetime
 from app.core.tz import IST
 
 from app.core.config import settings
+from app.services.wiki_io import resolve_relationships_file
 
 _LOG = logging.getLogger(__name__)
 
@@ -967,11 +968,8 @@ def load_wiki_graph(wiki_type: str, project_id: str | None) -> tuple:
         else:
             wiki_dir = workspace_path(project_id) / "wiki"
 
-        # Check .meta/ first, fall back to old location
-        relationships_file = wiki_dir / ".meta" / "relationships.json"
-        if not relationships_file.exists():
-            relationships_file = wiki_dir / "relationships.json"
-        if not relationships_file.exists():
+        relationships_file = resolve_relationships_file(wiki_dir)
+        if relationships_file is None:
             return nx.Graph(), {}
 
         rels_data = _normalize_relationships_payload(json.loads(relationships_file.read_text()))

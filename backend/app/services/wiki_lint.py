@@ -9,6 +9,7 @@ import logging
 import re
 from datetime import datetime
 from app.core.tz import IST
+from app.services.wiki_io import resolve_relationships_file
 
 try:
     import yaml
@@ -238,11 +239,8 @@ def get_relationship_counts(wiki_type: str, project_id: str | None) -> dict:
         else:
             wiki_dir = workspace_path(project_id) / "wiki"
 
-        relationships_file = wiki_dir / ".meta" / "relationships.json"
-        if not relationships_file.exists():
-            # Fallback to old location
-            relationships_file = wiki_dir / "relationships.json"
-        if not relationships_file.exists():
+        relationships_file = resolve_relationships_file(wiki_dir)
+        if relationships_file is None:
             return {}
 
         rels_data = json.loads(relationships_file.read_text())
