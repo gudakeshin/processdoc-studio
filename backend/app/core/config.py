@@ -176,6 +176,13 @@ class Settings(BaseSettings):
     # Evidence soft-block: unsupported numeric claims trigger ONE targeted rewrite
     # (add caveat or drop the number); render always proceeds afterwards.
     evidence_soft_block_enabled: bool = True
+    # Phase 2: pre-render layout planner (demote dense cards, split long lists/tables,
+    # move overflow prose to speaker notes). Disabled → current trim-at-render behavior.
+    pptx_layout_planner_enabled: bool = False
+    # Phase 3: waterfall / gantt / harvey balls / benchmark bar figures.
+    figure_vocab_v2_enabled: bool = False
+    # Phase 4: DOCX page header, multilevel heading numbers, cross-refs, pull quotes.
+    docx_formatting_v2_enabled: bool = False
     anthropic_timeout_sec: float = 45.0
     anthropic_circuit_breaker_failures: int = 5
     anthropic_circuit_breaker_reset_sec: int = 60

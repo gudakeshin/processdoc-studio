@@ -183,3 +183,40 @@ def test_build_contract_failopen_when_disabled(monkeypatch: pytest.MonkeyPatch) 
     assert contract["arc"] == "pyramid"
     assert contract["degraded"] is True
     assert contract["slides"] == []
+
+
+def test_docx_fallback_tracks_storyline_beats() -> None:
+    from app.agents.subagents import _docx_deterministic_fallback
+
+    pm = {
+        "process_name": "Procure-to-Pay",
+        "steps": [{"name": "Create PR", "role": "Requester"}],
+        "roles": ["Requester"],
+    }
+    contract = {
+        "governing_thought": "Manual intake drives cost",
+        "slides": [
+            {"action_title": "Intake friction erodes margin", "key_message": "40% of effort is manual"},
+            {"action_title": "Automation unlocks scale", "key_message": "OCR cuts cycle time"},
+        ],
+    }
+    md = _docx_deterministic_fallback(pm, "proposal", contract)
+    assert "## Intake friction erodes margin" in md
+    assert "## Automation unlocks scale" in md
+    assert "Create PR" in md
+    assert "Procure-to-Pay" in md
+
+
+def test_brd_fallback_uses_process_model_steps() -> None:
+    from app.agents.subagents import _docx_deterministic_fallback
+
+    pm = {
+        "process_name": "Invoice Matching",
+        "steps": [{"name": "Match invoice", "role": "AP Clerk"}],
+        "roles": ["AP Clerk"],
+        "decisions": [{"name": "Approve exception"}],
+    }
+    md = _docx_deterministic_fallback(pm, "brd", None)
+    assert "Match invoice" in md
+    assert "Approve exception" in md
+    assert "AP Clerk" in md

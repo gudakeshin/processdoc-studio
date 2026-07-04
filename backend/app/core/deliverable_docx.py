@@ -283,6 +283,8 @@ class DOCXDeliverable(IDeliverable):
             run.font.name = theme.font_header
         C.insert_toc(doc)
         C.page_footer(doc, theme, company)
+        if getattr(settings, "docx_formatting_v2_enabled", False):
+            C.page_header(doc, theme, company, process_name)
 
         blocks = parse_markdown_blocks(humanize_wiki_links(text))
         if getattr(settings, "docx_figures_enabled", True):
@@ -301,9 +303,12 @@ class DOCXDeliverable(IDeliverable):
         composer.compose(blocks)
         doc.save(out)
 
+        signals: dict[str, Any] = {"fit_report": composer.fit_report}
+        if composer._unresolved_tokens:
+            signals["unresolved_cross_refs"] = composer._unresolved_tokens
         try:
             (run_dir / "docx_render_signals.json").write_text(
-                json.dumps({"fit_report": composer.fit_report}, indent=2), encoding="utf-8"
+                json.dumps(signals, indent=2), encoding="utf-8"
             )
         except Exception as exc:
             logger.debug("docx_render_signals persist skipped: %s", exc)

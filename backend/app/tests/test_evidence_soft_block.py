@@ -11,6 +11,7 @@ from app.agents.subagents import (
     _EVIDENCE_SOFT_BLOCK_DIRECTIVE,
     _critique_and_repair_docx,
     _critique_and_repair_pptx,
+    _evidence_remediation_directive,
 )
 from app.core.evidence_validator import validate_pptx_slides_evidence, validate_text_evidence
 
@@ -42,6 +43,14 @@ def test_evidence_soft_block_directive_text() -> None:
     assert "never invent" in _EVIDENCE_SOFT_BLOCK_DIRECTIVE.lower()
 
 
+def test_evidence_remediation_directive_includes_validator_suggestions() -> None:
+    claims = [{"claim": "$500M", "context": "savings"}]
+    directive = _evidence_remediation_directive(claims, {"process_name": "P2P"})
+    assert _EVIDENCE_SOFT_BLOCK_DIRECTIVE in directive
+    assert "remediation guidance" in directive.lower()
+    assert "processmodel" in directive.lower()
+
+
 def test_validate_text_evidence_finds_unsupported_claims() -> None:
     result = validate_text_evidence("Savings of $500M are achievable within 90 days.", None)
     validation = result["validation"]
@@ -71,7 +80,8 @@ def test_pptx_soft_block_builds_rewrite_instructions(monkeypatch: pytest.MonkeyP
         out = _critique_and_repair_pptx(_ctx(), slides, None)
 
     assert out == slides
-    assert captured["directive"] == _EVIDENCE_SOFT_BLOCK_DIRECTIVE
+    assert "directional estimate" in captured["directive"].lower()
+    assert "never invent" in captured["directive"].lower()
     assert captured["hints"][0]["source"] == "evidence"
     assert "$900M" in captured["hints"][0]["instruction"]
 

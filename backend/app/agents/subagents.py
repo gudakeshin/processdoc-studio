@@ -2005,14 +2005,14 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 ctx, md, system=sb.system, user=user, temperature=sb.temperature
             )
             if md is None:
-                return AgentOutput(updates={"docx_markdown": _docx_deterministic_fallback(pm, deliverable)})
+                return AgentOutput(updates={"docx_markdown": _docx_deterministic_fallback(pm, deliverable, _load_run_storyline(ctx))})
             md = _apply_quality_gate(ctx, "docx", md, system=sb.system, temperature=sb.temperature)
             md = _critique_and_repair_docx(ctx, md, pm, deliverable)
             md = _run_post_processor(ctx, md)
             return AgentOutput(updates={"docx_markdown": md})
 
     # Deterministic fallback — deliverable-aware
-    return AgentOutput(updates={"docx_markdown": _docx_deterministic_fallback(pm, deliverable)})
+    return AgentOutput(updates={"docx_markdown": _docx_deterministic_fallback(pm, deliverable, _load_run_storyline(ctx))})
 
 
 def _guard_docx_representation(
@@ -2049,12 +2049,36 @@ def _guard_docx_representation(
     return None
 
 
-def _docx_deterministic_fallback(pm: ProcessModel, deliverable: str) -> str:
+def _docx_deterministic_fallback(
+    pm: ProcessModel,
+    deliverable: str,
+    contract: dict[str, Any] | None = None,
+) -> str:
     """Deterministic DOCX content for when Claude is unavailable."""
     name = pm.get("process_name") or "Process Document"
     steps = pm.get("steps") or []
     roles = pm.get("roles") or []
-    roles_str = ", ".join(roles)
+    decisions = pm.get("decisions") or pm.get("decision_points") or []
+    roles_str = ", ".join(str(r if not isinstance(r, dict) else r.get("name") or r) for r in roles)
+    beats = [b for b in (contract or {}).get("slides", []) if isinstance(b, dict)] if contract else []
+
+    def _beat_sections(default_intro: str) -> list[str]:
+        if not beats:
+            return []
+        lines: list[str] = [default_intro, ""]
+        for b in beats:
+            title = str(b.get("action_title") or b.get("key_message") or "Section").strip()
+            msg = str(b.get("key_message") or "").strip()
+            ev = str(b.get("required_evidence") or "").strip()
+            lines += [f"## {title}", ""]
+            if msg:
+                lines.append(msg)
+            elif ev:
+                lines.append(f"Evidence focus: {ev}")
+            else:
+                lines.append(f"_Content for {title} drawn from the process model._")
+            lines.append("")
+        return lines
 
     if deliverable == "sop":
         lines = [f"# {name}", "", "## Purpose", "",
@@ -2069,6 +2093,12 @@ def _docx_deterministic_fallback(pm: ProcessModel, deliverable: str) -> str:
         return "\n".join(lines).strip() + "\n"
 
     elif deliverable == "narrative":
+        if beats:
+            lines = [f"# {name} — Executive Briefing", ""] + _beat_sections("")
+            lines += ["## Recommended Next Actions", "",
+                      "1. Validate step ownership with process owners.",
+                      "2. Confirm tooling and systems referenced in source materials."]
+            return "\n".join(lines).strip() + "\n"
         n_steps = len(steps)
         n_roles = len(roles)
         highlights = "; ".join(s.get("name", "") for s in steps[:5])
@@ -2103,34 +2133,119 @@ def _docx_deterministic_fallback(pm: ProcessModel, deliverable: str) -> str:
             lines.append(f"| {nm} | {resp} | {accountable} | {cons} | — |")
         return "\n".join(lines).strip() + "\n"
     elif deliverable == "proposal":
+        if beats:
+            intro = (
+                f"This proposal covers **{name}** with **{len(steps)}** workflow step(s) "
+                f"and **{len(roles)}** role(s) from the extracted process model."
+            )
+            lines = [f"# Finance Transformation Proposal — {name}", ""] + _beat_sections(intro)
+            if steps:
+                lines += ["## Process Footprint", ""]
+                for st in steps[:8]:
+                    if isinstance(st, dict):
+                        lines.append(
+                            f"- **{st.get('name', '—')}** _(owner: {st.get('role', 'TBD')})_"
+                        )
+                lines.append("")
+            lines += [
+                "## Next Steps", "",
+                "1. Validate assumptions with process owners and finance leadership.",
+                "2. Approve pilot scope and governance forum.",
+            ]
+            return "\n".join(lines).strip() + "\n"
+        highlights = "; ".join(
+            str(s.get("name", "")) for s in steps[:5] if isinstance(s, dict)
+        )
+        owner = str(roles[0] if roles else "Process Owner")
         lines = [
             f"# Finance Transformation Proposal — {name}",
             "",
             "## Executive Summary",
-            "This proposal outlines a pragmatic finance transformation path, value case, and delivery approach.",
+            f"This proposal addresses **{name}**, spanning **{len(steps)}** step(s) and "
+            f"**{len(roles)}** role(s). Key activities include: {highlights or 'see process model'}.",
             "",
             "## Current State and Problem Statement",
-            "Current-state process complexity and handoff friction are captured in the extracted workflow model.",
+            "Current-state workflow complexity and handoff friction are captured in the extracted process model.",
             "",
             "## Target Operating Model",
-            "Define future-state process ownership, governance, and standardization priorities.",
+            f"Standardize ownership across {roles_str or 'defined roles'} with clear accountability per step.",
             "",
             "## Workstreams and Timeline",
-            "1. Mobilize and baseline",
-            "2. Design and pilot",
-            "3. Scale and stabilize",
+        ]
+        for i, st in enumerate(steps[:6], 1):
+            if isinstance(st, dict):
+                lines.append(f"{i}. **{st.get('name', 'Workstream')}** — led by {st.get('role') or owner}")
+        if len(steps) <= 1:
+            lines += ["1. Mobilize and baseline", "2. Design and pilot", "3. Scale and stabilize"]
+        lines += [
             "",
             "## Value Case",
             "| Lever | Impact | Confidence | Owner |",
             "|---|---|---|---|",
-            "| Close acceleration | [TBC] | Medium | CFO office |",
+            f"| Process standardization ({name}) | Operational efficiency | Medium | {owner} |",
             "",
             "## Risks and Mitigations",
-            "- Change adoption risk -> run role-based enablement and governance cadence.",
+            "- Change adoption risk → role-based enablement and governance cadence.",
             "",
             "## Next Steps",
             "1. Validate assumptions with finance leadership.",
             "2. Approve pilot scope and governance forum.",
+        ]
+        return "\n".join(lines).strip() + "\n"
+
+    elif deliverable == "brd":
+        if beats:
+            intro = (
+                f"Business requirements for **{name}** derived from the process model "
+                f"({len(steps)} step(s), {len(roles)} role(s))."
+            )
+            lines = [f"# Business Requirements Document — {name}", ""] + _beat_sections(intro)
+            lines += ["## References", "", "- Source: run instruction and assembled project context."]
+            return "\n".join(lines).strip() + "\n"
+        req_lines = []
+        for i, st in enumerate(steps[:8], 1):
+            if isinstance(st, dict):
+                req_lines.append(
+                    f"{i}. The system shall support **{st.get('name', 'activity')}** "
+                    f"with accountable owner **{st.get('role') or 'TBD'}**."
+                )
+        if decisions:
+            for d in decisions[:3]:
+                label = d.get("name") if isinstance(d, dict) else str(d)
+                req_lines.append(
+                    f"{len(req_lines) + 1}. Decision gate **{label}** shall be enforced before downstream steps."
+                )
+        if not req_lines:
+            req_lines = [
+                "1. The solution shall document and execute the end-to-end workflow.",
+                "2. Each step shall have a named accountable role.",
+            ]
+        lines = [
+            f"# Business Requirements Document — {name}",
+            "",
+            "## Executive Summary",
+            f"This BRD defines requirements for **{name}** across **{len(steps)}** workflow step(s).",
+            "",
+            "## Current State",
+            f"The as-is process involves {roles_str or 'roles to be confirmed'} executing {len(steps)} step(s).",
+            "",
+            "## Business Requirements",
+            *req_lines,
+            "",
+            "## Roles and Stakeholders",
+        ]
+        for r in roles[:10]:
+            lines.append(f"- **{r}**: responsible for assigned workflow activities.")
+        lines += [
+            "",
+            "## Success Criteria",
+            "1. All workflow steps are owned and executable end-to-end.",
+            "2. Decision gates are documented and enforced.",
+            "3. Roles and handoffs are unambiguous.",
+            "",
+            "## References",
+            "",
+            "- Source: run instruction and assembled project context.",
         ]
         return "\n".join(lines).strip() + "\n"
 
@@ -2405,6 +2520,20 @@ _EVIDENCE_SOFT_BLOCK_DIRECTIVE = (
 )
 
 
+def _evidence_remediation_directive(
+    unsupported_claims: list[dict[str, Any]],
+    pm: dict[str, Any] | None,
+) -> str:
+    """Fixed soft-block directive plus validator remediation suggestions."""
+    from app.core.evidence_validator import _generate_remediation
+
+    base = _EVIDENCE_SOFT_BLOCK_DIRECTIVE
+    extra = _generate_remediation(unsupported_claims, pm)
+    if extra:
+        return base + " Remediation guidance: " + "; ".join(extra)
+    return base
+
+
 def _load_run_storyline(ctx: AgentContext) -> dict[str, Any] | None:
     """Load the persisted ``<run_dir>/storyline.json`` contract; None on any miss."""
     try:
@@ -2598,11 +2727,13 @@ def _critique_and_repair_pptx(
             claims_before = int(ev.get("unsupported_claims_count") or 0)
             if claims_before:
                 ev_hints: list[dict[str, Any]] = []
+                all_unsupported: list[dict[str, Any]] = []
                 for i, sv in enumerate(ev.get("slide_validations") or [], start=1):
                     validation = (sv or {}).get("validation") or {}
                     unsupported = validation.get("unsupported_claims") or []
                     if not unsupported:
                         continue
+                    all_unsupported.extend(unsupported)
                     claims = ", ".join(_claim_text(c) for c in unsupported[:4] if _claim_text(c))
                     ev_hints.append({
                         "slide_index": i,
@@ -2610,7 +2741,8 @@ def _critique_and_repair_pptx(
                         "source": "evidence",
                     })
                 slide_dicts = _targeted_slide_rewrite(
-                    ctx, slide_dicts, ev_hints, directive=_EVIDENCE_SOFT_BLOCK_DIRECTIVE
+                    ctx, slide_dicts, ev_hints,
+                    directive=_evidence_remediation_directive(all_unsupported, pm_dict),
                 )
                 ev_after = validate_pptx_slides_evidence(slide_dicts, pm_dict)
                 if ctx.emit_event:
@@ -2747,12 +2879,14 @@ def _critique_and_repair_docx(
             sections = split_h2_sections(md)
             ev_hints = []
             claims_before = 0
+            all_unsupported: list[dict[str, Any]] = []
             for s in sections:
                 validation = validate_text_evidence(s["body"], pm_dict).get("validation") or {}
                 unsupported = validation.get("unsupported_claims") or []
                 if not unsupported:
                     continue
                 claims_before += len(unsupported)
+                all_unsupported.extend(unsupported)
                 claims = ", ".join(_claim_text(c) for c in unsupported[:4] if _claim_text(c))
                 ev_hints.append({
                     "section_index": s["index"],
@@ -2761,7 +2895,8 @@ def _critique_and_repair_docx(
                 })
             if ev_hints:
                 md = _targeted_section_rewrite(
-                    ctx, md, ev_hints, directive=_EVIDENCE_SOFT_BLOCK_DIRECTIVE
+                    ctx, md, ev_hints,
+                    directive=_evidence_remediation_directive(all_unsupported, pm_dict),
                 )
                 after_validation = validate_text_evidence(md, pm_dict).get("validation") or {}
                 if ctx.emit_event:
@@ -2777,8 +2912,37 @@ def _critique_and_repair_docx(
     return md
 
 
-def _pptx_deterministic_slides(pm: ProcessModel) -> list[dict[str, Any]]:
+def _pptx_deterministic_slides(
+    pm: ProcessModel,
+    contract: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Full minimal deck when Claude is off or JSON fails — matches pptx_v1 mandatory sequence."""
+    beats = [b for b in (contract or {}).get("slides", []) if isinstance(b, dict)] if contract else []
+    if beats:
+        slides: list[dict[str, Any]] = []
+        process_name = str(pm.get("process_name") or "Process Overview")
+        slides.append({
+            "title": process_name,
+            "slide_type": "title",
+            "subtitle": str((contract or {}).get("governing_thought") or "Process Overview")[:120],
+        })
+        fill_rot = ["dark", "mid_dark", "green", "gray", "mid", "dark_green"]
+        for i, b in enumerate(beats[:18]):
+            vis = str(b.get("suggested_visual") or "bullets").lower()
+            title = str(b.get("action_title") or f"Beat {i + 1}")
+            msg = str(b.get("key_message") or "")
+            slide: dict[str, Any] = {"title": title, "slide_type": vis if vis != "section_divider" else "section_divider"}
+            if vis in ("bullets", "section_divider"):
+                if msg:
+                    slide["bullets"] = [msg]
+            elif vis == "stat_cards":
+                slide["stat_cards"] = [{"stat": "—", "label": title[:40], "description": msg[:120], "fill": fill_rot[i % len(fill_rot)]}]
+            else:
+                slide["slide_type"] = "bullets"
+                slide["bullets"] = [msg] if msg else [title]
+            slides.append(slide)
+        return slides
+
     steps = pm.get("steps") or []
     roles = pm.get("roles") or []
     process_name = str(pm.get("process_name") or "Process Overview")
@@ -3980,7 +4144,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 # endregion
                 return AgentOutput(updates={"pptx_slides": slide_dicts})
 
-    fallback_slides = _normalize_pptx_slide_identities(_pptx_deterministic_slides(pm))
+    fallback_slides = _normalize_pptx_slide_identities(_pptx_deterministic_slides(pm, _load_run_storyline(ctx)))
     # region agent log
     _session_debug_log(
         run_id=ctx.run_id,

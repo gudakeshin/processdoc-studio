@@ -47,6 +47,10 @@ STORYLINE_VISUAL_VOCAB: tuple[str, ...] = (
     "maturity_curve",   # current vs target maturity (Phase B figure)
     "heat_map",         # risk / priority heat map (Phase B figure)
     "roadmap_matrix",   # phased roadmap by track (Phase B figure)
+    "waterfall",        # bridge / variance waterfall (Phase 3)
+    "gantt",            # phased timeline by lane (Phase 3)
+    "harvey_balls",     # maturity / RACI score grid (Phase 3)
+    "benchmark_bars",   # actual vs benchmark bars (Phase 3)
 )
 
 # Human-readable inline-field hints for the rich visuals, surfaced in the spine
@@ -60,6 +64,10 @@ _VISUAL_FIELD_HINTS: dict[str, str] = {
     "heat_map": "fields: rows[], cols[], cells[[...]]",
     "roadmap_matrix": "field: roadmap_matrix{periods[], tracks[{label, cells[{status}]}]}",
     "process_flow": "field: process_flow{steps[2-5]}",
+    "waterfall": "fields: bars[{label, delta, kind}]",
+    "gantt": "fields: tasks[{label, start, end, lane}]",
+    "harvey_balls": "fields: rows[{label, scores[]}]",
+    "benchmark_bars": "fields: series[{label, value, benchmark}]",
 }
 
 # Canonical arc definitions — used as both prompting context and fallback copy.

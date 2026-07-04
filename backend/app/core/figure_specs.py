@@ -86,6 +86,36 @@ def _roadmap(pm: dict) -> dict | None:
     return {"type": "roadmap_matrix", "tracks": tracks[:6], "periods": periods[:6], "bars": bars}
 
 
+def _gantt_from_phases(pm: dict) -> dict | None:
+    phases = [p for p in (pm.get("phases") or pm.get("roadmap") or []) if isinstance(p, dict)]
+    if len(phases) < 2:
+        return None
+    tasks: list[dict[str, Any]] = []
+    n = len(phases)
+    for i, p in enumerate(phases):
+        lane = str(p.get("name") or p.get("label") or f"Phase {i + 1}").strip()
+        start = i / max(1, n)
+        end = min(1.0, (i + 1) / max(1, n))
+        tasks.append({"label": lane, "start": start, "end": end, "lane": "Delivery"})
+    return {"type": "gantt", "tasks": tasks}
+
+
+def _harvey_from_maturity(pm: dict) -> dict | None:
+    rows: list[dict[str, Any]] = []
+    for r in (pm.get("roles") or [])[:6]:
+        name = str(r if not isinstance(r, dict) else r.get("name") or r).strip()
+        if name:
+            rows.append({"label": name, "scores": [2, 2, 1, 1]})
+    maturity = pm.get("maturity") if isinstance(pm.get("maturity"), dict) else {}
+    for dim, score in list(maturity.items())[:4]:
+        if isinstance(dim, str):
+            val = int(score) if isinstance(score, (int, float)) else 2
+            rows.append({"label": dim.replace("_", " ").title(), "scores": [val] * 4})
+    if len(rows) < 2:
+        return None
+    return {"type": "harvey_balls", "rows": rows[:6]}
+
+
 def derive_figures_from_process_model(pm: dict | None, *, max_figures: int = 3) -> list[dict[str, Any]]:
     """Return up to ``max_figures`` grounded figure *blocks* (``{type:'figure', figure, caption}``).
 
@@ -110,6 +140,18 @@ def derive_figures_from_process_model(pm: dict | None, *, max_figures: int = 3) 
     if hm:
         out.append({"type": "figure", "figure": hm,
                     "caption": "Risk exposure by likelihood and impact."})
+    try:
+        from app.core.config import settings
+
+        if getattr(settings, "figure_vocab_v2_enabled", False):
+            gt = _gantt_from_phases(pm)
+            if gt:
+                out.append({"type": "figure", "figure": gt, "caption": "Phased delivery timeline."})
+            hb = _harvey_from_maturity(pm)
+            if hb:
+                out.append({"type": "figure", "figure": hb, "caption": "Capability maturity by dimension."})
+    except Exception:
+        pass
     return out[:max_figures]
 
 

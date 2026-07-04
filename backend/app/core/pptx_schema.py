@@ -19,6 +19,7 @@ SUPPORTED_SLIDE_TYPES = {
     "roadmap_matrix", "swimlane_timeline", "flagship_cards",
     # Pillar B figure slides (rendered by the shared raster figure engine)
     "figure", "two_by_two", "value_chain", "maturity_curve", "heat_map",
+    "waterfall", "gantt", "harvey_balls", "benchmark_bars",
 }
 
 # Rich storyline visuals + the essential field(s) each needs to render as more
@@ -32,6 +33,10 @@ RICH_VISUAL_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "heat_map": ("rows", "cols", "cells"),
     "roadmap_matrix": ("roadmap_matrix",),  # nested {periods, tracks}
     "process_flow": ("process_flow",),  # nested {steps}
+    "waterfall": ("bars",),
+    "gantt": ("tasks",),
+    "harvey_balls": ("rows",),
+    "benchmark_bars": ("series",),
 }
 
 _VALID_STATUSES = {"live", "in_build", "planned", "partner"}

@@ -278,3 +278,31 @@ def test_classic_theme_unchanged_green_topbar() -> None:
             if _solid_fill_hex(sh) == "0E7C7B":
                 bar = True
     assert bar, "classic theme should keep the solid primary top bar"
+
+
+def test_layout_planner_processed_deck_has_empty_fit_report(monkeypatch) -> None:
+    """When the layout planner splits/demotes pre-render, editorial fit_report should stay clean."""
+    from app.core.config import settings
+    from app.core.pptx_layout_planner import plan_layout
+
+    monkeypatch.setattr(settings, "pptx_layout_planner_enabled", True)
+    dense = {
+        "slide_type": "bullets",
+        "title": "Dense list",
+        "bullets": [f"Item {i}" for i in range(14)],
+    }
+    planned = plan_layout([dense] + _SLIDES[1:])
+    payload = {
+        "requested_outputs": ["pptx"],
+        "pptx_slides": planned,
+        "process_model": {"process_name": "Finance Transformation", "steps": [], "roles": []},
+    }
+    branding = {
+        "primary_color": "#0E7C7B", "company_name": "Deloitte",
+        "footer_text": "Finance Transformation", "deck_theme": "editorial",
+    }
+    d = Path(tempfile.mkdtemp())
+    res = render_pptx_with_artifact_tool(payload, d, branding)
+    assert res["status"] == "success"
+    fit = res.get("qa_report", {}).get("fit_issues") or []
+    assert fit == [] or not any(e.get("action", "").startswith("trimmed") for e in fit)

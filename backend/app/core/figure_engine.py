@@ -31,6 +31,10 @@ FIGURE_TYPES: tuple[str, ...] = (
     "maturity_curve",
     "heat_map",
     "roadmap_matrix",
+    "waterfall",
+    "gantt",
+    "harvey_balls",
+    "benchmark_bars",
 )
 
 
@@ -392,12 +396,145 @@ def _render_roadmap_matrix(draw, W, H, P, spec) -> None:
             _draw_centered(draw, (x0 + 6, y0, x1 - 6, y1), lbl, bfont, tc)
 
 
+def _render_waterfall(draw, W, H, P, spec) -> None:
+    bars = [b for b in (spec.get("bars") or []) if isinstance(b, dict)]
+    if not bars:
+        return
+    pad_l, pad_r, pad_b, pad_t = int(W * 0.08), int(W * 0.05), int(H * 0.18), int(H * 0.08)
+    gx0, gy0, gx1, gy1 = pad_l, pad_t, W - pad_r, H - pad_b
+    n = len(bars)
+    gap = int((gx1 - gx0) * 0.02)
+    bw = max(20, (gx1 - gx0 - gap * (n - 1)) // n)
+    baseline = gy1
+    running = 0.0
+    max_val = max(abs(float(b.get("delta") or 0)) for b in bars) or 1.0
+    scale = (gy1 - gy0) * 0.75 / max_val
+    fnt = _font(int(H * 0.038), bold=True)
+    for i, b in enumerate(bars):
+        x0 = gx0 + i * (bw + gap)
+        x1 = x0 + bw
+        kind = str(b.get("kind") or "increase").lower()
+        delta = float(b.get("delta") or 0)
+        if kind == "total":
+            h = abs(running) * scale
+            y0 = int(baseline - h)
+            fill = P.rgb("panel", "#1F2426")
+            running = delta
+        elif kind == "decrease":
+            y_top = int(baseline - running * scale)
+            running += delta
+            y0 = int(baseline - running * scale)
+            fill = _rgb(_mix("#E8007C", "#FFFFFF", 0.35))
+        else:
+            y0 = int(baseline - running * scale)
+            running += delta
+            y_top = int(baseline - running * scale)
+            y0, y_top = y_top, y0
+            fill = P.rgb("primary", "#86BC25")
+        if kind != "total":
+            draw.rectangle([x0, min(y0, baseline), x1, baseline], fill=fill)
+        else:
+            draw.rectangle([x0, y0, x1, baseline], fill=fill)
+        lbl = str(b.get("label") or "")
+        if lbl:
+            _draw_centered(draw, (x0, gy1 + 6, x1, gy1 + pad_b - 4), lbl, fnt, P.rgb("muted", "#5A6066"))
+
+
+def _render_gantt(draw, W, H, P, spec) -> None:
+    tasks = [t for t in (spec.get("tasks") or []) if isinstance(t, dict)]
+    if not tasks:
+        return
+    lanes = sorted({str(t.get("lane") or "Track") for t in tasks})
+    if not lanes:
+        lanes = ["Track"]
+    pad_l, pad_r, pad_t, pad_b = int(W * 0.18), int(W * 0.04), int(H * 0.08), int(H * 0.06)
+    gx0, gy0, gx1, gy1 = pad_l, pad_t, W - pad_r, H - pad_b
+    rh = max(24, (gy1 - gy0) // max(1, len(lanes)))
+    tfont = _font(int(min(rh, H * 0.04)), bold=True)
+    lfont = _font(int(H * 0.036), bold=True)
+    for li, lane in enumerate(lanes):
+        y0 = gy0 + li * rh
+        y1 = y0 + rh - 4
+        _draw_centered(draw, (0, y0, gx0 - 8, y1), lane, lfont, P.rgb("ink", "#1A1A1A"))
+        lane_tasks = [t for t in tasks if str(t.get("lane") or "Track") == lane]
+        for t in lane_tasks:
+            start = max(0.0, min(1.0, float(t.get("start") or 0)))
+            end = max(start, min(1.0, float(t.get("end") or start + 0.1)))
+            x0 = int(gx0 + start * (gx1 - gx0))
+            x1 = int(gx0 + end * (gx1 - gx0))
+            bar_y0 = y0 + int(rh * 0.22)
+            bar_y1 = y1 - int(rh * 0.22)
+            _rounded(draw, [x0, bar_y0, x1, bar_y1], fill=P.rgb("primary", "#86BC25"), radius=6)
+            lbl = str(t.get("label") or "")
+            if lbl and x1 - x0 > 40:
+                _draw_centered(draw, (x0 + 4, bar_y0, x1 - 4, bar_y1), lbl, tfont, P.rgb("inverse", "#FFFFFF"))
+
+
+def _render_harvey_balls(draw, W, H, P, spec) -> None:
+    rows = [r for r in (spec.get("rows") or []) if isinstance(r, dict)]
+    if not rows:
+        return
+    max_scores = max(len(r.get("scores") or []) for r in rows) or 1
+    pad_l, pad_t = int(W * 0.22), int(H * 0.10)
+    rh = max(28, (H - pad_t - int(H * 0.08)) // max(1, len(rows)))
+    ball_r = max(6, min(rh // 4, int(W * 0.018)))
+    gap = ball_r * 3
+    lfont = _font(int(H * 0.036), bold=True)
+    for i, row in enumerate(rows):
+        y = pad_t + i * rh
+        label = str(row.get("label") or "")
+        if label:
+            draw.text((int(W * 0.02), y + rh // 3), label, font=lfont, fill=P.rgb("ink", "#1A1A1A"))
+        scores = row.get("scores") or []
+        for j, score in enumerate(scores[:max_scores]):
+            cx = pad_l + j * gap
+            cy = y + rh // 2
+            filled = int(score) if isinstance(score, (int, float)) else (4 if str(score).lower() in ("full", "yes", "4") else 0)
+            for k in range(4):
+                bx = cx + k * (ball_r * 2 + 4)
+                color = P.rgb("primary", "#86BC25") if k < filled else P.rgb("hairline", "#D8DCDE")
+                draw.ellipse([bx - ball_r, cy - ball_r, bx + ball_r, cy + ball_r], fill=color)
+
+
+def _render_benchmark_bars(draw, W, H, P, spec) -> None:
+    series = [s for s in (spec.get("series") or []) if isinstance(s, dict)]
+    if not series:
+        return
+    pad_l, pad_r, pad_t, pad_b = int(W * 0.22), int(W * 0.08), int(H * 0.08), int(H * 0.08)
+    gx0, gy0, gx1, gy1 = pad_l, pad_t, W - pad_r, H - pad_b
+    rh = max(28, (gy1 - gy0) // max(1, len(series)))
+    max_val = max(
+        max(float(s.get("value") or 0), float(s.get("benchmark") or 0)) for s in series
+    ) or 1.0
+    lfont = _font(int(H * 0.036), bold=True)
+    vfont = _font(int(H * 0.032))
+    for i, s in enumerate(series):
+        y0 = gy0 + i * rh
+        y1 = y0 + rh - 6
+        label = str(s.get("label") or "")
+        val = float(s.get("value") or 0)
+        bench = float(s.get("benchmark") or 0)
+        if label:
+            draw.text((int(W * 0.02), y0 + rh // 3), label, font=lfont, fill=P.rgb("ink", "#1A1A1A"))
+        bar_w = int((gx1 - gx0) * (val / max_val))
+        bench_x = int(gx0 + (gx1 - gx0) * (bench / max_val))
+        bar_y0 = y0 + int(rh * 0.25)
+        bar_y1 = y1 - int(rh * 0.25)
+        draw.rectangle([gx0, bar_y0, gx0 + bar_w, bar_y1], fill=P.rgb("primary", "#86BC25"))
+        draw.line([(bench_x, bar_y0 - 2), (bench_x, bar_y1 + 2)], fill=P.rgb("panel", "#1F2426"), width=3)
+        draw.text((gx0 + bar_w + 6, bar_y0), f"{val:g}", font=vfont, fill=P.rgb("muted", "#5A6066"))
+
+
 _DISPATCH = {
     "two_by_two": _render_two_by_two,
     "value_chain": _render_value_chain,
     "maturity_curve": _render_maturity_curve,
     "heat_map": _render_heat_map,
     "roadmap_matrix": _render_roadmap_matrix,
+    "waterfall": _render_waterfall,
+    "gantt": _render_gantt,
+    "harvey_balls": _render_harvey_balls,
+    "benchmark_bars": _render_benchmark_bars,
 }
 
 
@@ -423,5 +560,5 @@ def render_figure(
     draw._image = img  # type: ignore[attr-defined]
     fn(draw, W, H, _Palette(colors), spec)
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()

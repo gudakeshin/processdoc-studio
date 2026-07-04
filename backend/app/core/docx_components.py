@@ -89,6 +89,57 @@ def apply_theme_styles(doc: Document, theme: DocTheme) -> None:
         except Exception as exc:
             logger.debug("Style %s skipped: %s", style_name, exc)
 
+    try:
+        from app.core.config import settings
+
+        if getattr(settings, "docx_formatting_v2_enabled", False):
+            _bind_heading_numbering(doc)
+    except Exception as exc:
+        logger.debug("Heading numbering skipped: %s", exc)
+
+
+def _bind_heading_numbering(doc: Document) -> None:
+    """Attach decimal multilevel numbering (1 / 1.1 / 1.1.1) to Heading 1–3."""
+    try:
+        from docx.oxml.shared import OxmlElement as OE
+
+        numbering = doc.part.numbering_part.numbering_definitions._numbering
+        abstract = OE("w:abstractNum")
+        abstract.set(qn("w:abstractNumId"), "42")
+        for ilvl, fmt in enumerate(("%1.", "%1.%2.", "%1.%2.%3.")):
+            lvl = OE("w:lvl")
+            lvl.set(qn("w:ilvl"), str(ilvl))
+            num_fmt = OE("w:numFmt")
+            num_fmt.set(qn("w:val"), "decimal")
+            lvl.append(num_fmt)
+            lvl_text = OE("w:lvlText")
+            lvl_text.set(qn("w:val"), fmt)
+            lvl.append(lvl_text)
+            start = OE("w:start")
+            start.set(qn("w:val"), "1")
+            lvl.append(start)
+            abstract.append(lvl)
+        numbering.append(abstract)
+        num = OE("w:num")
+        num.set(qn("w:numId"), "7")
+        abstract_ref = OE("w:abstractNumId")
+        abstract_ref.set(qn("w:val"), "42")
+        num.append(abstract_ref)
+        numbering.append(num)
+        for level in (1, 2, 3):
+            style = doc.styles[f"Heading {level}"]
+            p_pr = style.element.get_or_add_pPr()
+            num_pr = OE("w:numPr")
+            ilvl = OE("w:ilvl")
+            ilvl.set(qn("w:val"), str(level - 1))
+            num_pr.append(ilvl)
+            num_id = OE("w:numId")
+            num_id.set(qn("w:val"), "7")
+            num_pr.append(num_id)
+            p_pr.append(num_pr)
+    except Exception as exc:
+        logger.debug("bind_heading_numbering failed: %s", exc)
+
 
 def set_page_margins(doc: Document) -> None:
     for section in doc.sections:
@@ -209,6 +260,27 @@ def page_footer(doc: Document, theme: DocTheme, company: str) -> None:
         _append_field(run_of, " NUMPAGES ")
 
 
+def page_header(doc: Document, theme: DocTheme, company: str, title: str = "") -> None:
+    """Mirror ``page_footer``: company + optional title in the header of every section."""
+    primary_rgb = RGBColor(*theme.rgb("primary"))
+    for section in doc.sections:
+        header = section.header
+        para = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+        para.clear()
+        para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        label = company or title
+        if label:
+            run = para.add_run(label)
+            run.font.color.rgb = primary_rgb
+            run.font.size = Pt(8)
+            run.font.name = theme.font_body
+        if title and company and title != company:
+            sub = para.add_run(f"  |  {title}")
+            sub.font.size = Pt(8)
+            sub.font.color.rgb = RGBColor(*theme.rgb("muted"))
+            sub.font.name = theme.font_body
+
+
 def _append_field(run, instr_text: str) -> None:
     fld = OxmlElement("w:fldChar")
     fld.set(qn("w:fldCharType"), "begin")
@@ -222,35 +294,73 @@ def _append_field(run, instr_text: str) -> None:
     run._r.append(fld_end)
 
 
-def parse_inline(text: str) -> list[tuple[str, bool, bool]]:
-    """Parse inline **bold** and *italic* markers into (text, bold, italic) tuples."""
-    result: list[tuple[str, bool, bool]] = []
-    pattern = re.compile(r"(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)")
+def parse_inline(text: str) -> list[tuple[str, bool, bool, str | None, bool]]:
+    """Parse inline markers into (text, bold, italic, url, is_code) tuples."""
+    result: list[tuple[str, bool, bool, str | None, bool]] = []
+    pattern = re.compile(r"(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|\[(.+?)\]\((.+?)\))")
     last = 0
     for m in pattern.finditer(text):
         if m.start() > last:
-            result.append((text[last:m.start()], False, False))
+            result.append((text[last:m.start()], False, False, None, False))
         raw = m.group(0)
         if raw.startswith("**"):
-            result.append((m.group(2), True, False))
+            result.append((m.group(2), True, False, None, False))
         elif raw.startswith("`"):
-            result.append((m.group(4), False, False))
+            result.append((m.group(4), False, False, None, True))
+        elif raw.startswith("["):
+            result.append((m.group(5), False, False, m.group(6), False))
         else:
-            result.append((m.group(3), False, True))
+            result.append((m.group(3), False, True, None, False))
         last = m.end()
     if last < len(text):
-        result.append((text[last:], False, False))
-    return result or [(text, False, False)]
+        result.append((text[last:], False, False, None, False))
+    return result or [(text, False, False, None, False)]
+
+
+def _add_hyperlink(paragraph, url: str, text: str, theme: DocTheme) -> None:
+    """Insert a clickable hyperlink run (external URL)."""
+    try:
+        part = paragraph.part
+        r_id = part.relate_to(
+            url,
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+            is_external=True,
+        )
+        hyperlink = OxmlElement("w:hyperlink")
+        hyperlink.set(qn("r:id"), r_id)
+        run = OxmlElement("w:r")
+        r_pr = OxmlElement("w:rPr")
+        color = OxmlElement("w:color")
+        color.set(qn("w:val"), theme.hex6("primary", "86BC25").lstrip("#"))
+        r_pr.append(color)
+        u = OxmlElement("w:u")
+        u.set(qn("w:val"), "single")
+        r_pr.append(u)
+        run.append(r_pr)
+        t = OxmlElement("w:t")
+        t.text = text
+        run.append(t)
+        hyperlink.append(run)
+        paragraph._p.append(hyperlink)
+    except Exception as exc:
+        logger.debug("hyperlink skipped: %s", exc)
+        run = paragraph.add_run(text)
+        run.font.color.rgb = RGBColor(*theme.rgb("primary"))
 
 
 def body_paragraph(doc: Document, theme: DocTheme, text: str,
                    style: str = "Normal", bold: bool = False):
     para = doc.add_paragraph(style=style)
-    for fragment, is_bold, is_italic in parse_inline(text):
+    for fragment, is_bold, is_italic, url, is_code in parse_inline(text):
+        if url:
+            _add_hyperlink(para, url, fragment, theme)
+            continue
         run = para.add_run(fragment)
-        run.font.name = theme.font_body
+        run.font.name = "Courier New" if is_code else theme.font_body
         run.bold = bold or is_bold
         run.italic = is_italic
+        if is_code:
+            run.font.size = Pt(9)
     return para
 
 
@@ -282,12 +392,77 @@ def callout(doc: Document, theme: DocTheme, text: str, subtype: str = "note", la
         lbl_run.font.name = theme.font_body
         lbl_run.font.size = Pt(theme.pt("caption"))
         lbl_run.font.color.rgb = RGBColor(*theme.rgb(border_role, "#86BC25"))
-    for fragment, is_bold, is_italic in parse_inline(text):
+    for fragment, is_bold, is_italic, url, is_code in parse_inline(text):
+        if url:
+            _add_hyperlink(para, url, fragment, theme)
+            continue
         run = para.add_run(fragment)
-        run.font.name = theme.font_body
+        run.font.name = "Courier New" if is_code else theme.font_body
         run.bold = is_bold
         run.italic = is_italic
     return para
+
+
+def pull_quote(doc: Document, theme: DocTheme, text: str) -> None:
+    """Large italic pull quote with left accent border."""
+    para = doc.add_paragraph()
+    para.paragraph_format.left_indent = Inches(0.35)
+    _add_left_border(para, theme.hex6("primary", "#86BC25"), size=24)
+    for fragment, is_bold, is_italic, url, is_code in parse_inline(text):
+        if url:
+            _add_hyperlink(para, url, fragment, theme)
+            continue
+        run = para.add_run(fragment)
+        run.font.name = theme.font_header
+        run.font.size = Pt(theme.pt("h3"))
+        run.italic = True if not is_bold else False
+        run.bold = is_bold
+        run.font.color.rgb = RGBColor(*theme.rgb("accent_dark"))
+    return para
+
+
+def executive_callout(doc: Document, theme: DocTheme, text: str, label: str = "EXECUTIVE SUMMARY") -> None:
+    """Prominent callout for executive-level assertions."""
+    return callout(doc, theme, text, subtype="insight", label=label or "EXECUTIVE SUMMARY")
+
+
+def figure_caption(
+    doc: Document,
+    theme: DocTheme,
+    caption: str,
+    *,
+    number: int,
+    bookmark_id: str | None = None,
+) -> None:
+    """Centered 'Figure N.' caption with SEQ field and optional bookmark."""
+    cap = doc.add_paragraph()
+    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    prefix_run = cap.add_run("Figure ")
+    prefix_run.font.name = theme.font_body
+    prefix_run.font.size = Pt(theme.pt("caption"))
+    prefix_run.italic = True
+    _append_field(prefix_run, f" SEQ Figure \\* ARABIC ")
+    dot = cap.add_run(". ")
+    dot.font.name = theme.font_body
+    dot.font.size = Pt(theme.pt("caption"))
+    dot.italic = True
+    if caption.strip():
+        r = cap.add_run(caption.strip())
+        r.italic = True
+        r.font.name = theme.font_body
+        r.font.size = Pt(theme.pt("caption"))
+        r.font.color.rgb = RGBColor(*theme.rgb("muted"))
+    if bookmark_id:
+        try:
+            bookmark_start = OxmlElement("w:bookmarkStart")
+            bookmark_start.set(qn("w:id"), str(abs(hash(bookmark_id)) % 100000))
+            bookmark_start.set(qn("w:name"), bookmark_id)
+            cap._p.insert(0, bookmark_start)
+            bookmark_end = OxmlElement("w:bookmarkEnd")
+            bookmark_end.set(qn("w:id"), str(abs(hash(bookmark_id)) % 100000))
+            cap._p.append(bookmark_end)
+        except Exception as exc:
+            logger.debug("figure bookmark skipped: %s", exc)
 
 
 def embed_figure(
@@ -317,6 +492,17 @@ def embed_figure(
     run.add_picture(io.BytesIO(png), width=Inches(width_in))
     cap_text = caption.strip()
     if cap_text or number is not None:
+        try:
+            from app.core.config import settings
+
+            if getattr(settings, "docx_formatting_v2_enabled", False) and number is not None:
+                figure_caption(
+                    doc, theme, cap_text, number=number,
+                    bookmark_id=f"fig_{number}",
+                )
+                return para
+        except Exception:
+            pass
         cap = doc.add_paragraph()
         cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
         prefix = f"Figure {number}. " if number is not None else ""

@@ -29,6 +29,23 @@ _SPECS = {
     "roadmap_matrix": {"type": "roadmap_matrix", "tracks": ["Gov", "Auto"], "periods": ["Q1", "Q2", "Q3"],
                        "bars": [{"track": "Gov", "start": 0, "span": 1, "label": "CoE"},
                                 {"track": "Auto", "start": 1, "span": 2, "label": "OCR"}]},
+    "waterfall": {"type": "waterfall", "bars": [
+        {"label": "Start", "delta": 100, "kind": "total"},
+        {"label": "Gain", "delta": 20, "kind": "increase"},
+        {"label": "Loss", "delta": -10, "kind": "decrease"},
+    ]},
+    "gantt": {"type": "gantt", "tasks": [
+        {"label": "Phase 1", "start": 0.0, "end": 0.4, "lane": "Delivery"},
+        {"label": "Phase 2", "start": 0.4, "end": 1.0, "lane": "Delivery"},
+    ]},
+    "harvey_balls": {"type": "harvey_balls", "rows": [
+        {"label": "Finance", "scores": [3, 2, 2, 1]},
+        {"label": "Ops", "scores": [2, 2, 1, 0]},
+    ]},
+    "benchmark_bars": {"type": "benchmark_bars", "series": [
+        {"label": "Cycle time", "value": 12, "benchmark": 8},
+        {"label": "Error rate", "value": 3, "benchmark": 5},
+    ]},
 }
 
 
@@ -42,6 +59,34 @@ def test_render_each_figure_type(ftype: str) -> None:
 def test_unknown_figure_type_raises() -> None:
     with pytest.raises(ValueError):
         render_figure({"type": "hologram"}, _colors())
+
+
+def test_degenerate_waterfall_renders_empty_canvas_gracefully() -> None:
+    png = render_figure({"type": "waterfall", "bars": []}, _colors())
+    assert png[:8] == _PNG_MAGIC
+
+
+def test_docx_formatting_v2_header_and_numbering(tmp_path, monkeypatch) -> None:
+    import zipfile
+
+    from app.core.config import settings
+    from app.core.deliverable_docx import DOCXDeliverable
+
+    monkeypatch.setattr(settings, "docx_formatting_v2_enabled", True)
+    payload = {
+        "docx_markdown": "# Report\n\n## Overview\n\nSee [fig:vc] and [link](https://example.com).\n",
+        "process_model": {"process_name": "Finance Ops"},
+    }
+    out = DOCXDeliverable().render(payload, tmp_path, branding=None)
+    assert out and out.exists()
+    with zipfile.ZipFile(out) as zf:
+        names = zf.namelist()
+        assert any("header" in n for n in names)
+        styles_xml = zf.read("word/styles.xml").decode("utf-8") if "word/styles.xml" in names else ""
+        numbering_xml = zf.read("word/numbering.xml").decode("utf-8") if "word/numbering.xml" in names else ""
+        doc_xml = zf.read("word/document.xml").decode("utf-8")
+        assert "w:numId" in styles_xml or "w:numPr" in styles_xml or "w:abstractNum" in numbering_xml
+        assert "hyperlink" in doc_xml.lower() or "example.com" in doc_xml
 
 
 def test_heat_map_requires_rows_and_cols() -> None:

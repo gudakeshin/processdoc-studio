@@ -73,6 +73,28 @@ def validate_docx(docx_path: Path) -> dict[str, Any]:
             cols = len(table.columns)
             if cols > _MAX_TABLE_COLS:
                 advisories.append(f"Table with {cols} columns exceeds comfortable page width")
+
+        try:
+            from app.core.config import settings
+
+            if getattr(settings, "docx_formatting_v2_enabled", False):
+                import zipfile
+
+                with zipfile.ZipFile(str(docx_path)) as zf:
+                    xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
+                    header_xml = ""
+                    if "word/header1.xml" in zf.namelist():
+                        header_xml = zf.read("word/header1.xml").decode("utf-8", errors="replace")
+                if "w:headerReference" not in xml and not header_xml.strip():
+                    advisories.append("No page header reference found in document.xml")
+                if "SEQ Figure" not in xml and "Figure" in body_text:
+                    advisories.append("Figure captions may lack SEQ fields")
+                orphan_tokens = [t for t in ("[fig:", "[tbl:") if t in body_text]
+                if orphan_tokens:
+                    issues.append(f"Unresolved cross-reference tokens: {orphan_tokens}")
+                    remediation.append("Resolve [fig:id] / [tbl:id] tokens to numbered references")
+        except Exception as exc:
+            logger.debug("docx formatting v2 QA skipped: %s", exc)
     except Exception as exc:
         logger.debug("docx QA extraction failed: %s", exc)
         return {
