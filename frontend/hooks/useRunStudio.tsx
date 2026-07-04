@@ -6,12 +6,7 @@ import { type ApprovalBannerState } from "@/components/run-studio/ApprovalBanner
 import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/lib/auth-context";
 import { extractApiErrorMessage } from "@/lib/api-error";
-import {
-  deadLetterResponseSchema,
-  runArtifactsResponseSchema,
-  type DeadLetterItem,
-  type RunArtifactsBag,
-} from "@/lib/apiSchemas";
+import { runArtifactsResponseSchema, type RunArtifactsBag } from "@/lib/apiSchemas";
 import {
   buildVisualQaChatMarkdown,
   chatIncludesVisualQaForRun,
@@ -21,6 +16,8 @@ import { mergeRunEventEnvelope, runTodosFromEvents } from "@/lib/runTodosFromEve
 import { emitToast } from "@/lib/toast-bus";
 import { parseEventLine, type ParsedRunEvent } from "@/lib/runEvents";
 import { useCoworkState } from "@/hooks/useCoworkState";
+import { useHooksGovernance } from "@/hooks/useHooksGovernance";
+import { usePermissionSimulation } from "@/hooks/usePermissionSimulation";
 
 export const AGENT_GRAPH_ENABLED = process.env.NEXT_PUBLIC_AGENT_GRAPH_ENABLED !== "false";
 export const SCRATCHPAD_VISIBLE = process.env.NEXT_PUBLIC_SCRATCHPAD_VISIBLE !== "false";
@@ -137,9 +134,13 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
   const [artifactsLoading, setArtifactsLoading] = useState(false);
   const [artifactsError, setArtifactsError] = useState<string | null>(null);
   const [backpressureRetrySec, setBackpressureRetrySec] = useState<number | null>(null);
-  const [deadLetters, setDeadLetters] = useState<DeadLetterItem[]>([]);
-  const [deadLetterLoading, setDeadLetterLoading] = useState(false);
-  const [deadLetterMsg, setDeadLetterMsg] = useState<string | null>(null);
+  const { hooksBusy, hooksData, loadHooks, disableHookByName } = useHooksGovernance(pid, setArtifactsError);
+  const { permissionSimBusy, permissionSimResult, simulatePermissionPreflight } = usePermissionSimulation(
+    pid,
+    selectedOutputTypes,
+    artifacts?.plan,
+    setArtifactsError
+  );
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
@@ -149,10 +150,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
   const [runControlBusy, setRunControlBusy] = useState(false);
   const [slideRegenerateBusyIndex, setSlideRegenerateBusyIndex] = useState<number | null>(null);
   const [decisionBusy, setDecisionBusy] = useState(false);
-  const [permissionSimBusy, setPermissionSimBusy] = useState(false);
-  const [permissionSimResult, setPermissionSimResult] = useState<any | null>(null);
-  const [hooksBusy, setHooksBusy] = useState(false);
-  const [hooksData, setHooksData] = useState<Array<Record<string, unknown>>>([]);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [pptxDownloadBusy, setPptxDownloadBusy] = useState(false);
   const [copyBundlePromptDone, setCopyBundlePromptDone] = useState(false);
@@ -460,12 +457,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     }, 1000);
     return () => window.clearTimeout(t);
   }, [backpressureRetrySec]);
-
-  useEffect(() => {
-    if (!token || !pid) return;
-    void loadDeadLetters();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, pid]);
 
   useEffect(() => {
     if (!token || !pid) return;
@@ -786,124 +777,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       await refreshArtifactsFromServer({ silent: true });
     } catch (e) {
       setArtifactsError(e instanceof Error ? e.message : "Task action failed");
-    }
-  }
-
-  async function simulatePermissionPreflight() {
-    if (!pid || permissionSimBusy) return;
-    setPermissionSimBusy(true);
-    setArtifactsError(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/permission/simulate`, {
-        method: "POST",
-        body: JSON.stringify({
-          run_status: "plan_ready",
-          requested_outputs: selectedOutputTypes,
-          has_approval: true,
-          enforce_policy: false,
-          plan_payload: artifacts?.plan ?? {},
-        }),
-      });
-      const data = (await res.json().catch(() => ({}))) as any;
-      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Permission simulation failed"));
-      setPermissionSimResult(data);
-    } catch (e) {
-      setArtifactsError(e instanceof Error ? e.message : "Permission simulation failed");
-    } finally {
-      setPermissionSimBusy(false);
-    }
-  }
-
-  async function loadHooks() {
-    if (!pid || hooksBusy) return;
-    setHooksBusy(true);
-    setArtifactsError(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/hooks`);
-      const data = (await res.json().catch(() => ({}))) as { hooks?: Array<Record<string, unknown>>; detail?: string };
-      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to load hooks"));
-      setHooksData(Array.isArray(data.hooks) ? data.hooks : []);
-    } catch (e) {
-      setArtifactsError(e instanceof Error ? e.message : "Failed to load hooks");
-    } finally {
-      setHooksBusy(false);
-    }
-  }
-
-  async function disableHookByName(hookName: string, reason: string) {
-    if (!pid || !hookName.trim()) return;
-    setArtifactsError(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/hooks/disable`, {
-        method: "POST",
-        body: JSON.stringify({ hook_name: hookName.trim(), reason: reason.trim() }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { detail?: string };
-      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to disable hook"));
-      await loadHooks();
-      emitToast({ message: `Hook ${hookName.trim()} disabled`, kind: "success" });
-    } catch (e) {
-      setArtifactsError(e instanceof Error ? e.message : "Failed to disable hook");
-    }
-  }
-
-  async function loadDeadLetters() {
-    if (!pid) return;
-    setDeadLetterLoading(true);
-    setDeadLetterMsg(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/queue/dead-letter`);
-      const raw: unknown = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(extractApiErrorMessage(raw, "Failed to load dead-letter items"));
-      }
-      const validated = deadLetterResponseSchema.safeParse(raw);
-      const items = validated.success
-        ? validated.data.items ?? []
-        : (raw as { items?: DeadLetterItem[] }).items ?? [];
-      setDeadLetters(Array.isArray(items) ? items : []);
-    } catch (e) {
-      setDeadLetterMsg(e instanceof Error ? e.message : "Failed to load dead-letter items");
-    } finally {
-      setDeadLetterLoading(false);
-    }
-  }
-
-  async function replayDeadLetter(itemId: string) {
-    if (!pid) return;
-    setDeadLetterMsg(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/queue/dead-letter/replay`, {
-        method: "POST",
-        body: JSON.stringify({ item_id: itemId }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { detail?: string | { message?: string } };
-      if (!res.ok) {
-        throw new Error(extractApiErrorMessage(data, "Replay failed"));
-      }
-      setDeadLetterMsg(`Replayed dead-letter item: ${itemId}`);
-      await loadDeadLetters();
-    } catch (e) {
-      setDeadLetterMsg(e instanceof Error ? e.message : "Replay failed");
-    }
-  }
-
-  async function resetDeadLetterAttempts(itemId: string) {
-    if (!pid) return;
-    setDeadLetterMsg(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/queue/dead-letter/reset-attempts`, {
-        method: "POST",
-        body: JSON.stringify({ item_id: itemId }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { detail?: string | { message?: string } };
-      if (!res.ok) {
-        throw new Error(extractApiErrorMessage(data, "Reset attempts failed"));
-      }
-      setDeadLetterMsg(`Reset replay attempts: ${itemId}`);
-      await loadDeadLetters();
-    } catch (e) {
-      setDeadLetterMsg(e instanceof Error ? e.message : "Reset attempts failed");
     }
   }
 
@@ -1390,9 +1263,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     simulatePermissionPreflight,
     loadHooks,
     disableHookByName,
-    loadDeadLetters,
-    replayDeadLetter,
-    resetDeadLetterAttempts,
     finalApproveDeliverable,
     downloadText,
     downloadDisplayName,
@@ -1436,9 +1306,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     },
     processMapPref,
     raciPref,
-    deadLetters,
-    deadLetterLoading,
-    deadLetterMsg,
   };
 }
 

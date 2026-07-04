@@ -2,15 +2,17 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { DocumentUploader } from "@/components/documents/DocumentUploader";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ZonePanelErrorBoundary } from "@/components/ErrorBoundary";
 import { ToolActivityFeed } from "@/components/run-studio/ToolActivityFeed";
 import { ApprovalBanner } from "@/components/run-studio/ApprovalBanner";
 import { ZoneAInstruction } from "@/components/run-studio/ZoneAInstruction";
 import { ZoneCLiveMonitor } from "@/components/run-studio/ZoneCLiveMonitor";
+import { RunHealthPanel } from "@/components/run-studio/RunHealthPanel";
 import { ActivityTodoList } from "@/components/activity/ActivityTodoList";
 import { WikiQuickAccess } from "@/components/wiki/WikiQuickAccess";
 import { Button } from "@/components/ui/Button";
@@ -69,6 +71,23 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
   const didRedirectRef = useRef(false);
 
   const [activeRunId, setActiveRunId] = useState<string | null>(initialRunId);
+  const [sidebarWidth, setSidebarWidth] = useState(380);
+  const handleSidebarResizeStart = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = startX - moveEvent.clientX;
+      const next = Math.min(720, Math.max(320, startWidth + delta));
+      setSidebarWidth(next);
+    };
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatBusy, setChatBusy] = useState(false);
@@ -224,13 +243,15 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
     };
   }, [liveUsage, activeRun]);
 
-  // Session-wide cost label: prefer live project total (includes chat tokens), fallback to DB sum
-  const sessionCostUsd = projectLiveUsage?.cost_usd ?? projectTotals.totalCost;
-  const sessionCostLabel = formatCostCompact(sessionCostUsd);
-  const sessionTokens = projectLiveUsage
+  // Session-wide cost/tokens: live project total (process-local, resets on backend restart)
+  // floored by the DB-backed total across all runs, so a restart never makes the number drop.
+  const liveSessionTokens = projectLiveUsage
     ? (projectLiveUsage.input_tokens + projectLiveUsage.output_tokens +
        projectLiveUsage.cache_read_tokens + projectLiveUsage.cache_creation_tokens)
-    : projectTotals.totalTokens;
+    : 0;
+  const sessionCostUsd = Math.max(projectLiveUsage?.cost_usd ?? 0, projectTotals.totalCost);
+  const sessionCostLabel = formatCostCompact(sessionCostUsd);
+  const sessionTokens = Math.max(liveSessionTokens, projectTotals.totalTokens);
 
   async function sendMessage() {
     const msg = chatInput.trim();
@@ -274,6 +295,7 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
       setChatMessages(mapped);
       if (data.auto_executed && typeof data.run_id === "string" && data.run_id) {
         setActiveRunId(data.run_id);
+        void qc.invalidateQueries({ queryKey: ["active-runs", pid] });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Conversation send failed");
@@ -393,34 +415,51 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
 
       {error ?<div className="alert alert--error p-2 text-sm">{error}</div> : null}
 
-      <section className="grid gap-3 lg:grid-cols-[minmax(0,2.1fr)_minmax(340px,1fr)]">
+      <section
+        className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_var(--sidebar-width)]"
+        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      >
         <section className="min-w-0 space-y-3">
-          <ZoneAInstruction
-            projectId={pid}
-            recommendationNote={activeRunId ? studio.recommendationNote : null}
-            chatMessages={activeMessages}
-            chatInput={activeRunId ? studio.chatInput : chatInput}
-            setChatInput={activeRunId ? studio.setChatInput : setChatInput}
-            chatBusy={activeChatBusy}
-            onSendChat={activeRunId ? studio.sendChatMessage : sendMessage}
-            conversationId={activeConversationId}
-            openQuestions={activeOpenQuestions}
-            decisionPrompts={activeDecisionPrompts}
-            unresolvedPromptIds={activeUnresolvedPromptIds}
-            onSubmitDecisions={activeRunId ? studio.submitDecisionAnswers : submitDecisionAnswers}
-            decisionBusy={activeRunId ? studio.decisionBusy : decisionBusy}
-            thinkingStatements={cowork.thinkingStatements}
-            hasThinkingTrace={cowork.hasThinkingTrace}
-            thinkingTrace={cowork.thinkingTrace}
-            thinkingExpanded={cowork.thinkingExpanded}
-            onToggleThinkingTrace={() => cowork.setThinkingExpanded((prev) => !prev)}
-          />
+          <ZonePanelErrorBoundary label="Instruction chat">
+            <ZoneAInstruction
+              projectId={pid}
+              recommendationNote={activeRunId ? studio.recommendationNote : null}
+              chatMessages={activeMessages}
+              chatInput={activeRunId ? studio.chatInput : chatInput}
+              setChatInput={activeRunId ? studio.setChatInput : setChatInput}
+              chatBusy={activeChatBusy}
+              onSendChat={activeRunId ? studio.sendChatMessage : sendMessage}
+              conversationId={activeConversationId}
+              openQuestions={activeOpenQuestions}
+              decisionPrompts={activeDecisionPrompts}
+              unresolvedPromptIds={activeUnresolvedPromptIds}
+              onSubmitDecisions={activeRunId ? studio.submitDecisionAnswers : submitDecisionAnswers}
+              decisionBusy={activeRunId ? studio.decisionBusy : decisionBusy}
+              thinkingStatements={cowork.thinkingStatements}
+              hasThinkingTrace={cowork.hasThinkingTrace}
+              thinkingTrace={cowork.thinkingTrace}
+              thinkingExpanded={cowork.thinkingExpanded}
+              onToggleThinkingTrace={() => cowork.setThinkingExpanded((prev) => !prev)}
+            />
+          </ZonePanelErrorBoundary>
           {activeRunId ? (
             <ApprovalBanner state={studio.approvalBannerState} />
           ) : null}
         </section>
 
-        <aside className="space-y-3 min-w-0 border-l border-[var(--surface-border)] pl-3 bg-[var(--surface-muted)]">
+        <aside className="relative min-w-0">
+          <div
+            className="absolute -left-3 top-0 z-10 hidden h-full w-3 cursor-col-resize lg:block"
+            onMouseDown={handleSidebarResizeStart}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar panel"
+          />
+          <div className="space-y-3 border-l border-[var(--surface-border)] pl-3 bg-[var(--surface-muted)]">
+          <CollapsibleSection title="Run Health" defaultOpen={true}>
+            <RunHealthPanel projectId={pid} onSelectRun={(runId) => setActiveRunId(runId)} />
+          </CollapsibleSection>
+
           <CollapsibleSection title="Project Documents" defaultOpen={true}>
             <DocumentUploader projectId={pid} />
           </CollapsibleSection>
@@ -438,23 +477,25 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
               {activeRunId && (
                 <div className="border-t pt-4">
                   <h4 className="text-sm font-semibold mb-3">Selected Run Activity</h4>
-                  <ToolActivityFeed
-                    events={events}
-                    parsedEvents={parsedEvents}
-                    runChecklistTodos={studio.runChecklistTodos}
-                    artifacts={studio.artifacts}
-                    pollMode={pollMode}
-                    streamError={streamError}
-                    downloadsContent={studio.downloadsContent}
-                    onTaskAction={studio.applyTaskAction}
-                    onRegenerateSlide={studio.regenerateSlide}
-                    slideRegenerateBusyIndex={studio.slideRegenerateBusyIndex}
-                    hooksPanel={studio.hooksPanel}
-                    permissionPanel={studio.permissionPanel}
-                    projectId={pid}
-                    runId={activeRunId ?? undefined}
-                    agreedDecisions={agreedDecisions}
-                  />
+                  <ZonePanelErrorBoundary label="Activity feed">
+                    <ToolActivityFeed
+                      events={events}
+                      parsedEvents={parsedEvents}
+                      runChecklistTodos={studio.runChecklistTodos}
+                      artifacts={studio.artifacts}
+                      pollMode={pollMode}
+                      streamError={streamError}
+                      downloadsContent={studio.downloadsContent}
+                      onTaskAction={studio.applyTaskAction}
+                      onRegenerateSlide={studio.regenerateSlide}
+                      slideRegenerateBusyIndex={studio.slideRegenerateBusyIndex}
+                      hooksPanel={studio.hooksPanel}
+                      permissionPanel={studio.permissionPanel}
+                      projectId={pid}
+                      runId={activeRunId ?? undefined}
+                      agreedDecisions={agreedDecisions}
+                    />
+                  </ZonePanelErrorBoundary>
                 </div>
               )}
             </div>
@@ -462,20 +503,23 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
 
           <CollapsibleSection title="Execution Audit Trail" defaultOpen={Boolean(activeRunId)}>
             {activeRunId ? (
-              <ZoneCLiveMonitor
-                events={events}
-                showAgentGraph={false}
-                evaluatorSummary={
-                  studio.evaluatorSummary
-                    ? {
-                        qaPassed: Boolean(studio.evaluatorSummary.qa_passed),
-                        visualQaPassed: Boolean(studio.evaluatorSummary.visual_qa_passed),
-                        guardrailsPassed: Boolean(studio.evaluatorSummary.guardrails_passed),
-                        status: studio.evaluatorSummary.status,
-                      }
-                    : null
-                }
-              />
+              <ZonePanelErrorBoundary label="Execution audit trail">
+                <ZoneCLiveMonitor
+                  events={events}
+                  showAgentGraph={false}
+                  runControls={studio.runControls}
+                  evaluatorSummary={
+                    studio.evaluatorSummary
+                      ? {
+                          qaPassed: Boolean(studio.evaluatorSummary.qa_passed),
+                          visualQaPassed: Boolean(studio.evaluatorSummary.visual_qa_passed),
+                          guardrailsPassed: Boolean(studio.evaluatorSummary.guardrails_passed),
+                          status: studio.evaluatorSummary.status,
+                        }
+                      : null
+                  }
+                />
+              </ZonePanelErrorBoundary>
             ) : (
               <p className="text-xs text-[var(--text-muted)]">Select a run to view execution events.</p>
             )}
@@ -492,11 +536,20 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
                     title={`${r.id} · ${r.status}`}
                   >
                     {r.id} · {r.status}
-                    {formatCostCompact(r.cost_usd) && (
-                      <span className="ml-1.5 text-[var(--text-muted)]">
-                        {formatCostCompact(r.cost_usd)}
-                      </span>
-                    )}
+                    {(() => {
+                      const runTokens =
+                        (r.tokens_input ?? 0) + (r.tokens_output ?? 0) +
+                        (r.tokens_cache_read ?? 0) + (r.tokens_cache_creation ?? 0);
+                      return (
+                        (runTokens > 0 || formatCostCompact(r.cost_usd)) && (
+                          <span className="ml-1.5 text-[var(--text-muted)]">
+                            {runTokens > 0 ? `${formatTokenCount(runTokens)} tok` : null}
+                            {runTokens > 0 && formatCostCompact(r.cost_usd) ? " · " : null}
+                            {formatCostCompact(r.cost_usd)}
+                          </span>
+                        )
+                      );
+                    })()}
                   </button>
                   <button type="button" className="text-2xs text-[var(--error)]" onClick={() => void deleteRun(r.id)}>Delete</button>
                 </div>
@@ -559,6 +612,7 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
           <CollapsibleSection title="Project Wiki" defaultOpen={!activeRunId}>
             <WikiQuickAccess projectId={pid} />
           </CollapsibleSection>
+          </div>
         </aside>
       </section>
     </main>

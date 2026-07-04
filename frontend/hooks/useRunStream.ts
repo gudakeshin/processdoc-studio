@@ -12,6 +12,16 @@ type RunEventItem = { id: number; event_type: string; payload: unknown };
 type EventsResponse = { status: string; items: RunEventItem[]; plan?: unknown };
 const TERMINAL_RUN_STATES = new Set(["review_ready", "done", "failed"]);
 
+// Cap in-memory event history so very long-running / chatty runs don't grow
+// `events`/`parsedEvents` unboundedly. Consumers (todo checklist, blocked-context,
+// skill-selection lookups) only ever read the most recent matching event, so
+// keeping a generous trailing window is behavior-preserving in practice.
+const MAX_RETAINED_EVENTS = 1500;
+
+function capArray<T>(arr: T[]): T[] {
+  return arr.length > MAX_RETAINED_EVENTS ? arr.slice(arr.length - MAX_RETAINED_EVENTS) : arr;
+}
+
 function runEventPayloadToSseData(payload: unknown): string {
   if (typeof payload === "string") return payload;
   return JSON.stringify(payload);
@@ -95,8 +105,8 @@ export function useRunStream(pid: string, rid: string) {
       seenEventIdsRef.current = seen;
       lastEventIdRef.current = max;
       setStatus(data.status);
-      setEvents(lines);
-      setParsedEvents(parsed);
+      setEvents(capArray(lines));
+      setParsedEvents(capArray(parsed));
       if (TERMINAL_RUN_STATES.has(data.status)) {
         stopPolling();
       }
@@ -145,8 +155,8 @@ export function useRunStream(pid: string, rid: string) {
         for (const it of newItems) seenEventIdsRef.current.add(it.id);
         const lines = newItems.map(eventItemToLine);
         const parsed = lines.map((line) => parseEventLine(line)).filter((x): x is ParsedRunEvent => Boolean(x));
-        setEvents((prev) => [...prev, ...lines]);
-        setParsedEvents((prev) => [...prev, ...parsed]);
+        setEvents((prev) => capArray([...prev, ...lines]));
+        setParsedEvents((prev) => capArray([...prev, ...parsed]));
       }
       setStatus(data.status);
       if (TERMINAL_RUN_STATES.has(data.status)) {
@@ -189,10 +199,10 @@ export function useRunStream(pid: string, rid: string) {
             lastEventIdRef.current = Math.max(lastEventIdRef.current, numId);
           }
           const line = `${name}: ${ev.data}`;
-          setEvents((prev) => [...prev, line]);
+          setEvents((prev) => capArray([...prev, line]));
           const parsed = parseEventLine(line);
           if (parsed) {
-            setParsedEvents((prev) => [...prev, parsed]);
+            setParsedEvents((prev) => capArray([...prev, parsed]));
           }
           if (name === "done" || name === "failed") {
             stopPolling();
