@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, CircleDashed, Loader2, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDashed, Loader2, PanelRightClose, PanelRightOpen, XCircle } from "lucide-react";
 import React, { useMemo, useState } from "react";
 import type { ParsedRunEvent } from "@/lib/runEvents";
 import type { RunTodoRow } from "@/lib/runTodosFromEvents";
@@ -351,6 +351,8 @@ export function ActivityFeedRedesigned({
   contextMetadata,
   permissionStages,
   width = 360,
+  expanded = true,
+  onToggleExpanded,
 }: {
   parsedEvents: ParsedRunEvent[];
   artifacts: any[];
@@ -365,6 +367,8 @@ export function ActivityFeedRedesigned({
     timestamp?: string;
   }>;
   width?: number;
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<TabType>("activity");
 
@@ -385,6 +389,27 @@ export function ActivityFeedRedesigned({
     governance: `Governance${governanceCount > 0 ? ` (${governanceCount})` : ""}`,
   };
 
+  if (!expanded) {
+    return (
+      <aside
+        className="min-h-0 flex flex-col items-center bg-[#F9F9F9] border-l border-[#E0E0E0] py-2"
+        style={{ width: "44px" }}
+        role="complementary"
+        aria-label="Activity feed sidebar (collapsed)"
+      >
+        <button
+          type="button"
+          onClick={onToggleExpanded}
+          aria-label="Expand activity feed"
+          aria-expanded={false}
+          className="rounded p-2 text-[#666] hover:bg-[#F0F7FF] hover:text-[#0072B1]"
+        >
+          <PanelRightOpen className="h-4 w-4" />
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside
       className="min-h-0 flex flex-col bg-[#F9F9F9] border-l border-[#E0E0E0]"
@@ -393,7 +418,16 @@ export function ActivityFeedRedesigned({
       aria-label="Activity feed sidebar"
     >
       {/* Tab bar */}
-      <div className="flex border-b border-[#E0E0E0] bg-white" role="tablist" aria-label="Activity feed sections">
+      <div className="flex items-center border-b border-[#E0E0E0] bg-white" role="tablist" aria-label="Activity feed sections">
+        <button
+          type="button"
+          onClick={onToggleExpanded}
+          aria-label="Collapse activity feed"
+          aria-expanded={true}
+          className="px-2 py-2 text-[#666] hover:bg-[#F0F7FF] hover:text-[#0072B1]"
+        >
+          <PanelRightClose className="h-4 w-4" />
+        </button>
         {(["activity", "artifacts", "context", "governance"] as TabType[]).map((tab) => (
           <button
             key={tab}

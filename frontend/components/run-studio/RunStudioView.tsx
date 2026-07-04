@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 
 import { ZoneAInstruction } from "@/components/run-studio/ZoneAInstruction";
 import { ZoneCLiveMonitor } from "@/components/run-studio/ZoneCLiveMonitor";
@@ -64,7 +64,28 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
     applyTaskAction,
     hooksPanel,
     permissionPanel,
+    runControls,
   } = props;
+
+  const [activityFeedExpanded, setActivityFeedExpanded] = useState(true);
+  const [activityFeedWidth, setActivityFeedWidth] = useState(360);
+
+  const handleResizeStart = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = activityFeedWidth;
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = startX - moveEvent.clientX;
+      const next = Math.min(640, Math.max(280, startWidth + delta));
+      setActivityFeedWidth(next);
+    };
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
 
   // Collect agreed slide decisions from collaborative building messages.
   const agreedDecisions = useMemo(() => {
@@ -113,7 +134,14 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
       </div>
 
       {/* Main layout grid */}
-      <div className="grid min-w-0 flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div
+        className={`grid min-w-0 flex-1 gap-3 ${
+          activityFeedExpanded
+            ? "xl:grid-cols-[minmax(0,1fr)_var(--activity-feed-width)]"
+            : "xl:grid-cols-[minmax(0,1fr)_44px]"
+        }`}
+        style={{ "--activity-feed-width": `${activityFeedWidth}px` } as CSSProperties}
+      >
         <section className="relative flex min-h-0 flex-col gap-3">
           <div className="alert alert--info">
             Expected flow:{" "}
@@ -182,6 +210,7 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
         <ZoneCLiveMonitor
           events={liveEvents}
           showAgentGraph={false}
+          runControls={runControls}
           evaluatorSummary={
             evaluatorSummary
               ? {
@@ -218,16 +247,29 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
           <WikiArtifactSection runId={rid} projectId={pid} />
         )}
       </section>
-        <ActivityFeedRedesigned
-          parsedEvents={parsedRunEvents}
-          artifacts={artifacts?.ready_downloads || []}
-          runTodos={runChecklistTodos || []}
-          contextMetadata={{
-            leadingPractices: artifacts?.leading_practices || [],
-            nonNegotiables: artifacts?.memory_summary?.non_negotiables || [],
-          }}
-          width={360}
-        />
+        <div className="relative">
+          {activityFeedExpanded ? (
+            <div
+              className="absolute -left-1.5 top-0 z-10 hidden h-full w-3 cursor-col-resize xl:block"
+              onMouseDown={handleResizeStart}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize activity feed panel"
+            />
+          ) : null}
+          <ActivityFeedRedesigned
+            parsedEvents={parsedRunEvents}
+            artifacts={artifacts?.ready_downloads || []}
+            runTodos={runChecklistTodos || []}
+            contextMetadata={{
+              leadingPractices: artifacts?.leading_practices || [],
+              nonNegotiables: artifacts?.memory_summary?.non_negotiables || [],
+            }}
+            width={activityFeedExpanded ? activityFeedWidth : 360}
+            expanded={activityFeedExpanded}
+            onToggleExpanded={() => setActivityFeedExpanded((v) => !v)}
+          />
+        </div>
       </div>
     </div>
   );

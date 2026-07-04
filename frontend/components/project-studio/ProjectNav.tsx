@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
   { label: "Studio", segment: "" },
+  { label: "Agent Ops", segment: "runs" },
   { label: "Models", segment: "models" },
   { label: "Wiki", segment: "wiki" },
   { label: "Workspace", segment: "workspace" },
