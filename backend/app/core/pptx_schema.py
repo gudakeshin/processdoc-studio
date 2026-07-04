@@ -17,6 +17,21 @@ SUPPORTED_SLIDE_TYPES = {
     # Phase-3 editorial types (classic composer degrades gracefully)
     "split_panel", "lanes", "workstream_cards", "tower_cards",
     "roadmap_matrix", "swimlane_timeline", "flagship_cards",
+    # Pillar B figure slides (rendered by the shared raster figure engine)
+    "figure", "two_by_two", "value_chain", "maturity_curve", "heat_map",
+}
+
+# Rich storyline visuals + the essential field(s) each needs to render as more
+# than a bullet fallback. Keys mirror SUPPORTED_SLIDE_TYPES; values are the
+# must-have top-level slide key(s). Shared source of truth for the storyline
+# spine prompt and the design-review visual-fidelity check so the two can't drift.
+RICH_VISUAL_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "two_by_two": ("quadrants",),       # + x_label / y_label recommended
+    "value_chain": ("stages",),
+    "maturity_curve": ("stages",),      # + current_index / target_index
+    "heat_map": ("rows", "cols", "cells"),
+    "roadmap_matrix": ("roadmap_matrix",),  # nested {periods, tracks}
+    "process_flow": ("process_flow",),  # nested {steps}
 }
 
 _VALID_STATUSES = {"live", "in_build", "planned", "partner"}

@@ -29,6 +29,7 @@ class DocxComposer:
         self.doc = doc
         self.theme = theme
         self.fit_report: list[dict[str, Any]] = []
+        self._fig_count = 0
 
     def _record(self, kind: str, detail: str) -> None:
         self.fit_report.append({"kind": kind, "detail": detail})
@@ -51,9 +52,29 @@ class DocxComposer:
             elif btype == "table":
                 self._table(block)
             elif btype == "callout":
-                C.callout(self.doc, self.theme, str(block.get("text") or ""))
+                C.callout(
+                    self.doc, self.theme, str(block.get("text") or ""),
+                    subtype=str(block.get("subtype") or "note"),
+                )
             elif btype == "kpi":
                 C.kpi_table(self.doc, self.theme, block.get("stats") or [])
+            elif btype == "figure":
+                self._figure(block)
+
+    def _figure(self, block: dict[str, Any]) -> None:
+        spec = block.get("figure") if isinstance(block.get("figure"), dict) else None
+        if not spec or not str(spec.get("type") or "").strip():
+            return
+        self._fig_count += 1
+        result = C.embed_figure(
+            self.doc, self.theme, spec,
+            caption=str(block.get("caption") or ""),
+            number=self._fig_count,
+        )
+        if result is None:
+            # Render failed; don't leave a dangling figure number.
+            self._fig_count -= 1
+            self._record("figure_skipped", f"figure '{spec.get('type')}' could not render")
 
     def _heading(self, block: dict[str, Any]) -> None:
         text = str(block.get("text") or "")

@@ -16,6 +16,50 @@ def safe_text(value: object, default: str = "") -> str:
     return str(value or default).strip()
 
 
+# Wiki/internal markup that must never reach a client-facing deliverable.
+_WIKI_LINK_RE = re.compile(r"\[\[([^\[\]]*?)\]\]")
+_BARE_SCHEME_RE = re.compile(r"\b(?:lp|wiki)://\S+")
+_INTERNAL_FILE_RE = re.compile(r"\b(?:index|log)\.md\b")
+
+
+def _humanize_link_token(inner: str) -> str:
+    """Reduce a ``[[id|Label]]`` / ``[[scheme://path|Label]]`` token to its human label."""
+    inner = inner.strip()
+    if "|" in inner:
+        inner = inner.rsplit("|", 1)[-1].strip()
+    inner = re.sub(r"^(?:lp|wiki)://", "", inner)
+    if " " not in inner and "/" in inner:  # bare id path with no label — keep last segment
+        inner = inner.rsplit("/", 1)[-1]
+    return inner.strip()
+
+
+def humanize_wiki_links(value: object) -> str:
+    """Strip internal wiki-link grammar and pipeline filenames from client-facing text.
+
+    ``[[page_id|Human Title]]`` → ``Human Title``; ``[[lp://id|Title]]`` → ``Title``;
+    bare ``wiki://``/``lp://`` schemes collapse to their last segment; internal
+    ``index.md``/``log.md`` markers are removed. Plain text is returned unchanged.
+    """
+    s = str(value or "")
+    if not s:
+        return s
+    s = _WIKI_LINK_RE.sub(lambda m: _humanize_link_token(m.group(1)), s)
+    s = _BARE_SCHEME_RE.sub(lambda m: m.group(0).rsplit("/", 1)[-1], s)
+    s = _INTERNAL_FILE_RE.sub("", s)
+    return re.sub(r"[ \t]{2,}", " ", s).strip()
+
+
+def humanize_deep(obj: Any) -> Any:
+    """Recursively apply :func:`humanize_wiki_links` to every string in a payload."""
+    if isinstance(obj, str):
+        return humanize_wiki_links(obj)
+    if isinstance(obj, list):
+        return [humanize_deep(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: humanize_deep(v) for k, v in obj.items()}
+    return obj
+
+
 def apply_pptx_core_properties(
     prs: Any,
     *,

@@ -35,9 +35,11 @@ logger = logging.getLogger(__name__)
 SLIDE_W = C.SLIDE_W
 SLIDE_H = C.SLIDE_H
 
-# Legacy fill tokens → editorial accent role.
+# Legacy fill tokens → editorial accent role. Accent bars/stripes stay on-brand
+# (primary/accent), never plain ink — a black accent on one card amid green
+# siblings reads as a defect rather than a design choice.
 _FILL_TO_ACCENT = {
-    "dark": "ink", "mid_dark": "ink", "green": "primary", "dark_green": "primary",
+    "dark": "accent", "mid_dark": "accent", "green": "primary", "dark_green": "primary",
     "gray": "muted", "mid": "muted",
 }
 
@@ -158,6 +160,12 @@ class EditorialSlideComposer:
             return
         slide = self._blank()
         C.slide_border_frame(slide, self.theme)
+        # Full-bleed dark handlers (big_number on a dark fill) paint a slide-filling
+        # panel; draw it *before* the header so the heading lands on top instead of
+        # being buried, and render the header in inverse so it reads on the panel.
+        dark_bg = slide_type == "big_number" and self._big_number_on_dark(slide_dict)
+        if dark_bg:
+            add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, fill=self.theme.color("panel"))
         content_top = C.header_block(
             slide, self.theme,
             title=str(slide_dict.get("title", "")),
@@ -165,6 +173,7 @@ class EditorialSlideComposer:
             section_number=str(slide_dict.get("section_number", "")),
             emphasis=slide_dict.get("emphasis"),
             kicker=str(slide_dict.get("kicker", "")),
+            ink_role="inverse" if dark_bg else "ink",
         )
         content_bottom = SLIDE_H - self.theme.spacing["margin_v"] - 0.55
         m_h = self.theme.spacing["margin_h"]
@@ -329,14 +338,21 @@ class EditorialSlideComposer:
         except Exception as exc:
             logger.warning("editorial chart failed: %s", exc)
 
+    @staticmethod
+    def _big_number_on_dark(slide_dict: dict[str, Any]) -> bool:
+        bn = slide_dict.get("big_number", {})
+        return isinstance(bn, dict) and (bn.get("fill") or "").lower() in {
+            "dark", "mid_dark", "green", "dark_green"
+        }
+
     def _compose_big_number(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
         bn = slide_dict.get("big_number", {})
         if not isinstance(bn, dict) or not str(bn.get("stat", "")):
             return
         t = self.theme
-        on_dark = (bn.get("fill") or "").lower() in {"dark", "mid_dark", "green", "dark_green"}
-        if on_dark:
-            add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, fill=t.color("panel"))
+        # The dark full-bleed panel is painted by the dispatcher (before the header)
+        # so the heading is not buried; here we only choose text colours to suit it.
+        on_dark = self._big_number_on_dark(slide_dict)
         ink = t.color("inverse") if on_dark else t.color("ink")
         accent = t.color("inverse") if on_dark else t.color("primary")
         stat = str(bn.get("stat", ""))
@@ -378,14 +394,19 @@ class EditorialSlideComposer:
             add_rect(slide, x, sy, sw, 0.05, fill=top_color)
             C.numbered_circle(slide, t, x + 0.16, sy + 0.18, idx + 1, d=0.4)
             label = str(step.get("label", ""))
-            # Semantic glyph (top-right) — explicit icon wins, else derive from the label.
+            # Vector icon (top-right) — explicit icon name wins, else derive from the label.
+            # Falls back to the legacy Unicode glyph if no SVG renderer is available.
+            from app.core.icon_library import place_step_icon
             from app.core.pptx_artifact_renderer import _icon_for_step_label
-            glyph = str(step.get("icon") or "").strip() or _icon_for_step_label(label)
-            if glyph:
-                itf = textbox(slide, x + sw - 0.56, sy + 0.16, 0.4, 0.4, anchor=MSO_ANCHOR.MIDDLE)
-                ip = itf.paragraphs[0]
-                ip.alignment = PP_ALIGN.CENTER
-                C.add_run(ip, glyph, font=t.font_header, size=t.type_scale.get("card_title", 14), color=top_color)
+            place_step_icon(
+                slide, x + sw - 0.56, sy + 0.16, 0.4,
+                label=label,
+                # Step markers stay a single consistent accent — the varying top bar
+                # already differentiates steps; cycling the icon colour read as random.
+                color_hex=t.color("primary"),
+                explicit_icon=str(step.get("icon") or "").strip() or None,
+                fallback_glyph=_icon_for_step_label(label),
+            )
             ltf = textbox(slide, x + 0.16, sy + 0.7, sw - 0.32, 0.5)
             lf = tm.fit_text(label, box_w_in=sw - 0.32, box_h_in=0.5, family=t.font_header,
                              max_pt=t.type_scale["card_title"], min_pt=10, bold=True, max_lines=2)

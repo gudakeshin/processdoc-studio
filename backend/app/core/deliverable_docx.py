@@ -112,6 +112,13 @@ def _add_page_number_footer(doc: Document, company: str, primary_rgb: tuple[int,
 
 def _insert_toc(doc: Document) -> None:
     """Insert a Table of Contents field that Word will populate on open."""
+    # Tell readers (incl. headless converters) to refresh fields on open, else the
+    # TOC field renders blank.
+    settings = doc.settings.element
+    if settings.find(qn("w:updateFields")) is None:
+        upd = OxmlElement("w:updateFields")
+        upd.set(qn("w:val"), "true")
+        settings.append(upd)
     para = doc.add_paragraph()
     para.style = "Normal"
     run = para.add_run()
@@ -242,6 +249,7 @@ class DOCXDeliverable(IDeliverable):
     def _render_composed(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
         import json
 
+        from app.core.config import settings
         from app.core import docx_components as C
         from app.core.deliverable_utils import parse_markdown_blocks
         from app.core.doc_theme import resolve_doc_theme
@@ -256,8 +264,10 @@ class DOCXDeliverable(IDeliverable):
             fallback = safe_text(payload.get("narrative_md"), "")
             text = fallback if fallback and not detect_code_document(fallback) else "Process document"
 
+        from app.core.deliverable_utils import humanize_wiki_links
+
         pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
-        process_name = safe_text(pm.get("process_name") if pm else None, "Process Output")
+        process_name = humanize_wiki_links(safe_text(pm.get("process_name") if pm else None, "Process Output"))
         theme = resolve_doc_theme(branding, process_name)
         company = theme.company_name
         author = str(payload.get("owner_name") or company or "ProcessDoc Studio")
@@ -274,8 +284,21 @@ class DOCXDeliverable(IDeliverable):
         C.insert_toc(doc)
         C.page_footer(doc, theme, company)
 
+        blocks = parse_markdown_blocks(humanize_wiki_links(text))
+        if getattr(settings, "docx_figures_enabled", True):
+            try:
+                from app.core.figure_specs import (
+                    derive_figures_from_process_model,
+                    splice_figure_blocks,
+                )
+
+                figure_blocks = derive_figures_from_process_model(pm)
+                blocks = splice_figure_blocks(blocks, figure_blocks)
+            except Exception as exc:  # noqa: BLE001 — figures are best-effort
+                logger.warning("DOCX figure derivation skipped: %s", exc)
+
         composer = DocxComposer(doc, theme)
-        composer.compose(parse_markdown_blocks(text))
+        composer.compose(blocks)
         doc.save(out)
 
         try:

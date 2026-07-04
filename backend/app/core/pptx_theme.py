@@ -51,6 +51,36 @@ def _mix(hex_a: str, hex_b: str, t: float) -> str:
     return f"#{r:02X}{g:02X}{b:02X}"
 
 
+def _relative_luminance(hex_c: str) -> float:
+    """WCAG 2.1 relative luminance of a hex colour."""
+    h = hex_c.lstrip("#")
+    def chan(v: int) -> float:
+        s = v / 255.0
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+
+
+def contrast_ratio(fg: str, bg: str) -> float:
+    """WCAG contrast ratio between two hex colours (>= 1.0)."""
+    lf, lb = _relative_luminance(fg), _relative_luminance(bg)
+    hi, lo = max(lf, lb), min(lf, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _readable_secondary(ink: str, bg: str, min_ratio: float = 4.6) -> str:
+    """Lightest ink→bg blend that still clears ``min_ratio`` against ``bg``.
+
+    Yields a muted secondary-text grey that reads on the page instead of the
+    near-white brand ``neutral_light`` (which fails contrast on a white slide).
+    """
+    for t in (0.55, 0.5, 0.45, 0.4, 0.35, 0.3, 0.2, 0.1):
+        cand = _mix(ink, bg, t)
+        if contrast_ratio(cand, bg) >= min_ratio:
+            return cand
+    return ink
+
+
 @dataclass
 class DeckTheme:
     name: str
@@ -66,6 +96,18 @@ class DeckTheme:
 
     def color(self, role: str, default: str = "#1A1A1A") -> str:
         return self.colors.get(role, default)
+
+    def readable(self, role: str, on: str = "#FFFFFF", min_ratio: float = 4.5) -> str:
+        """``color(role)`` if it clears ``min_ratio`` on ``on``, else snap to ink/inverse.
+
+        A last-line contrast floor so text never renders illegibly low-contrast even
+        if a brand supplies a too-light role value.
+        """
+        fg = self.color(role)
+        if contrast_ratio(fg, on) >= min_ratio:
+            return fg
+        ink, inv = self.colors.get("ink", "#1A1A1A"), self.colors.get("inverse", "#FFFFFF")
+        return ink if contrast_ratio(ink, on) >= contrast_ratio(inv, on) else inv
 
     def status_color(self, status: str) -> str:
         s = (status or "").strip().lower()
@@ -145,7 +187,10 @@ def _resolve_brand_colors(b: dict[str, Any]) -> dict[str, str]:
         "ink": ink,
         "inverse": inverse,
         "tint": accent_light,
-        "muted": neutral_light,
+        # Secondary-text grey, not the near-white brand neutral: body/supporting copy
+        # uses this role and must read on a white slide (neutral_light fails contrast).
+        "muted": _readable_secondary(ink, inverse),
+        "neutral_light": neutral_light,
         "panel": neutral_dark,
         "hairline": _mix(ink, inverse, 0.82),  # very light grey rule
         "status_in_build": _STATUS_IN_BUILD,

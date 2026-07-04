@@ -8,6 +8,7 @@ primitives so DOCX stays on-brand and on-topic like the deck renderer.
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 from datetime import datetime
@@ -146,8 +147,24 @@ def cover_page(doc: Document, theme: DocTheme, title: str, company: str) -> None
     doc.add_page_break()
 
 
+def force_update_fields(doc: Document) -> None:
+    """Mark fields dirty at the document level so a TOC/PAGE field populates on open.
+
+    Without ``<w:updateFields w:val="true"/>`` a freshly inserted TOC field renders
+    empty until the reader manually updates fields — and headless converters
+    (LibreOffice) never do, so the TOC ships blank.
+    """
+    settings = doc.settings.element
+    if settings.find(qn("w:updateFields")) is not None:
+        return
+    el = OxmlElement("w:updateFields")
+    el.set(qn("w:val"), "true")
+    settings.append(el)
+
+
 def insert_toc(doc: Document) -> None:
     """Insert a Table of Contents field that Word populates on open."""
+    force_update_fields(doc)
     para = doc.add_paragraph()
     para.style = "Normal"
     run = para.add_run()
@@ -237,16 +254,77 @@ def body_paragraph(doc: Document, theme: DocTheme, text: str,
     return para
 
 
-def callout(doc: Document, theme: DocTheme, text: str):
-    """A shaded callout box (accent_light fill, primary left border) for emphasis."""
+# Callout variants: (fill role, border role, label). 'note' is the legacy default.
+_CALLOUT_SUBTYPES: dict[str, tuple[str, str, str]] = {
+    "note": ("accent_light", "primary", ""),
+    "insight": ("tint", "accent_dark", "KEY INSIGHT"),
+    "risk": ("accent_light", "secondary", "RISK"),
+    "warning": ("accent_light", "secondary", "WATCH-OUT"),
+}
+
+
+def callout(doc: Document, theme: DocTheme, text: str, subtype: str = "note", label: str | None = None):
+    """A shaded callout box for emphasis.
+
+    ``subtype`` selects the fill/border and an optional eyebrow label
+    (note | insight | risk | warning); ``label`` overrides the default eyebrow.
+    """
+    fill_role, border_role, default_label = _CALLOUT_SUBTYPES.get(
+        str(subtype or "note").lower(), _CALLOUT_SUBTYPES["note"]
+    )
+    eyebrow = (label if label is not None else default_label).strip()
     para = doc.add_paragraph()
-    _set_paragraph_shading(para, theme.hex6("accent_light", "#EBF5D3"))
-    _add_left_border(para, theme.hex6("primary"))
+    _set_paragraph_shading(para, theme.hex6(fill_role, "#EBF5D3"))
+    _add_left_border(para, theme.hex6(border_role, "#86BC25"))
+    if eyebrow:
+        lbl_run = para.add_run(eyebrow + "  ")
+        lbl_run.bold = True
+        lbl_run.font.name = theme.font_body
+        lbl_run.font.size = Pt(theme.pt("caption"))
+        lbl_run.font.color.rgb = RGBColor(*theme.rgb(border_role, "#86BC25"))
     for fragment, is_bold, is_italic in parse_inline(text):
         run = para.add_run(fragment)
         run.font.name = theme.font_body
         run.bold = is_bold
         run.italic = is_italic
+    return para
+
+
+def embed_figure(
+    doc: Document,
+    theme: DocTheme,
+    spec: dict,
+    *,
+    caption: str = "",
+    number: int | None = None,
+    width_in: float = 6.0,
+):
+    """Render a figure spec to PNG (figure_engine) and embed it centered.
+
+    Adds an italic "Figure N. <caption>" line below. Fail-open: logs and returns
+    None if rendering fails, so a missing figure never breaks the document.
+    """
+    try:
+        from app.core.figure_engine import render_figure
+
+        png = render_figure(spec, theme.colors, width_in=9.0, height_in=4.6)
+    except Exception as exc:  # noqa: BLE001 — figures are best-effort
+        logger.warning("embed_figure skipped: %s", exc)
+        return None
+    para = doc.add_paragraph()
+    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = para.add_run()
+    run.add_picture(io.BytesIO(png), width=Inches(width_in))
+    cap_text = caption.strip()
+    if cap_text or number is not None:
+        cap = doc.add_paragraph()
+        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        prefix = f"Figure {number}. " if number is not None else ""
+        r = cap.add_run(prefix + cap_text)
+        r.italic = True
+        r.font.name = theme.font_body
+        r.font.size = Pt(theme.pt("caption"))
+        r.font.color.rgb = RGBColor(*theme.rgb("muted"))
     return para
 
 

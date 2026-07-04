@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.core.pptx_theme import _mix, _norm_hex
+from app.core.pptx_theme import _mix, _norm_hex, _readable_secondary
 from app.core.topic_palette import apply_topic_palette
 
 
@@ -84,7 +84,10 @@ def _resolve_colors(b: dict) -> dict[str, str]:
         "tint": _mix(primary, "#FFFFFF", 0.90),  # very light primary wash for banded rows
         "ink": ink,
         "inverse": inverse,
-        "muted": neutral_light,
+        # Readable secondary-text grey, not the near-white brand neutral (which is
+        # illegible on a white page); keep neutral_light for fills/dividers.
+        "muted": _readable_secondary(ink, inverse),
+        "neutral_light": neutral_light,
         "panel": neutral_dark,
         "hairline": _mix(ink, inverse, 0.82),
     }

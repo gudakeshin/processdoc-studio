@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.core.model_tiers import critique_model
 from app.services.claude import claude_generate_json, claude_generate_json_with_images, is_claude_enabled
 
 
@@ -221,11 +222,11 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
                             "Flag real layout problems — not stylistic preferences. "
                             "If a slide looks clean, do not manufacture findings."
                         )
-                        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or None
+                        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or critique_model()
                         result = claude_generate_json_with_images(
                             system=pixel_system,
                             user=pixel_user,
-                            image_bytes_list=page_images,
+                            image_bytes=page_images,
                             model=critic_model,
                             temperature=0.1,
                             max_tokens=1600,
@@ -289,7 +290,7 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
     )
 
     try:
-        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or None
+        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or critique_model()
         result = claude_generate_json(
             system=system,
             user=user,

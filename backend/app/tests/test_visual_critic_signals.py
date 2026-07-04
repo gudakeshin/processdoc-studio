@@ -46,6 +46,9 @@ def test_evaluate_pptx_fail_open_on_model_error(monkeypatch, tmp_path: Path) -> 
     pptx_path = tmp_path / "output.pptx"
     pptx_path.write_bytes(b"placeholder")
     monkeypatch.setattr(settings, "pptx_visual_critic_enabled", True, raising=False)
+    # Force the metadata path explicitly — this test targets the metadata fallback's
+    # own fail-open behavior, not pixel-path selection.
+    monkeypatch.setattr(settings, "pptx_visual_critic_mode", "metadata", raising=False)
     monkeypatch.setattr("app.services.visual_qa.is_claude_enabled", lambda: True)
     monkeypatch.setattr(
         "app.services.visual_qa._extract_pptx_metadata",
@@ -65,6 +68,9 @@ def test_evaluate_pptx_prompt_avoids_hardcoded_brand_bias(monkeypatch, tmp_path:
     pptx_path = tmp_path / "output.pptx"
     pptx_path.write_bytes(b"placeholder")
     monkeypatch.setattr(settings, "pptx_visual_critic_enabled", True, raising=False)
+    # Force the metadata path explicitly — this test inspects the metadata prompt
+    # text, not pixel-path selection.
+    monkeypatch.setattr(settings, "pptx_visual_critic_mode", "metadata", raising=False)
     monkeypatch.setattr("app.services.visual_qa.is_claude_enabled", lambda: True)
     monkeypatch.setattr(
         "app.services.visual_qa._extract_pptx_metadata",

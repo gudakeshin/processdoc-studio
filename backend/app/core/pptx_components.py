@@ -250,8 +250,13 @@ def header_block(
     x: float | None = None,
     y: float | None = None,
     w: float | None = None,
+    ink_role: str = "ink",
 ) -> float:
-    """Eyebrow + two-tone assertion headline + italic kicker. Returns content-top y."""
+    """Eyebrow + two-tone assertion headline + italic kicker. Returns content-top y.
+
+    ``ink_role`` is the colour role for the non-emphasis title runs — pass
+    ``"inverse"`` for slides whose header sits on a dark full-bleed panel.
+    """
     m_h = theme.spacing["margin_h"]
     m_v = theme.spacing["margin_v"]
     x = m_h if x is None else x
@@ -284,7 +289,7 @@ def header_block(
     p.alignment = PP_ALIGN.LEFT
     for seg, is_emph in _split_emphasis(title, emphasis):
         add_run(p, seg, font=theme.font_header, size=pt, bold=True,
-                color=theme.color("primary") if is_emph else theme.color("ink"))
+                color=theme.color("primary") if is_emph else theme.color(ink_role))
     cursor += head_h + 0.12
 
     if kicker:
