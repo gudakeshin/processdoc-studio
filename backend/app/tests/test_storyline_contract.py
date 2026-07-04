@@ -137,6 +137,24 @@ def test_render_contract_emits_slide_type_directive_and_field_hints() -> None:
     assert "value_chain" not in block  # only rich types present in the spine appear
 
 
+def test_render_contract_document_mode_omits_visual_vocab() -> None:
+    block = sb.render_contract_for_prompt(_sample_contract(), mode="document")
+    assert "APPROVED STORYLINE" in block
+    assert "H2 section" in block
+    assert "topic sentence" in block
+    assert "Manual hand-offs add 11 days" in block
+    assert "big_number" not in block
+    assert "slide_type" not in block
+
+
+def test_tone_directive_compliance_vs_transformation() -> None:
+    compliance = sb.tone_directive("banking audit compliance controls")
+    transformation = sb.tone_directive("digital transformation automation savings")
+    assert "control" in compliance.lower() or "regulat" in compliance.lower()
+    assert "outcome" in transformation.lower() or "prize" in transformation.lower()
+    assert sb.tone_directive("") == ""
+
+
 def test_render_empty_contract_returns_blank() -> None:
     assert sb.render_contract_for_prompt({"arc": "pyramid", "slides": []}) == ""
 

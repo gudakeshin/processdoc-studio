@@ -418,8 +418,13 @@ def load_storyline_contract(run_dir: str | Path) -> dict[str, Any] | None:
         return None
 
 
-def render_contract_for_prompt(contract: dict[str, Any]) -> str:
+def render_contract_for_prompt(contract: dict[str, Any], mode: str = "deck") -> str:
     """Format a contract as a compact, mandatory spine block for subagent prompts.
+
+    ``mode="deck"`` renders the slide-oriented spine (visual vocab, slide types).
+    ``mode="document"`` renders the same beats as prose-section guidance for the
+    DOCX agent: beat → H2 section intent, key message → topic sentence, plus
+    transition guidance — no visual vocab or slide-count language.
 
     Returns "" if the contract is empty/degraded so callers can skip injection.
     """
@@ -430,6 +435,34 @@ def render_contract_for_prompt(contract: dict[str, Any]) -> str:
         return ""
     arc = contract.get("arc") or ""
     gt = str(contract.get("governing_thought") or "").strip()
+    if mode == "document":
+        lines = [
+            "APPROVED STORYLINE — this is the document's narrative spine, shared with the "
+            "deck built from the same run. Structure the body so each beat below maps to one "
+            "H2 section in this order. The beat's assertion is the section's argument: open "
+            "the section with a topic sentence that states it, then support it with the "
+            "required evidence. End each section with a one-sentence bridge into the next "
+            "beat. Do not reorder, merge, or drop beats.",
+        ]
+        if arc:
+            lines.append(f"Arc: {arc}")
+        if gt:
+            lines.append(f"Governing thought (the document must argue this): {gt}")
+        lines.append("")
+        for s in slides:
+            if not isinstance(s, dict):
+                continue
+            n = s.get("slide_number")
+            title = str(s.get("action_title") or "").strip()
+            role = str(s.get("role_in_arc") or "").strip()
+            msg = str(s.get("key_message") or "").strip()
+            ev = str(s.get("required_evidence") or "").strip()
+            lines.append(f"Beat {n}" + (f" [{role}]" if role else "") + f": {title}")
+            if msg:
+                lines.append(f"    topic sentence: {msg}")
+            if ev:
+                lines.append(f"    evidence: {ev}")
+        return "\n".join(lines).strip()
     lines = [
         "APPROVED STORYLINE — this is the deck's spine. Honour it exactly: one slide per row, "
         "use the action_title verbatim as the slide title, and cite the required_evidence. "
@@ -467,6 +500,43 @@ def render_contract_for_prompt(contract: dict[str, Any]) -> str:
         for v in rich_present:
             lines.append(f"  {v} → {_VISUAL_FIELD_HINTS[v]}")
     return "\n".join(lines).strip()
+
+
+_TONE_PACKS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("compliance", "audit", "regulat", "control", "governance", "risk", "bfsi",
+         "bank", "insurance", "kyc", "aml", "sox"),
+        "TONE: regulated-domain register. Be precise and control-oriented — name the "
+        "control, owner, and evidence behind every assertion; prefer 'must' and 'is "
+        "required' over aspirational language; quantify exposure before benefit; never "
+        "celebrate the removal of checks, approvals, or decision gates.",
+    ),
+    (
+        ("transformation", "growth", "automation", "efficiency", "digital", "modernis",
+         "moderniz", "innovation", "savings", "productivity"),
+        "TONE: change-narrative register. Lead with outcomes — state the size of the "
+        "prize early, contrast current versus future state concretely, and make every "
+        "recommendation an action with an owner and a horizon. Confident, not "
+        "breathless: the numbers carry the argument.",
+    ),
+)
+
+
+def tone_directive(domain_hint: str) -> str:
+    """Pick a tone pack from domain keywords in the hint; "" when nothing matches.
+
+    Word-prefix matching over the lowercased hint; the pack with the most keyword
+    hits wins so mixed hints (e.g. 'risk automation') resolve deterministically.
+    """
+    hint = str(domain_hint or "").lower()
+    if not hint.strip():
+        return ""
+    best_text, best_hits = "", 0
+    for keywords, text in _TONE_PACKS:
+        hits = sum(1 for k in keywords if k in hint)
+        if hits > best_hits:
+            best_text, best_hits = text, hits
+    return best_text
 
 
 def parse_arc_from_user_message(user_message: str) -> str | None:

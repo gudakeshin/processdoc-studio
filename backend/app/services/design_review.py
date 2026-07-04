@@ -229,6 +229,124 @@ def _governance_framing(slides: list[dict[str, Any]]) -> dict[str, Any]:
     return {"status": status, "flagged": len(hits), "hints": hits}
 
 
+_H2_RE = re.compile(r"^##\s+(?!#)(.+?)\s*$", re.M)
+
+
+def split_h2_sections(markdown: str) -> list[dict[str, Any]]:
+    """Split markdown into H2 sections: [{index, heading, body}] (index is 1-based).
+
+    Text before the first H2 (title, preamble) is not a section. The ``body``
+    includes the heading line so sections can be reassembled verbatim.
+    """
+    text = markdown or ""
+    matches = list(_H2_RE.finditer(text))
+    sections: list[dict[str, Any]] = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        sections.append({
+            "index": i + 1,
+            "heading": m.group(1).strip(),
+            "body": text[m.start():end],
+        })
+    return sections
+
+
+def review_document(
+    markdown: str,
+    process_model: dict[str, Any] | None = None,
+    storyline_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Design-review a DOCX markdown body; the document twin of ``review_deck``.
+
+    Checks arc coherence of H2 sections against the storyline spine, plus
+    placeholder/truncation signatures, governance framing, and markup leaks per
+    section. Hints carry ``section_index`` (1-based H2 order) so a targeted
+    rewrite can regenerate only the flagged sections.
+    """
+    from app.core.pptx_qa import _check_for_placeholders, _find_truncations
+
+    sections = split_h2_sections(markdown)
+    hints: list[dict[str, Any]] = []
+
+    # 1) Arc coherence — reuse the deck check by presenting sections as slides.
+    pseudo_slides = [{"title": s["heading"], "slide_type": "section"} for s in sections]
+    arc = _arc_coherence(pseudo_slides, storyline_contract)
+    for beat in arc.get("missing_beats", []):
+        hints.append({
+            "section_index": 0,
+            "instruction": (
+                f"The approved storyline beat is unaddressed — add or align an H2 section "
+                f"arguing: “{beat}”."
+            ),
+            "source": "arc_coherence",
+        })
+
+    # 2) Placeholder / truncation signatures per section ------------------------
+    placeholder_flags = 0
+    for s in sections:
+        found = _check_for_placeholders(s["body"]) + _find_truncations(s["body"])
+        if found:
+            placeholder_flags += 1
+            hints.append({
+                "section_index": s["index"],
+                "instruction": (
+                    f"Section “{s['heading']}” contains placeholder or truncated text "
+                    f"({', '.join(str(f) for f in found[:3])}); replace with complete, "
+                    "specific content."
+                ),
+                "source": "placeholder",
+            })
+
+    # 3) Governance framing + internal-markup leaks per section -----------------
+    gov_flags = 0
+    leak_flags = 0
+    for s in sections:
+        if _ZERO_GOV_RE.search(s["body"]):
+            gov_flags += 1
+            hints.append({
+                "section_index": s["index"],
+                "instruction": (
+                    f"Section “{s['heading']}” frames the absence of decision/governance "
+                    "gates as a benefit. Reframe as automation/cycle-time gain and retain "
+                    "auditability/controls language."
+                ),
+                "source": "governance_framing",
+            })
+        leaked = sorted({m.group(0).lower() for m in _MARKUP_LEAK_RE.finditer(s["body"])})
+        if leaked:
+            leak_flags += 1
+            hints.append({
+                "section_index": s["index"],
+                "instruction": (
+                    f"Section “{s['heading']}” leaks internal authoring markup "
+                    f"({', '.join(leaked)}); render wiki links as their titles and drop "
+                    "pipeline tokens."
+                ),
+                "source": "markup_leak",
+            })
+
+    statuses = [
+        arc.get("status", "skip"),
+        "fail" if leak_flags else "pass",
+        "warn" if (placeholder_flags or gov_flags) else "pass",
+    ]
+    rank = max((_RANK.get(s, 0) for s in statuses if s in _RANK), default=0)
+    return {
+        "status": _RANK_INV[rank],
+        "summary": (
+            f"Sections: {len(sections)}; arc: {arc.get('matched', 0)}/{arc.get('expected', 0)} beats; "
+            f"placeholders: {placeholder_flags}; governance: {gov_flags}; leaks: {leak_flags}."
+        ),
+        "scores": {
+            "arc_coherence": arc,
+            "placeholders": {"flagged": placeholder_flags},
+            "governance_framing": {"flagged": gov_flags},
+            "markup_leak": {"flagged": leak_flags},
+        },
+        "remediation_hints": hints,
+    }
+
+
 def review_deck(
     slides: list[dict[str, Any]],
     process_model: dict[str, Any] | None = None,

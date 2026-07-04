@@ -263,6 +263,20 @@ def validate_slide_evidence(
     }
 
 
+def validate_text_evidence(
+    text: str,
+    process_model: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Validate numeric claims in prose (DOCX markdown) against evidence.
+
+    Same treatment slides get in ``validate_slide_evidence``; returns
+    {"claims_found": int, "validation": {...}} so callers can share hint-building.
+    """
+    claims = extract_numeric_claims(text or "")
+    validation = validate_claims_against_evidence(claims, process_model)
+    return {"claims_found": len(claims), "validation": validation}
+
+
 def validate_pptx_slides_evidence(
     pptx_slides: list[dict[str, Any]],
     process_model: dict[str, Any] | None = None

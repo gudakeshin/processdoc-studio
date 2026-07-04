@@ -181,3 +181,31 @@ def test_markup_leak_clean_when_humanized() -> None:
     report = review_deck(slides, process_model=None, storyline_contract=None)
     assert report["scores"]["markup_leak"]["status"] == "pass"
     assert not any(h["source"] == "markup_leak" for h in report["remediation_hints"])
+
+
+def test_review_document_flags_missing_arc_beat() -> None:
+    from app.services.design_review import review_document
+
+    md = (
+        "# Executive Brief\n\n"
+        "## Manual hand-offs add eleven days to every close\n\n"
+        "Evidence here.\n"
+    )
+    report = review_document(md, process_model=None, storyline_contract=_contract())
+    arc_hints = [h for h in report["remediation_hints"] if h["source"] == "arc_coherence"]
+    assert arc_hints
+    assert report["status"] in ("warn", "fail")
+
+
+def test_review_document_passes_aligned_sections() -> None:
+    from app.services.design_review import review_document
+
+    md = (
+        "# Executive Brief\n\n"
+        "## Manual hand-offs add eleven days to every close\n\n"
+        "Cycle time evidence.\n\n"
+        "## Three levers collapse the reconciliation bottleneck\n\n"
+        "Governance, gates, automation.\n"
+    )
+    report = review_document(md, process_model=None, storyline_contract=_contract())
+    assert report["scores"]["arc_coherence"]["status"] == "pass"

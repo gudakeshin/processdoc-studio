@@ -167,6 +167,15 @@ class Settings(BaseSettings):
     storyline_contract_enabled: bool = True
     # Embed grounded figures (value chain, risk heat map, roadmap) in DOCX output.
     docx_figures_enabled: bool = True
+    # DOCX consumes the same storyline contract as PPTX (no-op when
+    # storyline_contract_enabled is False).
+    docx_storyline_spine_enabled: bool = True
+    # In-process bounded critique→revise loop: design-review/action-title hints drive
+    # ONE targeted per-slide (PPTX) / per-section (DOCX) rewrite before render.
+    deliverable_critique_loop_enabled: bool = True
+    # Evidence soft-block: unsupported numeric claims trigger ONE targeted rewrite
+    # (add caveat or drop the number); render always proceeds afterwards.
+    evidence_soft_block_enabled: bool = True
     anthropic_timeout_sec: float = 45.0
     anthropic_circuit_breaker_failures: int = 5
     anthropic_circuit_breaker_reset_sec: int = 60

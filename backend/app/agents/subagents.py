@@ -1957,6 +1957,20 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
                 f"{process_model_json_block(pm)}"
             )
 
+        # ── Storyline spine (shared with PPTX): same contract, document-mode render ──
+        # Only argument-led documents follow the arc; SOP/RACI/generic keep their
+        # mandated procedural section templates.
+        if deliverable in ("narrative", "proposal", "brd") and getattr(
+            settings, "docx_storyline_spine_enabled", True
+        ):
+            _docx_discovery = (ctx.plan_payload or {}).get("discovery") if isinstance((ctx.plan_payload or {}).get("discovery"), dict) else {}
+            _docx_steps = len(pm.get("steps") or []) if isinstance(pm, dict) else 0
+            _docx_spine = _storyline_spine_block(
+                ctx, pm, _docx_discovery, max(8, min(14, _docx_steps + 4)), mode="document"
+            )
+            if _docx_spine:
+                user += "\n\n" + _docx_spine
+
         _docx_feedback = ctx.plan_payload.get("docx_visual_feedback") or []
         if _docx_feedback and isinstance(_docx_feedback, list):
             _docx_hints = "\n".join(
@@ -1993,6 +2007,7 @@ def run_docx_agent(ctx: AgentContext) -> AgentOutput:
             if md is None:
                 return AgentOutput(updates={"docx_markdown": _docx_deterministic_fallback(pm, deliverable)})
             md = _apply_quality_gate(ctx, "docx", md, system=sb.system, temperature=sb.temperature)
+            md = _critique_and_repair_docx(ctx, md, pm, deliverable)
             md = _run_post_processor(ctx, md)
             return AgentOutput(updates={"docx_markdown": md})
 
@@ -2360,6 +2375,406 @@ def _normalize_pptx_slide_identities(slides: list[dict[str, Any]]) -> list[dict[
             )
         normalized.append(slide)
     return normalized
+
+
+# ── In-process critique→revise loop + evidence soft-block (Phase 1) ─────────
+# Bounded, targeted, never-fail: design-review/evidence hints drive ONE rewrite
+# of only the flagged slides/sections before render, replacing (most) whole-run
+# evaluator re-enqueues. All helpers return their input on any failure.
+
+_SLIDE_REPAIR_SYSTEM = (
+    "You repair individual slides of a consulting deck. You receive flagged slides as "
+    "JSON plus per-slide fix instructions. Return ONLY JSON {\"slides\": [...]} with the "
+    "repaired slides in the same order as given — same count, same slide_id and "
+    "slide_index, same slide_type unless an instruction names a different one. Preserve "
+    "every field you were not asked to change. No prose, no markdown fences."
+)
+
+_SECTION_REPAIR_SYSTEM = (
+    "You revise specific sections of a Markdown business document. You receive flagged "
+    "H2 sections plus per-section fix instructions. Return ONLY JSON "
+    "{\"sections\": [{\"index\": <n>, \"markdown\": \"## ...\"}]} with one entry per "
+    "flagged section, each a complete section starting with its `## ` heading. Keep "
+    "content you were not asked to change. No prose outside the JSON."
+)
+
+_EVIDENCE_SOFT_BLOCK_DIRECTIVE = (
+    "EVIDENCE FIX: for each flagged number either (a) add an explicit caveat such as "
+    "'directional estimate' or 'illustrative', or (b) remove the number and state the "
+    "point qualitatively. Never invent sources or new figures."
+)
+
+
+def _load_run_storyline(ctx: AgentContext) -> dict[str, Any] | None:
+    """Load the persisted ``<run_dir>/storyline.json`` contract; None on any miss."""
+    try:
+        from app.services.storage import workspace_path
+        from app.services.storyline_builder import load_storyline_contract
+
+        pid = str(ctx.project_id or "").strip()
+        rid = str(ctx.run_id or "").strip()
+        if pid and rid:
+            return load_storyline_contract(workspace_path(pid) / "runs" / rid)
+    except Exception:  # noqa: BLE001 — contract is optional context
+        return None
+    return None
+
+
+def _critique_slides(
+    ctx: AgentContext,
+    slide_dicts: list[dict[str, Any]],
+    pm: dict[str, Any] | None,
+    contract: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Pre-render critique over slide dicts; returns (hints, review_report).
+
+    Runs ``review_deck`` (action titles, evidence, arc, visuals) and merges
+    persisted narrative-coherence signals when present. Optional one-shot
+    ``critique_model()`` call only when deterministic hints are empty but the
+    overall review status is degraded.
+    """
+    from app.services.design_review import review_deck
+
+    pm_dict = pm if isinstance(pm, dict) else None
+    review = review_deck(slide_dicts, pm_dict, contract)
+    hints: list[dict[str, Any]] = [
+        h for h in (review.get("remediation_hints") or []) if isinstance(h, dict)
+    ]
+
+    try:
+        from app.core.narrative_feedback import (
+            build_narrative_feedback_hints,
+            narrative_signals_from_run_dir,
+        )
+        from app.services.storage import workspace_path
+
+        pid = str(ctx.project_id or "").strip()
+        rid = str(ctx.run_id or "").strip()
+        if pid and rid:
+            signals = narrative_signals_from_run_dir(workspace_path(pid) / "runs" / rid)
+            for nh in build_narrative_feedback_hints(signals, "pptx"):
+                if isinstance(nh, dict) and nh.get("instruction"):
+                    hints.append(dict(nh))
+    except Exception:  # noqa: BLE001 — narrative signals are optional
+        pass
+
+    if not hints and review.get("status") in ("warn", "fail"):
+        try:
+            from app.core.model_tiers import critique_model
+
+            titles = [
+                str(s.get("title") or "")
+                for s in slide_dicts
+                if isinstance(s, dict)
+                and str(s.get("slide_type") or "").lower() not in ("title", "section_divider")
+            ]
+            user = (
+                "Review this deck's slide titles for consulting quality. Return ONLY JSON "
+                '{"hints": [{"slide_index": <1-based int>, "instruction": "<fix>"}]} '
+                "with at most 4 prescriptive fixes. Titles:\n"
+                + json.dumps(titles[:12], ensure_ascii=False)
+            )
+            obj = claude_generate_json(
+                system="You critique executive-deck slide titles. JSON only.",
+                user=user,
+                model=critique_model(),
+                temperature=0.1,
+                max_tokens=600,
+            )
+            for h in (obj.get("hints") if isinstance(obj, dict) else []) or []:
+                if isinstance(h, dict) and h.get("instruction"):
+                    hints.append({
+                        "slide_index": h.get("slide_index"),
+                        "instruction": str(h["instruction"]),
+                        "source": "llm_critique",
+                    })
+        except Exception:  # noqa: BLE001 — LLM critique is optional
+            pass
+
+    return hints, review
+
+
+def _claim_text(claim: Any) -> str:
+    if isinstance(claim, dict):
+        return str(claim.get("claim") or claim.get("value") or "")
+    return str(claim or "")
+
+
+def _targeted_slide_rewrite(
+    ctx: AgentContext,
+    slide_dicts: list[dict[str, Any]],
+    hints: list[dict[str, Any]],
+    *,
+    directive: str = "",
+    max_slides: int = 6,
+) -> list[dict[str, Any]]:
+    """ONE bounded rewrite of only the hint-flagged slides; input on any failure."""
+    fix_indices = sorted(
+        i for i in _pptx_visual_feedback_indices(hints) if 1 <= i <= len(slide_dicts)
+    )[:max_slides]
+    if not fix_indices:
+        return slide_dicts
+    fix_set = set(fix_indices)
+    by_idx: dict[int, list[str]] = {}
+    for h in hints:
+        if not isinstance(h, dict):
+            continue
+        for i in _pptx_visual_feedback_indices([h]):
+            if i in fix_set and h.get("instruction"):
+                by_idx.setdefault(i, []).append(str(h["instruction"]))
+    payload = [
+        {"slide_index": i, "fix": by_idx.get(i, []), "slide": slide_dicts[i - 1]}
+        for i in fix_indices
+    ]
+    user = (
+        (directive + "\n\n" if directive else "")
+        + "FLAGGED SLIDES:\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    try:
+        obj = claude_generate_json(
+            system=_SLIDE_REPAIR_SYSTEM, user=user, temperature=0.2, max_tokens=4096
+        )
+    except Exception as exc:  # noqa: BLE001 — repair is best-effort
+        _LOG.warning("targeted slide rewrite skipped: %s", exc)
+        return slide_dicts
+    reps = obj.get("slides") if isinstance(obj, dict) else None
+    if not isinstance(reps, list) or not reps:
+        return slide_dicts
+    full = [dict(s) for s in slide_dicts]
+    for pos, rep in zip(fix_indices, reps):
+        if isinstance(rep, dict) and rep.get("title"):
+            rep = dict(rep)
+            rep.setdefault("slide_type", slide_dicts[pos - 1].get("slide_type"))
+            full[pos - 1] = rep
+    merged = _merge_pptx_slides_repair(slide_dicts, full, fix_set)
+    return _normalize_pptx_slide_identities(merged)
+
+
+def _critique_and_repair_pptx(
+    ctx: AgentContext, slide_dicts: list[dict[str, Any]], pm: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Pre-render critique→revise (1 round) + evidence soft-block (1 round).
+
+    Both stages are flag-gated, bounded, and fail-open — the deck always renders.
+    """
+    if not isinstance(slide_dicts, list) or not slide_dicts:
+        return slide_dicts
+    pm_dict = pm if isinstance(pm, dict) else None
+    contract = _load_run_storyline(ctx)
+
+    if getattr(settings, "deliverable_critique_loop_enabled", True):
+        try:
+            from app.services.design_review import review_deck
+
+            hints, review = _critique_slides(ctx, slide_dicts, pm_dict, contract)
+            targetable = [h for h in hints if _pptx_visual_feedback_indices([h])]
+            if targetable:
+                slide_dicts = _targeted_slide_rewrite(
+                    ctx, slide_dicts, targetable,
+                    directive=(
+                        "Repair each flagged slide per its fix instructions. Keep the "
+                        "slide's argument and evidence; make every title a specific "
+                        "assertion, not a topic label."
+                    ),
+                )
+                after = review_deck(slide_dicts, pm_dict, contract)
+                if ctx.emit_event:
+                    ctx.emit_event("critique_loop", {
+                        "output_type": "pptx",
+                        "status_before": review.get("status"),
+                        "status_after": after.get("status"),
+                        "hints_before": len(hints),
+                        "hints_after": len(after.get("remediation_hints") or []),
+                    })
+        except Exception as exc:  # noqa: BLE001 — critique is advisory
+            _LOG.warning("pptx critique loop skipped: %s", exc)
+
+    if getattr(settings, "evidence_soft_block_enabled", True):
+        try:
+            from app.core.evidence_validator import validate_pptx_slides_evidence
+
+            ev = validate_pptx_slides_evidence(slide_dicts, pm_dict)
+            claims_before = int(ev.get("unsupported_claims_count") or 0)
+            if claims_before:
+                ev_hints: list[dict[str, Any]] = []
+                for i, sv in enumerate(ev.get("slide_validations") or [], start=1):
+                    validation = (sv or {}).get("validation") or {}
+                    unsupported = validation.get("unsupported_claims") or []
+                    if not unsupported:
+                        continue
+                    claims = ", ".join(_claim_text(c) for c in unsupported[:4] if _claim_text(c))
+                    ev_hints.append({
+                        "slide_index": i,
+                        "instruction": f"Unsupported figure(s) on this slide: [{claims}].",
+                        "source": "evidence",
+                    })
+                slide_dicts = _targeted_slide_rewrite(
+                    ctx, slide_dicts, ev_hints, directive=_EVIDENCE_SOFT_BLOCK_DIRECTIVE
+                )
+                ev_after = validate_pptx_slides_evidence(slide_dicts, pm_dict)
+                if ctx.emit_event:
+                    ctx.emit_event("evidence_soft_block", {
+                        "output_type": "pptx",
+                        "soft_block_applied": True,
+                        "claims_before": claims_before,
+                        "claims_after": int(ev_after.get("unsupported_claims_count") or 0),
+                    })
+        except Exception as exc:  # noqa: BLE001 — soft-block never blocks render
+            _LOG.warning("pptx evidence soft-block skipped: %s", exc)
+
+    return slide_dicts
+
+
+def _section_hint_indices(hints: list[Any], n_sections: int) -> list[int]:
+    """Valid 1-based section indices named by hints, ascending."""
+    idxs: set[int] = set()
+    for h in hints:
+        if not isinstance(h, dict):
+            continue
+        raw = h.get("section_index")
+        try:
+            i = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= i <= n_sections:
+            idxs.add(i)
+    return sorted(idxs)
+
+
+def _targeted_section_rewrite(
+    ctx: AgentContext,
+    md: str,
+    hints: list[dict[str, Any]],
+    *,
+    directive: str = "",
+    max_sections: int = 4,
+) -> str:
+    """ONE bounded rewrite of only the hint-flagged H2 sections; input on failure."""
+    from app.services.design_review import split_h2_sections
+
+    sections = split_h2_sections(md)
+    if not sections:
+        return md
+    idxs = _section_hint_indices(hints, len(sections))[:max_sections]
+    if not idxs:
+        return md
+    by_idx: dict[int, list[str]] = {}
+    for h in hints:
+        if isinstance(h, dict) and h.get("instruction"):
+            for i in _section_hint_indices([h], len(sections)):
+                by_idx.setdefault(i, []).append(str(h["instruction"]))
+    payload = [
+        {"index": i, "fix": by_idx.get(i, []), "markdown": sections[i - 1]["body"]}
+        for i in idxs
+    ]
+    user = (
+        (directive + "\n\n" if directive else "")
+        + "FLAGGED SECTIONS:\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    try:
+        obj = claude_generate_json(
+            system=_SECTION_REPAIR_SYSTEM, user=user, temperature=0.2, max_tokens=3000
+        )
+    except Exception as exc:  # noqa: BLE001 — repair is best-effort
+        _LOG.warning("targeted section rewrite skipped: %s", exc)
+        return md
+    reps = obj.get("sections") if isinstance(obj, dict) else None
+    if not isinstance(reps, list):
+        return md
+    rep_map: dict[int, str] = {}
+    for r in reps:
+        if not isinstance(r, dict):
+            continue
+        try:
+            i = int(r.get("index"))
+        except (TypeError, ValueError):
+            continue
+        body = str(r.get("markdown") or "").strip()
+        if i in set(idxs) and body.startswith("## "):
+            rep_map[i] = body + "\n\n"
+    if not rep_map:
+        return md
+    # Sections are contiguous from the first H2 to the end of the document.
+    preamble = md[: len(md) - sum(len(s["body"]) for s in sections)]
+    return preamble + "".join(rep_map.get(s["index"], s["body"]) for s in sections)
+
+
+def _critique_and_repair_docx(
+    ctx: AgentContext, md: str, pm: dict[str, Any], deliverable: str
+) -> str:
+    """DOCX twin of ``_critique_and_repair_pptx``; always returns renderable markdown."""
+    if not isinstance(md, str) or not md.strip():
+        return md
+    pm_dict = pm if isinstance(pm, dict) else None
+    # Arc coherence only applies to argument-led documents (matches spine injection).
+    contract = _load_run_storyline(ctx) if deliverable in ("narrative", "proposal", "brd") else None
+
+    if getattr(settings, "deliverable_critique_loop_enabled", True):
+        try:
+            from app.services.design_review import review_document
+
+            review = review_document(md, pm_dict, contract)
+            hints = [h for h in (review.get("remediation_hints") or []) if isinstance(h, dict)]
+            targetable = [h for h in hints if h.get("section_index")]
+            if targetable:
+                md = _targeted_section_rewrite(
+                    ctx, md, targetable,
+                    directive=(
+                        "Revise each flagged section per its fix instructions. Keep the "
+                        "section's structure and evidence; open with a topic sentence "
+                        "that states the section's argument."
+                    ),
+                )
+                after = review_document(md, pm_dict, contract)
+                if ctx.emit_event:
+                    ctx.emit_event("critique_loop", {
+                        "output_type": "docx",
+                        "status_before": review.get("status"),
+                        "status_after": after.get("status"),
+                        "hints_before": len(hints),
+                        "hints_after": len(after.get("remediation_hints") or []),
+                    })
+        except Exception as exc:  # noqa: BLE001 — critique is advisory
+            _LOG.warning("docx critique loop skipped: %s", exc)
+
+    if getattr(settings, "evidence_soft_block_enabled", True):
+        try:
+            from app.core.evidence_validator import validate_text_evidence
+            from app.services.design_review import split_h2_sections
+
+            sections = split_h2_sections(md)
+            ev_hints = []
+            claims_before = 0
+            for s in sections:
+                validation = validate_text_evidence(s["body"], pm_dict).get("validation") or {}
+                unsupported = validation.get("unsupported_claims") or []
+                if not unsupported:
+                    continue
+                claims_before += len(unsupported)
+                claims = ", ".join(_claim_text(c) for c in unsupported[:4] if _claim_text(c))
+                ev_hints.append({
+                    "section_index": s["index"],
+                    "instruction": f"Unsupported figure(s) in this section: [{claims}].",
+                    "source": "evidence",
+                })
+            if ev_hints:
+                md = _targeted_section_rewrite(
+                    ctx, md, ev_hints, directive=_EVIDENCE_SOFT_BLOCK_DIRECTIVE
+                )
+                after_validation = validate_text_evidence(md, pm_dict).get("validation") or {}
+                if ctx.emit_event:
+                    ctx.emit_event("evidence_soft_block", {
+                        "output_type": "docx",
+                        "soft_block_applied": True,
+                        "claims_before": claims_before,
+                        "claims_after": len(after_validation.get("unsupported_claims") or []),
+                    })
+        except Exception as exc:  # noqa: BLE001 — soft-block never blocks render
+            _LOG.warning("docx evidence soft-block skipped: %s", exc)
+
+    return md
 
 
 def _pptx_deterministic_slides(pm: ProcessModel) -> list[dict[str, Any]]:
@@ -2880,11 +3295,16 @@ def _process_summary_for_storyline(pm: dict[str, Any]) -> str:
 
 
 def _storyline_spine_block(
-    ctx: AgentContext, pm: dict[str, Any], plan_discovery: dict[str, Any], target_slides: int
+    ctx: AgentContext,
+    pm: dict[str, Any],
+    plan_discovery: dict[str, Any],
+    target_slides: int,
+    mode: str = "deck",
 ) -> str:
     """Build/load the run's storyline contract and render it as a prompt spine.
 
     Persists to ``<run_dir>/storyline.json`` so PPTX and DOCX share one spine.
+    ``mode="document"`` renders the beats as prose-section guidance for DOCX.
     Fail-open: returns "" on any error or when disabled.
     """
     if not getattr(settings, "storyline_contract_enabled", True):
@@ -2895,6 +3315,7 @@ def _storyline_spine_block(
             load_storyline_contract,
             persist_storyline_contract,
             render_contract_for_prompt,
+            tone_directive,
         )
         from app.services.storage import workspace_path
 
@@ -2923,7 +3344,14 @@ def _storyline_spine_block(
             )
             if run_dir and isinstance(contract, dict) and contract.get("slides"):
                 persist_storyline_contract(run_dir, contract)
-        return render_contract_for_prompt(contract) if isinstance(contract, dict) else ""
+        block = render_contract_for_prompt(contract, mode=mode) if isinstance(contract, dict) else ""
+        if block:
+            client = plan_discovery.get("client") if isinstance(plan_discovery.get("client"), dict) else {}
+            outcome = plan_discovery.get("outcome") if isinstance(plan_discovery.get("outcome"), dict) else {}
+            tone = tone_directive(f"{client.get('industry') or ''} {outcome.get('primary') or ''}")
+            if tone:
+                block = block + "\n\n" + tone
+        return block
     except Exception as exc:  # noqa: BLE001 — spine is best-effort
         _LOG.warning("storyline spine injection skipped: %s", exc)
         return ""
@@ -3502,6 +3930,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
             except Exception:  # noqa: S110 — best-effort, non-fatal
                 pass
             slide_dicts = _run_pptx_post_processor(ctx, slide_dicts)
+            slide_dicts = _critique_and_repair_pptx(ctx, slide_dicts, pm)
             slide_dicts = _normalize_pptx_slide_identities(slide_dicts)
             return AgentOutput(updates={"pptx_slides": slide_dicts})
 
@@ -3534,6 +3963,7 @@ def run_pptx_agent(ctx: AgentContext) -> AgentOutput:
                 except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
                 slide_dicts = _run_pptx_post_processor(ctx, slide_dicts)
+                slide_dicts = _critique_and_repair_pptx(ctx, slide_dicts, pm)
                 slide_dicts = _normalize_pptx_slide_identities(slide_dicts)
                 # region agent log
                 _session_debug_log(
