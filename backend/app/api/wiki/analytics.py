@@ -543,14 +543,20 @@ async def warmup_cache(
         raise HTTPException(status_code=400, detail="project_id required for project wiki")
 
     try:
-        # In practice, this would load god nodes and communities
-        # For now, it's a placeholder that demonstrates the pattern
+        from app.services.wiki_operations import _get_god_nodes
+
+        # Touch the cache singleton and load the hot data sets (god nodes +
+        # cross-wiki relationships). Both calls populate/persist their caches.
         get_wiki_cache()
+        god_nodes = _get_god_nodes(wiki_type, project_id, limit=50)
+        relationships = _build_cross_wiki_relationships(wiki_type, project_id)
+        total_links = relationships.get("total_links", 0) if isinstance(relationships, dict) else 0
 
         return {
             "status": "success",
-            "pages_cached": 0,
-            "message": "Cache warmup requested (implementation depends on god nodes/communities loading)",
+            "pages_cached": len(god_nodes),
+            "relationships_cached": total_links,
+            "message": f"Warmed {len(god_nodes)} god nodes and {total_links} cross-wiki links",
         }
 
     except Exception as e:

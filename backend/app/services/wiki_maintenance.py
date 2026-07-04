@@ -345,14 +345,31 @@ class WikiMaintenanceManager:
             return {"error": str(e), "status": "failed"}
 
     def _generate_synthesis_pages(self, auto_fix: bool = True) -> dict[str, Any]:
-        """Generate synthesis pages for identified gaps."""
+        """Surface coverage gaps that warrant new synthesis pages.
+
+        Detects frequently-referenced concepts that lack a dedicated page.
+        LLM-authored page bodies are produced by the synthesis engine; here we
+        report the concrete candidates so they can be generated or reviewed.
+        """
         try:
-            # TODO: Implement once Phase 5 (synthesis engine) is done
+            from app.services.wiki_lint import _get_all_wiki_pages
+            from app.services.wiki_analytics import KnowledgeGapDetector
+
+            raw_pages = _get_all_wiki_pages(self.wiki_type, self.project_id)
+            detector = KnowledgeGapDetector()
+            detector.index_pages([
+                {"id": p["page_id"], "title": p["title"], "content": p["content"]}
+                for p in raw_pages
+            ])
+            gaps = detector.detect_missing_pages(
+                min_mentions=self.config.get("synthesis_min_mentions", 3)
+            )
+
             return {
-                "found": 0,
+                "found": len(gaps),
                 "generated": 0,
-                "status": "skipped",
-                "reason": "synthesis_not_yet_implemented",
+                "candidates": [g["concept"] for g in gaps[:10]],
+                "status": "detected" if gaps else "clean",
             }
         except Exception as e:
             _LOG.error(f"Error generating synthesis pages: {e}")

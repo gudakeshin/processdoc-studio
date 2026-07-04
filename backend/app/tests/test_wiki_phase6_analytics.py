@@ -285,16 +285,23 @@ class TestKnowledgeGapDetector:
         assert coverage["coverage_percentage"] <= 100
 
     def test_orphaned_concepts(self):
-        """Get orphaned concepts (placeholder)."""
+        """Pages nothing else references are flagged as orphaned; linked ones are not."""
         detector = KnowledgeGapDetector()
         pages = [
-            {"id": "p1", "title": "Page", "content": "Some content"},
+            # "Database Design" is referenced by p2's content -> not orphaned.
+            {"id": "p1", "title": "Database Design", "content": "Schema notes"},
+            {"id": "p2", "title": "API Layer", "content": "Calls into Database Design"},
+            # "Glossary" is referenced by nobody -> orphaned.
+            {"id": "p3", "title": "Glossary", "content": "Standalone definitions"},
         ]
 
         detector.index_pages(pages)
         orphaned = detector.detect_orphaned_concepts()
+        titles = {o["title"] for o in orphaned}
 
         assert isinstance(orphaned, list)
+        assert "Glossary" in titles
+        assert "Database Design" not in titles
 
     def test_gap_detector_clears_on_reindex(self):
         """Gap detector clears old data on reindex."""

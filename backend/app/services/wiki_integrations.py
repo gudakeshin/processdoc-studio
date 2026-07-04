@@ -334,14 +334,28 @@ class WikiCoordinatorIntegration:
             Context dict with relevant pages and learnings
         """
         try:
-            # This will be called by wiki_query_with_retry() in real implementation
-            # For now, return stub context
+            from app.services.wiki_operations import wiki_query_with_retry
+
+            result, error = wiki_query_with_retry(question, wiki_type, project_id)
+            if error or not result:
+                # No relevant pages / empty wiki is an expected outcome, not a failure.
+                return {
+                    "question": question,
+                    "relevant_pages": [],
+                    "past_learnings": [],
+                    "recommendations": [],
+                    "confidence": "low",
+                    "note": error,
+                }
+
+            citations = result.get("citations") or []
             context = {
                 "question": question,
-                "relevant_pages": [],
-                "past_learnings": [],
-                "recommendations": [],
-                "confidence": "low",  # No real query yet
+                "answer": result.get("answer", ""),
+                "relevant_pages": result.get("source_pages") or [],
+                "past_learnings": citations,
+                "recommendations": citations,
+                "confidence": "high" if result.get("source_pages") else "low",
             }
 
             logger.debug(f"Queried wiki for context: {question}")
@@ -403,13 +417,17 @@ class WikiLeadingPracticesIntegration:
             List of relevant LP pages
         """
         try:
-            # This will query the LP wiki
-            # For now, return stub
+            from app.services.wiki_operations import wiki_query_with_retry
+
+            result, error = wiki_query_with_retry(topic, wiki_type="leading_practice")
+            pages = (result or {}).get("source_pages") or []
             practices = {
                 "topic": topic,
                 "category": category,
-                "pages": [],
-                "count": 0,
+                "answer": (result or {}).get("answer", ""),
+                "pages": pages,
+                "count": len(pages),
+                "note": error,
             }
 
             logger.debug(f"Retrieved leading practices for {topic}")
