@@ -1,0 +1,96 @@
+NORTHWIND MANUFACTURING — P2P DISCOVERY WORKSHOP NOTES
+Date: 2026-02-12 | Location: Chicago HQ, Boardroom B
+Facilitator: Alex Rivera (Transformation Lead)
+Attendees: Maria Chen (Controller), James Okonkwo (Procurement Director), Priya Sharma (AP Manager), Tom Bradley (IT ERP Lead), Lisa Nguyen (Warehouse Ops), External advisors (2)
+
+================================================================================
+DAY 1 — CURRENT STATE WALKTHROUGH
+================================================================================
+
+OPENING CONTEXT (Maria Chen)
+- Board approved $4.2M transformation budget for finance operations over 18 months.
+- Primary driver: reduce close time from T+8 to T+5 while improving SOX readiness.
+- P2P selected as wave 1 because it touches 60% of monthly transaction volume.
+
+PROCUREMENT (James Okonkwo)
+- "We have three different buying experiences. Coupa works for MRO catalog in the US, but EU still emails PDFs to buyers."
+- Average 47 active buyers across regions; only 12 are certified on SAP ME21N.
+- Vendor master changes require IT ticket — average 9 days turnaround.
+- Wants: unified catalog, delegated authority matrix by category, supplier portal for ASN.
+
+ACCOUNTS PAYABLE (Priya Sharma)
+- Bangalore team handles data entry; Chicago team handles exceptions and accruals.
+- Kofax OCR accuracy ~87% on first pass; line-item tables fail frequently on freight invoices.
+- Biggest exception drivers: (1) price variance, (2) quantity mismatch, (3) missing GR, (4) wrong tax code.
+- Peak volume: days 3–7 after month-end — overtime required.
+- Quote: "We spend more time chasing requesters for receipts than actually matching."
+
+WAREHOUSE (Lisa Nguyen)
+- GR posting delayed 2–3 days for rush production materials — causes invoice blocks.
+- Barcode scanning deployed at 2 of 5 US plants; others use paper tally sheets.
+- Summit Plastics (NetSuite) has no WM module — manual spreadsheet handoff to AP.
+
+IT (Tom Bradley)
+- S/4 migration phase 2 planned Q3 2026 for EU; Summit integration TBD.
+- API available for Coupa-SAP but not enabled for receipt status feedback.
+- Concerned about change saturation — "We cannot run three cutovers in parallel."
+
+================================================================================
+PAIN POINT VOTING (dot exercise — top themes)
+================================================================================
+
+1. Manual three-way match exceptions .............. 18 votes
+2. Fragmented systems / duplicate master data ..... 15 votes
+3. Slow vendor onboarding ......................... 12 votes
+4. Weak receipt discipline ........................ 11 votes
+5. Inconsistent global policy ..................... 9 votes
+6. Limited analytics / no single dashboard ........ 8 votes
+
+================================================================================
+DAY 2 — TARGET STATE BRAINSTORM
+================================================================================
+
+QUICK WINS (0–90 days)
+- Publish global P2P RACI and escalation matrix
+- Enable Coupa receipt confirmation notifications to requesters
+- Standardize exception reason codes in SAP (currently 34 ad-hoc codes)
+- Pilot e-invoicing with top 20 vendors (68% of invoice volume)
+
+STRUCTURAL (90–365 days)
+- MDG workflow for vendor create/change with automated duplicate detection
+- Deploy GR mobile app at remaining US plants
+- Implement AI-assisted match for price tolerance within 2% on catalog items
+- Consolidate AP processing into single regional hub model
+
+GOVERNANCE
+- Weekly exception triage with Procurement + AP (new ritual)
+- Monthly P2P KPI review with Controller — match rate, DPO, GR/IR aging
+- SOX: remediate SOD conflicts before S/4 EU go-live
+
+OPEN QUESTIONS
+- Should Summit remain on NetSuite or migrate in wave 2?
+- Who owns vendor master — Procurement or Finance?
+- Target DPO policy: maintain at 45 days or optimize to 38?
+
+================================================================================
+SAMPLE METRICS BASELINE (provided by Priya — January 2026)
+================================================================================
+
+Straight-through match rate:        78%
+Avg days invoice receipt to payment: 14.2 (US), 23.1 (EU)
+Vendor onboarding cycle time:       18 business days
+PO compliance (spend with PO):      84%
+GR/IR balance > 30 days:            $2.1M
+AP FTE (total global):              34.5
+Cost per invoice (fully loaded):    $4.85
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+- Alex to draft current-state process map and SOP outline by 2026-02-26
+- James to supply top-50 vendor list and category spend cube
+- Priya to export 90-day exception log for root-cause analysis
+- Tom to confirm S/4 timeline and integration constraints document
+
+END OF NOTES

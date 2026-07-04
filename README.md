@@ -297,6 +297,8 @@ For multi-user production, prefer Postgres over SQLite. Full deployment notes (p
 
 ### Redis (local)
 
+`make redis.up` starts the `redis` docker-compose service and waits until it's ready (`make redis.down` to stop it). Then:
+
 ```bash
 export REDIS_URL="redis://localhost:6379/0"
 # Optional: distributed run-queue mode

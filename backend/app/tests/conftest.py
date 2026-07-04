@@ -10,6 +10,23 @@ os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-chars-long-ok!")
 os.environ["REDIS_URL"] = "redis://127.0.0.1:1/0"
 
 
+@pytest.fixture
+def fake_redis(monkeypatch: pytest.MonkeyPatch):
+    """Opt-in fixture (mark a test with @pytest.mark.redis) that makes every
+    `redis.Redis.from_url(...)` call in the codebase return a shared fakeredis
+    instance instead of hitting the blocked REDIS_URL set above, so Redis-backed
+    branches (cache, run queue, excel locks) get real coverage instead of only
+    exercising their in-memory/in-process fallback paths.
+    """
+    fakeredis = pytest.importorskip("fakeredis")
+    import redis
+
+    client = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(redis.Redis, "from_url", classmethod(lambda cls, *a, **k: client))
+    yield client
+    client.flushall()
+
+
 @pytest.fixture(autouse=True)
 def _disable_slowapi_rate_limits_for_tests() -> None:
     """Many tests log in; SlowAPI's default /login cap causes flaky 429s in full suite."""

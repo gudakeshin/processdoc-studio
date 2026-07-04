@@ -1,0 +1,11 @@
+entity,system,primary_function,users_approx,annual_transactions,integration_status,criticality,owner
+NWM-US,SAP S/4HANA,ERP finance and procurement,1200,185000,Core platform,Critical,Tom Bradley
+NWM-EU,SAP ECC 6.0,Legacy ERP EU operations,680,92000,Decommission planned Q4 2026,Critical,Tom Bradley
+SUMMIT,NetSuite,Acquired division ERP,210,34000,Standalone High,Critical,Tom Bradley
+GLOBAL,Coupa,Catalog and spot procurement,450,28000,Partial SAP integration,High,James Okonkwo
+GLOBAL,Kofax,Invoice OCR and workflow,35,148000,US AP hub only,High,Priya Sharma
+GLOBAL,SharePoint,Vendor onboarding tracker,85,4200,Manual,Medium,James Okonkwo
+GLOBAL,BlackLine,Account reconciliations,45,1200,Integrated SAP,High,Maria Chen
+GLOBAL,Bank of America Portal,Wire and ACH payments,8,5200,Semi-automated,High,Treasury
+US-PLANT,Barcode WM,Goods receipt scanning,34,48000,2 of 5 plants,Medium,Lisa Nguyen
+GLOBAL,Power BI,Operational reporting,60,Ad hoc,Fragmented data sources,Medium,Finance COE
