@@ -40,7 +40,8 @@ jobs:
           pip install pip-audit
       - name: pip-audit (dependency vulnerabilities)
         # pygments CVE-2026-4539: ReDoS in optional lexer; local-access only; no fixed release in DB yet.
-        run: pip-audit --desc on --ignore-vuln CVE-2026-4539
+        # ecdsa PYSEC-2026-1325: transitive via python-jose; project considers side channels out of scope; no fix.
+        run: pip-audit --desc on --ignore-vuln CVE-2026-4539 --ignore-vuln PYSEC-2026-1325
       - name: Ruff silent-handler gate (S110/S112)
         # Blocks new try/except blocks that swallow exceptions without logging.
         # Deliberate best-effort swallows must carry an explicit `# noqa: S110`.

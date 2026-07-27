@@ -2312,7 +2312,7 @@ def _grounded_context_excerpt(ctx: AgentContext, char_cap: int) -> str:
     """
     cap = max(0, int(char_cap))
     ac = (ctx.assembled_context or "").strip()
-    ranked = (ctx.retrieval_excerpt or "").strip()
+    ranked = str(ctx.retrieval_excerpt or "").strip()
     if ranked.startswith("## Planner retrieval excerpt"):
         ranked = ranked[len("## Planner retrieval excerpt"):].strip()
     if not ranked:

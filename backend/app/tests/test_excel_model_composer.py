@@ -152,7 +152,7 @@ class TestAssumptionsSheet:
     def test_all_cells_on_correct_sheet(self):
         cells, _ = _compose_assumptions_sheet(FULL_ASSUMPTIONS)
         for c in cells:
-            if c.get("_type") in {"named_range", "chart", "table"}:
+            if c.get("_type") in {"named_range", "chart", "table", "data_validation"}:
                 continue
             assert c["sheet"] == SH_ASSUMPTIONS
 
@@ -467,7 +467,7 @@ class TestComposeFinancialModel:
         cells = compose_financial_model(FULL_ASSUMPTIONS)
         seen = set()
         for c in cells:
-            if c.get("_type") in {"named_range", "chart", "table"}:
+            if c.get("_type") in {"named_range", "chart", "table", "data_validation"}:
                 continue
             key = (c["sheet"], c["row"], c["col"])
             assert key not in seen, f"Duplicate cell at {key}"

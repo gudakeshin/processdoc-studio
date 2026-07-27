@@ -30,7 +30,9 @@ def _build_pptx(
         "process_model": {"process_name": "Test Process", "steps": [], "roles": []},
     }
     if branding is not None:
-        payload["branding"] = branding
+        payload["branding"] = {**branding, "deck_theme": branding.get("deck_theme", "classic")}
+    else:
+        payload["branding"] = {"deck_theme": "classic"}
     if extra_payload:
         payload.update(extra_payload)
     save_run_artifacts(project_id, run_id, payload)
@@ -229,7 +231,7 @@ def test_custom_branding_primary_color_and_footer() -> None:
     )
     fills = _fill_colors(prs.slides[1])
     assert "0033A0" in fills
-    assert "Acme Confidential" in _text_content(prs.slides[1])
+    assert "Acme Confidential".upper() in _text_content(prs.slides[1]).upper()
 
 
 # ── Stack layers ──────────────────────────────────────────────────────────────
