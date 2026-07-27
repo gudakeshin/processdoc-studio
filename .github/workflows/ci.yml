@@ -47,6 +47,11 @@ jobs:
         run: ruff check app --select S110,S112
       - name: Pytest with coverage
         run: pytest app/tests -q --cov=app --cov-report=term-missing
+      - name: Pytest (backend/tests — golden deck, skill eval, security)
+        # Second suite, previously never run in CI. Holds the PPTX golden-deck
+        # harness, the skill-eval PPTX/XLSX suite, and tests/security/.
+        # soffice- and LLM-dependent tiers skip automatically.
+        run: pytest tests -q
       - name: Skill script smoke suite
         run: pytest app/tests/test_skill_scripts_smoke.py -q
       - name: Epic 2 + 3 smoke (deck exporter, web capture, handoff, parity, quality, narrative)

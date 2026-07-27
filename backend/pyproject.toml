@@ -32,6 +32,7 @@ dependencies = [
   "cairosvg",
   "pypdfium2",
   "pypdf",
+  "xlrd>=2.0,<3",
   "pyyaml",
   "langfuse",
   "slowapi",

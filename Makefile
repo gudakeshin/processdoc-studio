@@ -4,9 +4,9 @@
 lint:
 	cd backend && ruff check app --select S110,S112
 
-# Full backend test suite (mirrors CI's "Pytest with coverage" step).
+# Full backend test suite — both suites, mirroring CI's two pytest steps.
 test:
-	cd backend && pytest app/tests -q
+	cd backend && pytest app/tests -q && pytest tests -q
 
 # Backend coverage report (term-missing) — same invocation as CI.
 coverage:

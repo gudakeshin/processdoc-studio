@@ -2584,7 +2584,7 @@ def _critique_slides(
             for nh in build_narrative_feedback_hints(signals, "pptx"):
                 if isinstance(nh, dict) and nh.get("instruction"):
                     hints.append(dict(nh))
-    except Exception:  # noqa: BLE001 — narrative signals are optional
+    except Exception:  # noqa: BLE001, S110 — narrative signals are optional
         pass
 
     if not hints and review.get("status") in ("warn", "fail"):
@@ -2617,7 +2617,7 @@ def _critique_slides(
                         "instruction": str(h["instruction"]),
                         "source": "llm_critique",
                     })
-        except Exception:  # noqa: BLE001 — LLM critique is optional
+        except Exception:  # noqa: BLE001, S110 — LLM critique is optional
             pass
 
     return hints, review

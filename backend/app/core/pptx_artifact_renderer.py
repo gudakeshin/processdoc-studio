@@ -26,7 +26,7 @@ from app.core.deliverable_utils import apply_pptx_core_properties, fetch_logo_so
 from app.core.icon_library import place_step_icon
 from app.core.tz import IST
 from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
-from app.core.pptx_qa import validate_pptx_against_slides
+from app.core.pptx_qa import MAX_RENDERED_SLIDES, validate_pptx_against_slides
 from app.core.evidence_validator import validate_pptx_slides_evidence
 
 logger = logging.getLogger(__name__)
@@ -1348,7 +1348,7 @@ def render_pptx_with_artifact_tool(
         # Compose slides
         client_name = _resolve_client_name(payload)
         total_slides = len(pptx_slides)
-        for idx, slide_dict in enumerate(pptx_slides[:20]):  # max 20 slides
+        for idx, slide_dict in enumerate(pptx_slides[:MAX_RENDERED_SLIDES]):
             if not isinstance(slide_dict, dict):
                 errors.append(f"Slide {idx + 1}: Invalid slide data structure")
                 continue

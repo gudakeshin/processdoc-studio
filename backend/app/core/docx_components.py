@@ -501,8 +501,8 @@ def embed_figure(
                     bookmark_id=f"fig_{number}",
                 )
                 return para
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 — numbered-caption formatting is best-effort
+            logger.warning("figure_caption (v2) skipped, using legacy caption: %s", exc)
         cap = doc.add_paragraph()
         cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
         prefix = f"Figure {number}. " if number is not None else ""

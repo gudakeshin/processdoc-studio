@@ -101,19 +101,27 @@ def _gantt_from_phases(pm: dict) -> dict | None:
 
 
 def _harvey_from_maturity(pm: dict) -> dict | None:
-    rows: list[dict[str, Any]] = []
-    for r in (pm.get("roles") or [])[:6]:
-        name = str(r if not isinstance(r, dict) else r.get("name") or r).strip()
-        if name:
-            rows.append({"label": name, "scores": [2, 2, 1, 1]})
+    """Harvey-ball rows from *measured* maturity scores only.
+
+    Roles carry no maturity signal in the process model, so they are not
+    emitted — assigning them a score would fabricate the very assessment the
+    figure claims to present. Dimensions without a numeric score are skipped
+    for the same reason.
+    """
     maturity = pm.get("maturity") if isinstance(pm.get("maturity"), dict) else {}
-    for dim, score in list(maturity.items())[:4]:
-        if isinstance(dim, str):
-            val = int(score) if isinstance(score, (int, float)) else 2
-            rows.append({"label": dim.replace("_", " ").title(), "scores": [val] * 4})
+    rows: list[dict[str, Any]] = []
+    for dim, score in list(maturity.items())[:6]:
+        if not isinstance(dim, str) or isinstance(score, bool):
+            continue
+        if not isinstance(score, (int, float)):
+            continue
+        rows.append({
+            "label": dim.replace("_", " ").title(),
+            "scores": [max(0, min(4, int(score)))],
+        })
     if len(rows) < 2:
         return None
-    return {"type": "harvey_balls", "rows": rows[:6]}
+    return {"type": "harvey_balls", "rows": rows}
 
 
 def derive_figures_from_process_model(pm: dict | None, *, max_figures: int = 3) -> list[dict[str, Any]]:
@@ -150,7 +158,7 @@ def derive_figures_from_process_model(pm: dict | None, *, max_figures: int = 3) 
             hb = _harvey_from_maturity(pm)
             if hb:
                 out.append({"type": "figure", "figure": hb, "caption": "Capability maturity by dimension."})
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — v2 figure vocab is additive/optional
         pass
     return out[:max_figures]
 

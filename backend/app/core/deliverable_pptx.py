@@ -15,6 +15,7 @@ from pptx.util import Inches, Pt
 
 from app.core.deliverable import DeliverableMetadata, IDeliverable
 from app.core.deliverable_utils import apply_pptx_core_properties, fetch_logo_source
+from app.core.pptx_qa import MAX_RENDERED_SLIDES
 from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
 from app.services.deliverable_quality import _validate_pptx_completeness
 
@@ -273,8 +274,8 @@ class PPTXDeliverable(IDeliverable):
 
             self._apply_core_properties(prs, payload, slides)
 
-            total = min(len(slides), 20)
-            for page_num, item in enumerate(slides[:20], start=1):
+            total = min(len(slides), MAX_RENDERED_SLIDES)
+            for page_num, item in enumerate(slides[:MAX_RENDERED_SLIDES], start=1):
                 if not isinstance(item, dict):
                     continue
 

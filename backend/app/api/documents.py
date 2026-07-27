@@ -79,10 +79,12 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
             return text, "zip_xml"
         except TimeoutError:
             logger.warning("docx/pptx text extraction timed out for %s", filename)
-            return content.decode("utf-8", errors="ignore"), "zip_timeout_fallback"
+            return f"[Office extraction timeout for {filename}]", "zip_timeout_fallback"
         except Exception:
+            # Decoding the raw zip container here would index compressed bytes
+            # as document text; emit a marker instead.
             logger.warning("docx/pptx text extraction failed for %s", filename, exc_info=True)
-            return content.decode("utf-8", errors="ignore"), "zip_error_fallback"
+            return f"[Unable to extract Office file {filename}]", "zip_error_fallback"
 
     if lower.endswith(".pdf"):
         try:
@@ -150,7 +152,43 @@ async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: i
             logger.warning("XLSX text extraction failed for %s", filename, exc_info=True)
             return f"[Unable to extract XLSX for {filename}]", "xlsx_error_fallback"
 
-    return content.decode("utf-8", errors="ignore"), "binary_fallback"
+    if lower.endswith(".xls"):
+        # Legacy OLE2 binary. Without this branch it fell through to
+        # binary_fallback below, which utf-8-decodes the raw container and
+        # indexes the resulting garbage as if it were document text.
+        try:
+            def _extract_xls():
+                import xlrd  # xlrd>=2.0 reads .xls only
+
+                book = xlrd.open_workbook(file_contents=content)
+                text_parts: list[str] = []
+                for sheet in book.sheets():
+                    rows: list[str] = [f"[Sheet: {sheet.name}]"]
+                    for r in range(sheet.nrows):
+                        cells = [str(c).strip() for c in sheet.row_values(r)]
+                        row_text = " | ".join(c for c in cells if c)
+                        if row_text:
+                            rows.append(row_text)
+                    if len(rows) > 1:
+                        text_parts.append("\n".join(rows))
+                return "\n\n".join(text_parts)
+
+            text = await asyncio.wait_for(
+                asyncio.to_thread(_extract_xls),
+                timeout=timeout_sec
+            )
+            return text, "xlrd"
+        except TimeoutError:
+            logger.warning("XLS text extraction timed out for %s", filename)
+            return f"[XLS extraction timeout for {filename}]", "xls_timeout_fallback"
+        except Exception:
+            logger.warning("XLS text extraction failed for %s", filename, exc_info=True)
+            return f"[Unable to extract XLS for {filename}]", "xls_error_fallback"
+
+    # Never returns decoded binary: unknown types are almost always containers,
+    # and decoding them injects mojibake into the retrieval index.
+    logger.warning("No parser for %s; skipping text extraction", filename)
+    return f"[Unsupported file type for text extraction: {filename}]", "unsupported_format"
 
 
 @router.post("/upload")

@@ -17,19 +17,23 @@ from pptx import Presentation
 
 logger = logging.getLogger(__name__)
 
-# Patterns that indicate unfulfilled placeholders or low-quality content
+# Patterns that indicate unfulfilled placeholders or low-quality content.
+# Bare "[" / "]" are deliberately NOT listed: real decks carry footnote markers
+# ("[1]") and bracketed qualifiers ("EBITDA [adj.]"), so a bare-bracket rule
+# fails almost every genuine deck and drowns the real signals below.
 PLACEHOLDER_PATTERNS = {
     "Content pending",
     "TBC",
-    "[placeholder]",
-    "[todo]",
+    "[placeholder",
+    "[todo",
+    "[tbd",
+    "[insert",
+    "lorem ipsum",
     "Coming soon",
     "To be completed",
     "To be confirmed",
     "{{",
     "}}",
-    "[",  # catches any bracketed placeholder
-    "]",
 }
 
 # Common truncation signatures from previous renders
@@ -43,6 +47,10 @@ TRUNCATION_SIGNATURES = {
     "performan",  # "performance"
 }
 
+
+# Both renderers cap rendering at this many slides
+# (pptx_artifact_renderer.py, deliverable_pptx.py). QA must use the same bound.
+MAX_RENDERED_SLIDES = 20
 
 _SLIDE_W_IN = 13.333
 _SLIDE_H_IN = 7.5
@@ -164,14 +172,8 @@ def _check_for_placeholders(text: str) -> list[str]:
     found = []
     lower = text.lower()
     for pattern in PLACEHOLDER_PATTERNS:
-        pattern_lower = pattern.lower()
-        # Check exact match or substring
-        if len(pattern) > 1:  # For multi-char patterns, do substring match
-            if pattern_lower in lower:
-                found.append(pattern)
-        else:  # For single chars like [ ], check more carefully
-            if pattern in text:  # case-sensitive for brackets
-                found.append(pattern)
+        if pattern.lower() in lower:
+            found.append(pattern)
     return found
 
 
@@ -285,7 +287,9 @@ def validate_pptx_against_slides(
     except Exception:
         slide_count = 0
 
-    expected_count = len(pptx_slides)
+    # Both renderers hard-cap at MAX_RENDERED_SLIDES; comparing against the
+    # un-capped draft length reports a bogus mismatch on every longer deck.
+    expected_count = min(len(pptx_slides), MAX_RENDERED_SLIDES)
     issues: list[str] = []
     missing_text: list[str] = []
     truncations: list[str] = []

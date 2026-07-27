@@ -246,12 +246,21 @@ def validate_slide_evidence(
 
     combined_text = " ".join(text_parts)
 
+    # Two producers write speaker notes under different keys: the content agent
+    # emits `notes` (the key the slide prompt asks for, and the one the renderer
+    # reads), while pptx_layout_planner's notes_overflow writes `speaker_notes`.
+    # Read both, or the "Source: ..." citation the model was told to write is
+    # never seen by the validator.
+    notes = " ".join(
+        str(slide.get(key) or "") for key in ("notes", "speaker_notes")
+    ).strip()
+
     # Extract and validate claims
     claims = extract_numeric_claims(combined_text)
     validation = validate_claims_against_evidence(
         claims,
         process_model,
-        slide.get("speaker_notes", ""),
+        notes,
         slide.get("source_refs", [])
     )
 
