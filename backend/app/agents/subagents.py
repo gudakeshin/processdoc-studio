@@ -43,6 +43,11 @@ from app.services.tool_registry import (
     default_tools_for_output_type,
     tool_names_for_skill,
 )
+from app.agents.docx_critique_repair import (
+    _critique_and_repair_docx,
+    _section_hint_indices,
+    _targeted_section_rewrite,
+)
 from app.agents.pptx_critique_repair import (
     _EVIDENCE_SOFT_BLOCK_DIRECTIVE,
     _claim_text,
@@ -2435,169 +2440,7 @@ def _shared_user_context_appendix(ctx: AgentContext) -> str:
     return wrap_untrusted_bundle("\n\n".join(blocks) + "\n\n---\n\n")
 
 
-# PPTX critique/repair helpers live in app.agents.pptx_critique_repair (re-imported above).
-
-_SECTION_REPAIR_SYSTEM = (
-    "You revise specific sections of a Markdown business document. You receive flagged "
-    "H2 sections plus per-section fix instructions. Return ONLY JSON "
-    "{\"sections\": [{\"index\": <n>, \"markdown\": \"## ...\"}]} with one entry per "
-    "flagged section, each a complete section starting with its `## ` heading. Keep "
-    "content you were not asked to change. No prose outside the JSON."
-)
-
-
-def _section_hint_indices(hints: list[Any], n_sections: int) -> list[int]:
-    """Valid 1-based section indices named by hints, ascending."""
-    idxs: set[int] = set()
-    for h in hints:
-        if not isinstance(h, dict):
-            continue
-        raw = h.get("section_index")
-        try:
-            i = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if 1 <= i <= n_sections:
-            idxs.add(i)
-    return sorted(idxs)
-
-
-def _targeted_section_rewrite(
-    ctx: AgentContext,
-    md: str,
-    hints: list[dict[str, Any]],
-    *,
-    directive: str = "",
-    max_sections: int = 4,
-) -> str:
-    """ONE bounded rewrite of only the hint-flagged H2 sections; input on failure."""
-    from app.services.design_review import split_h2_sections
-
-    sections = split_h2_sections(md)
-    if not sections:
-        return md
-    idxs = _section_hint_indices(hints, len(sections))[:max_sections]
-    if not idxs:
-        return md
-    by_idx: dict[int, list[str]] = {}
-    for h in hints:
-        if isinstance(h, dict) and h.get("instruction"):
-            for i in _section_hint_indices([h], len(sections)):
-                by_idx.setdefault(i, []).append(str(h["instruction"]))
-    payload = [
-        {"index": i, "fix": by_idx.get(i, []), "markdown": sections[i - 1]["body"]}
-        for i in idxs
-    ]
-    user = (
-        (directive + "\n\n" if directive else "")
-        + "FLAGGED SECTIONS:\n"
-        + json.dumps(payload, ensure_ascii=False)
-    )
-    try:
-        obj = claude_generate_json(
-            system=_SECTION_REPAIR_SYSTEM, user=user, temperature=0.2, max_tokens=3000
-        )
-    except Exception as exc:  # noqa: BLE001 — repair is best-effort
-        _LOG.warning("targeted section rewrite skipped: %s", exc)
-        return md
-    reps = obj.get("sections") if isinstance(obj, dict) else None
-    if not isinstance(reps, list):
-        return md
-    rep_map: dict[int, str] = {}
-    for r in reps:
-        if not isinstance(r, dict):
-            continue
-        try:
-            i = int(r.get("index"))
-        except (TypeError, ValueError):
-            continue
-        body = str(r.get("markdown") or "").strip()
-        if i in set(idxs) and body.startswith("## "):
-            rep_map[i] = body + "\n\n"
-    if not rep_map:
-        return md
-    # Sections are contiguous from the first H2 to the end of the document.
-    preamble = md[: len(md) - sum(len(s["body"]) for s in sections)]
-    return preamble + "".join(rep_map.get(s["index"], s["body"]) for s in sections)
-
-
-def _critique_and_repair_docx(
-    ctx: AgentContext, md: str, pm: dict[str, Any], deliverable: str
-) -> str:
-    """DOCX twin of ``_critique_and_repair_pptx``; always returns renderable markdown."""
-    if not isinstance(md, str) or not md.strip():
-        return md
-    pm_dict = pm if isinstance(pm, dict) else None
-    # Arc coherence only applies to argument-led documents (matches spine injection).
-    contract = _load_run_storyline(ctx) if deliverable in ("narrative", "proposal", "brd") else None
-
-    if getattr(settings, "deliverable_critique_loop_enabled", True):
-        try:
-            from app.services.design_review import review_document
-
-            review = review_document(md, pm_dict, contract)
-            hints = [h for h in (review.get("remediation_hints") or []) if isinstance(h, dict)]
-            targetable = [h for h in hints if h.get("section_index")]
-            if targetable:
-                md = _targeted_section_rewrite(
-                    ctx, md, targetable,
-                    directive=(
-                        "Revise each flagged section per its fix instructions. Keep the "
-                        "section's structure and evidence; open with a topic sentence "
-                        "that states the section's argument."
-                    ),
-                )
-                after = review_document(md, pm_dict, contract)
-                if ctx.emit_event:
-                    ctx.emit_event("critique_loop", {
-                        "output_type": "docx",
-                        "status_before": review.get("status"),
-                        "status_after": after.get("status"),
-                        "hints_before": len(hints),
-                        "hints_after": len(after.get("remediation_hints") or []),
-                    })
-        except Exception as exc:  # noqa: BLE001 — critique is advisory
-            _LOG.warning("docx critique loop skipped: %s", exc)
-
-    if getattr(settings, "evidence_soft_block_enabled", True):
-        try:
-            from app.core.evidence_validator import validate_text_evidence
-            from app.services.design_review import split_h2_sections
-
-            sections = split_h2_sections(md)
-            ev_hints = []
-            claims_before = 0
-            all_unsupported: list[dict[str, Any]] = []
-            for s in sections:
-                validation = validate_text_evidence(s["body"], pm_dict).get("validation") or {}
-                unsupported = validation.get("unsupported_claims") or []
-                if not unsupported:
-                    continue
-                claims_before += len(unsupported)
-                all_unsupported.extend(unsupported)
-                claims = ", ".join(_claim_text(c) for c in unsupported[:4] if _claim_text(c))
-                ev_hints.append({
-                    "section_index": s["index"],
-                    "instruction": f"Unsupported figure(s) in this section: [{claims}].",
-                    "source": "evidence",
-                })
-            if ev_hints:
-                md = _targeted_section_rewrite(
-                    ctx, md, ev_hints,
-                    directive=_evidence_remediation_directive(all_unsupported, pm_dict),
-                )
-                after_validation = validate_text_evidence(md, pm_dict).get("validation") or {}
-                if ctx.emit_event:
-                    ctx.emit_event("evidence_soft_block", {
-                        "output_type": "docx",
-                        "soft_block_applied": True,
-                        "claims_before": claims_before,
-                        "claims_after": len(after_validation.get("unsupported_claims") or []),
-                    })
-        except Exception as exc:  # noqa: BLE001 — soft-block never blocks render
-            _LOG.warning("docx evidence soft-block skipped: %s", exc)
-
-    return md
+# PPTX/DOCX critique/repair helpers live in dedicated modules (re-imported above).
 
 
 def _pptx_deterministic_slides(

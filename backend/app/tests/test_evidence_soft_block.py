@@ -145,7 +145,7 @@ def test_docx_soft_block_preserves_sections_on_rewrite_failure(monkeypatch: pyte
     monkeypatch.setattr(settings, "evidence_soft_block_enabled", True)
 
     md = "# Brief\n\n## Value\n\nWe project $750M in savings.\n"
-    with patch("app.agents.subagents._targeted_section_rewrite", side_effect=RuntimeError("llm down")):
+    with patch("app.agents.docx_critique_repair.targeted_section_rewrite", side_effect=RuntimeError("llm down")):
         out = _critique_and_repair_docx(_ctx(output_type="docx"), md, None, "narrative")
     assert out == md
 
@@ -163,7 +163,7 @@ def test_docx_soft_block_emits_telemetry(monkeypatch: pytest.MonkeyPatch) -> Non
         events.append((name, payload))
 
     revised = md.replace("$750M", "material savings (directional estimate)")
-    with patch("app.agents.subagents._targeted_section_rewrite", return_value=revised):
+    with patch("app.agents.docx_critique_repair.targeted_section_rewrite", return_value=revised):
         out = _critique_and_repair_docx(
             _ctx(output_type="docx", emit_event=emit), md, None, "narrative"
         )

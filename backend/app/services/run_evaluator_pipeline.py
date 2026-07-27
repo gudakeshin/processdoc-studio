@@ -146,6 +146,47 @@ def build_evaluator_pipeline(
     }
 
 
+def guardrail_regeneration_directive(guardrail_report: dict[str, Any]) -> str:
+    failed_gate = str((guardrail_report or {}).get("failed_gate") or "").strip()
+    events = (guardrail_report or {}).get("guardrail_events") or []
+    reason = ""
+    if isinstance(events, list):
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if str(ev.get("gate") or "").strip() != failed_gate:
+                continue
+            reason = str(ev.get("reason") or "").strip()
+            break
+    base = (
+        "Guardrail remediation required before final review. "
+        "Revise outputs to satisfy compliance gates and remove unsupported claims."
+    )
+    if failed_gate == "gate_1_source_grounding":
+        return (
+            f"{base} Gate failed: source grounding. "
+            "For each factual or quantitative claim, add explicit provenance in-line "
+            "(for example: '(source: client-provided data)', '(source: benchmark assumptions)', "
+            "or '(source: internal estimate; illustrative)'). Add a short 'Sources and assumptions' "
+            "section summarizing key evidence used. Do not leave benchmark or percentage claims uncited."
+        )
+    if failed_gate == "gate_2_hallucination_check":
+        return (
+            f"{base} Gate failed: hallucination check. "
+            "Remove or qualify unsupported claims, and mark unknowns as [TBC] rather than inventing values."
+        )
+    if failed_gate == "gate_4_reference_validation":
+        return (
+            f"{base} Gate failed: reference validation. "
+            "Use a consistent source format for claims (for example '(source: ...)') and ensure references "
+            "are directly tied to the statement they support."
+        )
+    if reason:
+        return f"{base} Failed gate: {failed_gate}. Reason: {reason}"
+    return f"{base} Failed gate: {failed_gate or 'unknown'}."
+
+
 # Backward-compatible aliases for callers that import private names from run_worker.
 _pptx_evidence_gate_from_run_dir = pptx_evidence_gate_from_run_dir
 _build_evaluator_pipeline = build_evaluator_pipeline
+_guardrail_regeneration_directive = guardrail_regeneration_directive

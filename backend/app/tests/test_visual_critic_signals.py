@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from app.core.config import settings
-from app.services.run_worker import _persist_pptx_visual_critic_signals
+from app.services.run_visual_qa_augment import _persist_pptx_visual_critic_signals
 from app.services.visual_qa import _evaluate_pptx
 
 

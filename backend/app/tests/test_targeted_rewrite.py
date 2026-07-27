@@ -133,7 +133,7 @@ def test_targeted_section_rewrite_reassembles_only_flagged() -> None:
     md = "# Doc\n\n## Alpha\n\nOne.\n\n## Beta\n\nTwo.\n\n## Gamma\n\nThree.\n"
     hints = [{"section_index": 2, "instruction": "Tighten argument", "source": "placeholder"}]
     with patch(
-        "app.agents.subagents.claude_generate_json",
+        "app.agents.docx_critique_repair.claude_generate_json",
         return_value={"sections": [{"index": 2, "markdown": "## Beta\n\nRevised two.\n"}]},
     ):
         out = _targeted_section_rewrite(_ctx(output_type="docx"), md, hints)

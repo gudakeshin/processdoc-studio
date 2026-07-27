@@ -40,6 +40,19 @@ def test_otel_start_span_noop_when_disabled() -> None:
     assert tracer is not None
 
 
+def test_module_split_exports_docx_and_visual_qa(tmp_path) -> None:
+    from pathlib import Path
+
+    from app.agents.docx_critique_repair import critique_and_repair_docx, targeted_section_rewrite
+    from app.services.run_evaluator_pipeline import guardrail_regeneration_directive
+    from app.services.run_visual_qa_augment import augment_visual_qa_with_render_hints
+
+    assert callable(critique_and_repair_docx)
+    assert callable(targeted_section_rewrite)
+    assert guardrail_regeneration_directive({}).startswith("Guardrail remediation")
+    assert augment_visual_qa_with_render_hints({}, Path(tmp_path)) == {}
+
+
 def test_critique_and_repair_pptx_empty_passthrough() -> None:
     from app.agents.agent_types import AgentContext
 

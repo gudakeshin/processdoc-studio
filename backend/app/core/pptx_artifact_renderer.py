@@ -1296,15 +1296,25 @@ def render_pptx_with_artifact_tool(
     run_dir: Path,
     branding: Any | None = None
 ) -> dict[str, Any]:
-    """Render PPTX using artifact-tool-style composition-based layouts.
+    """Render PPTX using artifact-tool-style composition-based layouts."""
+    from app.services.otel_tracing import start_span
 
-    Returns: {
-        "status": "success" | "failed",
-        "output_path": Path to output.pptx,
-        "qa_report": QA validation results,
-        "errors": list of error messages,
-    }
-    """
+    with start_span(
+        "pptx.render",
+        attributes={
+            "run_dir": str(run_dir),
+            "slide_count": len(payload.get("pptx_slides") or []) if isinstance(payload, dict) else 0,
+        },
+    ):
+        return _render_pptx_with_artifact_tool_impl(payload, run_dir, branding)
+
+
+def _render_pptx_with_artifact_tool_impl(
+    payload: dict[str, Any],
+    run_dir: Path,
+    branding: Any | None = None
+) -> dict[str, Any]:
+    """Inner implementation for ``render_pptx_with_artifact_tool`` (OTel span wraps the public API)."""
     output_path = run_dir / "output.pptx"
     errors: list[str] = []
 

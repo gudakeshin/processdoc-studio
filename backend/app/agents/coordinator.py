@@ -38,6 +38,7 @@ from app.services.dpdp import DPDPService
 from app.services.guardrails import GuardrailPipeline
 from app.services.hooks import run_hooks_sync  # noqa: F401 — used via _coordinator_module in coordinator_execution.py
 from app.services.observability import increment
+from app.services.otel_tracing import start_span
 from app.services.proposal_policy import derive_proposal_skill_targets
 from app.services.qa import QAAgentLoop
 from app.services.retrieval import TieredContextEngine
@@ -804,7 +805,17 @@ class Coordinator(CoordinatorExecution, CoordinatorPlanning):
                         },
                     )
                     # endregion
-                result = worker(ctx)
+                with start_span(
+                    f"agent.{output_type}",
+                    attributes={
+                        "output_type": output_type,
+                        "project_id": str(ctx.project_id or ""),
+                        "run_id": str(ctx.run_id or ""),
+                        "attempt": attempt + 1,
+                        "max_retries": attempts + 1,
+                    },
+                ):
+                    result = worker(ctx)
                 if isinstance(result, AgentOutput):
                     if defer_state_merge:
                         return (result, None)
