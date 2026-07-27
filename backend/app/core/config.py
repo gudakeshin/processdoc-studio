@@ -177,12 +177,12 @@ class Settings(BaseSettings):
     # (add caveat or drop the number); render always proceeds afterwards.
     evidence_soft_block_enabled: bool = True
     # Phase 2: pre-render layout planner (demote dense cards, split long lists/tables,
-    # move overflow prose to speaker notes). Disabled → current trim-at-render behavior.
-    pptx_layout_planner_enabled: bool = False
+    # move overflow prose to speaker notes).
+    pptx_layout_planner_enabled: bool = True
     # Phase 3: waterfall / gantt / harvey balls / benchmark bar figures.
-    figure_vocab_v2_enabled: bool = False
+    figure_vocab_v2_enabled: bool = True
     # Phase 4: DOCX page header, multilevel heading numbers, cross-refs, pull quotes.
-    docx_formatting_v2_enabled: bool = False
+    docx_formatting_v2_enabled: bool = True
     anthropic_timeout_sec: float = 45.0
     anthropic_circuit_breaker_failures: int = 5
     anthropic_circuit_breaker_reset_sec: int = 60
@@ -417,6 +417,9 @@ class Settings(BaseSettings):
         "pptx_visual_critic_enabled",
         "pptx_artifact_renderer_enabled",
         "pptx_editorial_theme_enabled",
+        "pptx_layout_planner_enabled",
+        "figure_vocab_v2_enabled",
+        "docx_formatting_v2_enabled",
         "pptx_evidence_hard_fail_enabled",
         "deck_pdf_via_soffice_enabled",
         "docx_composer_enabled",

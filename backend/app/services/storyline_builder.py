@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +53,47 @@ STORYLINE_VISUAL_VOCAB: tuple[str, ...] = (
     "harvey_balls",     # maturity / RACI score grid (Phase 3)
     "benchmark_bars",   # actual vs benchmark bars (Phase 3)
 )
+
+# Visuals that can carry a quantitative claim. Numeric required_evidence must
+# map to one of these — bullets/topic layouts are not acceptable for a number.
+NUMERIC_VISUALS: frozenset[str] = frozenset({
+    "chart",
+    "big_number",
+    "stat_cards",
+    "waterfall",
+    "benchmark_bars",
+    "harvey_balls",
+    "table",
+})
+
+_NUMERIC_EVIDENCE_RE = re.compile(
+    r"(?:\d|\$|%|\b(?:kpi|roi|fte|saving|cost|revenue|margin|cycle.?time|headcount)\b)",
+    re.I,
+)
+
+_ASSUMPTION_EVIDENCE_RE = re.compile(r"assumption|to validate|tbd|n/?a", re.I)
+
+
+def evidence_requires_numeric_visual(required_evidence: str) -> bool:
+    """True when required_evidence cites a concrete metric (not a pure assumption)."""
+    ev = (required_evidence or "").strip()
+    if not ev or _ASSUMPTION_EVIDENCE_RE.search(ev):
+        return False
+    return bool(_NUMERIC_EVIDENCE_RE.search(ev))
+
+
+def coerce_numeric_visual(suggested_visual: str, required_evidence: str) -> str:
+    """Force a quantitative layout when evidence is numeric and the visual is weak."""
+    vis = (suggested_visual or "").strip()
+    if not evidence_requires_numeric_visual(required_evidence):
+        return vis if vis in STORYLINE_VISUAL_VOCAB else "column_cards"
+    if vis in NUMERIC_VISUALS:
+        return vis
+    # Prefer chart when the claim looks like a trend/breakdown; else big_number.
+    if re.search(r"%|trend|vs\.?|year|quarter|breakdown", required_evidence or "", re.I):
+        return "chart"
+    return "big_number"
+
 
 # Human-readable inline-field hints for the rich visuals, surfaced in the spine
 # prompt so the drafting model emits the fields each layout needs. Keys are the
@@ -291,6 +333,12 @@ def validate_storyline_contract(contract: Any) -> tuple[bool, list[str]]:
         vis = str(s.get("suggested_visual") or "").strip()
         if vis and vis not in STORYLINE_VISUAL_VOCAB:
             issues.append(f"slide {i} suggested_visual {vis!r} not in vocabulary")
+        ev = str(s.get("required_evidence") or "").strip()
+        if evidence_requires_numeric_visual(ev) and vis and vis not in NUMERIC_VISUALS:
+            issues.append(
+                f"slide {i} has numeric required_evidence but suggested_visual "
+                f"{vis!r} is not a quantitative layout"
+            )
     return (not issues), issues
 
 
@@ -341,7 +389,9 @@ def build_storyline_contract(
         "4. required_evidence must reference a metric/fact present in the process summary or "
         "enrichment data; if none exists, write 'assumption — to validate'. Never invent numbers.\n"
         "5. suggested_visual MUST be one of: " + ", ".join(STORYLINE_VISUAL_VOCAB) + ". Favour "
-        "diagrams/data over bullets; use 'bullets' at most once.\n\n"
+        "diagrams/data over bullets; use 'bullets' at most once. When required_evidence is a "
+        "numeric claim ($, %, KPI, FTE, cycle time), suggested_visual MUST be one of: "
+        + ", ".join(sorted(NUMERIC_VISUALS)) + ".\n\n"
         "Return ONLY JSON: {\"governing_thought\": \"...\", \"slides\": [{\"slide_number\": 1, "
         "\"action_title\": \"...\", \"role_in_arc\": \"...\", \"key_message\": \"...\", "
         "\"required_evidence\": \"...\", \"suggested_visual\": \"...\"}, ...]}"
@@ -378,15 +428,15 @@ def build_storyline_contract(
         if not isinstance(s, dict):
             continue
         vis = str(s.get("suggested_visual") or "").strip()
-        if vis not in STORYLINE_VISUAL_VOCAB:
-            vis = "column_cards"
+        ev = str(s.get("required_evidence") or "").strip()
+        vis = coerce_numeric_visual(vis, ev)
         slides.append(
             {
                 "slide_number": int(s.get("slide_number") or (i + 1)),
                 "action_title": str(s.get("action_title") or "").strip(),
                 "role_in_arc": str(s.get("role_in_arc") or "").strip(),
                 "key_message": str(s.get("key_message") or "").strip(),
-                "required_evidence": str(s.get("required_evidence") or "").strip(),
+                "required_evidence": ev,
                 "suggested_visual": vis,
             }
         )

@@ -181,7 +181,8 @@ def _all_strings(obj: Any) -> list[str]:
 # and leaked into the process narrative. ``humanize_wiki_links`` should strip these
 # before render; this gate flags any that slip through.
 _MARKUP_LEAK_RE = re.compile(
-    r"\[\[|\]\]|\bwiki://|\blp://|\bindex\.md\b|\blog\.md\b|\bpage_id\b|\bproject_id\b",
+    r"\[\[|\]\]|\bwiki://|\blp://|\bindex\.md\b|\blog\.md\b|\bpage_id\b|\bproject_id\b"
+    r"|\bguidebook_[a-z0-9_]+\b",
     re.I,
 )
 

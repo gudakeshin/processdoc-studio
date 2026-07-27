@@ -28,6 +28,7 @@ from app.core import pptx_components as C
 from app.core import pptx_text_metrics as tm
 from app.core.deliverable_utils import fetch_logo_source
 from app.core.pptx_components import Rect, add_rect, rgb, textbox
+from app.core.pptx_layouts import add_slide_with_layout, set_slide_notes
 from app.core.pptx_theme import DeckTheme
 
 logger = logging.getLogger(__name__)
@@ -84,16 +85,24 @@ class EditorialSlideComposer:
     def _accent_for(self, token: str | None) -> str:
         return self.theme.color(_FILL_TO_ACCENT.get((token or "").lower().strip(), "primary"))
 
-    def _blank(self) -> Any:
-        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
+    def _blank(self, slide_type: str = "bullets", title: str = "") -> Any:
+        slide = add_slide_with_layout(self.prs, slide_type, title=title)
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = rgb(self.theme.color("inverse"))
         return slide
 
+    def _notes_text(self, slide_dict: dict[str, Any]) -> str:
+        return " ".join(
+            str(slide_dict.get(k) or "").strip()
+            for k in ("notes", "speaker_notes")
+            if str(slide_dict.get(k) or "").strip()
+        ).strip()
+
     # --- cover ---------------------------------------------------------------
 
     def compose_title_slide(self, slide_dict: dict[str, Any]) -> None:
-        slide = self._blank()
+        title = self._trim_to_budget(str(slide_dict.get("title", "Title")), 120, "title", 1, "title")
+        slide = self._blank("title", title=title)
         t = self.theme
         m_h = t.spacing["margin_h"]
         # Concentric motif anchored on the right.
@@ -102,7 +111,6 @@ class EditorialSlideComposer:
         # Eyebrow (company / context), large two-tone title, kicker.
         eyebrow = str(slide_dict.get("eyebrow") or slide_dict.get("company_context") or self.deck_label)
         C.micro_label(slide, t, m_h, 0.7, SLIDE_W * 0.6, eyebrow, color=t.color("primary"))
-        title = str(slide_dict.get("title", "Title"))
         emphasis = slide_dict.get("emphasis")
         fit = tm.fit_text(title, box_w_in=SLIDE_W * 0.62, box_h_in=2.6, family=t.font_header,
                           max_pt=t.type_scale["display"], min_pt=30, bold=True, max_lines=3)
@@ -112,7 +120,7 @@ class EditorialSlideComposer:
         for seg, is_emph in C._split_emphasis(title, emphasis):
             C.add_run(title_p, seg, font=t.font_header, size=fit.pt, bold=True,
                       color=t.color("primary") if is_emph else t.color("ink"))
-        subtitle = str(slide_dict.get("subtitle") or "")
+        subtitle = self._trim_to_budget(str(slide_dict.get("subtitle") or ""), 180, "subtitle", 1, "title")
         if subtitle:
             sf = tm.fit_text(subtitle, box_w_in=SLIDE_W * 0.55, box_h_in=1.2, family=t.font_header,
                              max_pt=t.type_scale["cover_subtitle"], min_pt=12, max_lines=3)
@@ -123,6 +131,7 @@ class EditorialSlideComposer:
         # Metadata band (PREPARED FOR / HORIZON / DATE).
         C.cover_metadata_band(slide, t, self._cover_meta(slide_dict))
         self._add_logo(slide)
+        set_slide_notes(slide, self._notes_text(slide_dict))
 
     def _cover_meta(self, slide_dict: dict[str, Any]) -> list[tuple[str, str]]:
         meta = slide_dict.get("metadata") or slide_dict.get("cover_meta")
@@ -155,10 +164,19 @@ class EditorialSlideComposer:
     def compose_content_slide(
         self, slide_dict: dict[str, Any], slide_type: str, page_num: int, total_pages: int
     ) -> None:
+        title = self._trim_to_budget(
+            str(slide_dict.get("title", "")), 110, "title", page_num, slide_type
+        )
+        subtitle = self._trim_to_budget(
+            str(slide_dict.get("subtitle", "")), 140, "subtitle", page_num, slide_type
+        )
+        # Keep trimmed values on the dict so type handlers see the same text.
+        slide_dict = {**slide_dict, "title": title, "subtitle": subtitle}
+
         if slide_type == "section_divider":
             self._compose_section_divider(slide_dict)
             return
-        slide = self._blank()
+        slide = self._blank(slide_type, title=title)
         C.slide_border_frame(slide, self.theme)
         # Full-bleed dark handlers (big_number on a dark fill) paint a slide-filling
         # panel; draw it *before* the header so the heading lands on top instead of
@@ -168,8 +186,8 @@ class EditorialSlideComposer:
             add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, fill=self.theme.color("panel"))
         content_top = C.header_block(
             slide, self.theme,
-            title=str(slide_dict.get("title", "")),
-            eyebrow=str(slide_dict.get("subtitle", "")),
+            title=title,
+            eyebrow=subtitle,
             section_number=str(slide_dict.get("section_number", "")),
             emphasis=slide_dict.get("emphasis"),
             kicker=str(slide_dict.get("kicker", "")),
@@ -200,11 +218,17 @@ class EditorialSlideComposer:
         with contextlib.suppress(Exception):
             handler(slide, slide_dict, rect)
         C.footer_band(slide, self.theme, self.deck_label, page_num, total_pages)
+        set_slide_notes(slide, self._notes_text(slide_dict))
 
     # --- type composers ------------------------------------------------------
 
     def _compose_bullets(self, slide: Any, slide_dict: dict[str, Any], r: Rect) -> None:
-        bullets = [str(b) for b in slide_dict.get("bullets", []) if str(b).strip()][:6]
+        page_num = int(slide_dict.get("slide_index") or slide_dict.get("page_num") or 0)
+        bullets = [
+            self._trim_to_budget(str(b), 220, f"bullet_{i}", page_num, "bullets")
+            for i, b in enumerate(slide_dict.get("bullets", []))
+            if str(b).strip()
+        ][:6]
         if not bullets:
             return
         t = self.theme
@@ -446,7 +470,8 @@ class EditorialSlideComposer:
                 C.add_run(dtf.paragraphs[0], desc, font=t.font_body, size=df.pt, color=t.color("muted"))
 
     def _compose_section_divider(self, slide_dict: dict[str, Any]) -> None:
-        slide = self._blank()
+        title = str(slide_dict.get("title", ""))
+        slide = self._blank("section_divider", title=title)
         t = self.theme
         bg = add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, fill=t.color("panel"))
         C.linear_gradient(bg, t.color("panel"), t.color("primary"))
@@ -456,7 +481,6 @@ class EditorialSlideComposer:
         eyebrow = str(slide_dict.get("subtitle") or slide_dict.get("eyebrow") or "")
         if eyebrow:
             C.micro_label(slide, t, m_h, SLIDE_H * 0.30, SLIDE_W * 0.7, eyebrow, color=t.color("primary"))
-        title = str(slide_dict.get("title", ""))
         emphasis = slide_dict.get("emphasis")
         fit = tm.fit_text(title, box_w_in=SLIDE_W * 0.7, box_h_in=2.2, family=t.font_header,
                           max_pt=t.type_scale["display"], min_pt=28, bold=True, max_lines=3)
@@ -465,6 +489,7 @@ class EditorialSlideComposer:
         for seg, is_emph in C._split_emphasis(title, emphasis):
             C.add_run(p, seg, font=t.font_header, size=fit.pt, bold=True,
                       color=t.color("primary") if is_emph else t.color("inverse"))
+        set_slide_notes(slide, self._notes_text(slide_dict))
 
     # --- Phase 3: reference vocabulary slide types ----------------------------
 

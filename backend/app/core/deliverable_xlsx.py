@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime
 from app.core.tz import IST
@@ -140,9 +141,13 @@ def apply_cells_to_workbook(
     by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
     charts_by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
     tables_by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    named_ranges: list[dict[str, Any]] = []
 
     for item in cells:
         if not isinstance(item, dict):
+            continue
+        if item.get("_type") == "named_range":
+            named_ranges.append(item)
             continue
         sheet = str(item.get("sheet") or "Output")
         if item.get("_type") == "chart":
@@ -243,6 +248,24 @@ def apply_cells_to_workbook(
                 _add_chart(ws, cdef, anchor)
             except Exception as exc:
                 logger.warning("Chart add failed (%s): %s", sheet_name, exc)
+
+    # Named ranges after sheets exist so Absolute/relative refs resolve.
+    if named_ranges:
+        from openpyxl.workbook.defined_name import DefinedName
+
+        for nr in named_ranges:
+            name = str(nr.get("name") or "").strip()
+            ref = str(nr.get("ref") or "").strip()
+            if not name or not ref:
+                continue
+            # Excel defined names: alphanumeric + underscore only.
+            safe = re.sub(r"[^A-Za-z0-9_]", "_", name)[:64]
+            if not safe or safe[0].isdigit():
+                safe = f"_{safe}" if safe else "NamedRange"
+            try:
+                wb.defined_names.add(DefinedName(name=safe, attr_text=ref))
+            except Exception as exc:
+                logger.debug("named range skipped (%s): %s", safe, exc)
 
 
 class XLSXDeliverable(IDeliverable):

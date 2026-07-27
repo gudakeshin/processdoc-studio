@@ -28,6 +28,7 @@ from app.core.tz import IST
 from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
 from app.core.pptx_qa import MAX_RENDERED_SLIDES, validate_pptx_against_slides
 from app.core.evidence_validator import load_source_registry, validate_pptx_slides_evidence
+from app.core.pptx_layouts import add_slide_with_layout, set_slide_notes
 
 logger = logging.getLogger(__name__)
 
@@ -376,7 +377,7 @@ class SlideComposer:
 
     def compose_title_slide(self, slide_dict: dict[str, Any]) -> None:
         """Compose a title/cover slide."""
-        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])  # blank layout
+        slide = add_slide_with_layout(self.prs, "title", title=str(slide_dict.get("title") or ""))
         slide.background.fill.solid()
         slide.background.fill.fore_color.rgb = self.colors["neutral_dark"]
 
@@ -484,6 +485,14 @@ class SlideComposer:
         footer_frame.text = self.footer_text
         footer_frame.paragraphs[0].font.size = Pt(10)
         footer_frame.paragraphs[0].font.color.rgb = self.colors["text_inverse"]
+        set_slide_notes(
+            slide,
+            " ".join(
+                str(slide_dict.get(k) or "").strip()
+                for k in ("notes", "speaker_notes")
+                if str(slide_dict.get(k) or "").strip()
+            ).strip(),
+        )
 
     def _add_logo(self, slide: Any) -> None:
         if not self.logo_url:
@@ -504,7 +513,9 @@ class SlideComposer:
         total_pages: int
     ) -> None:
         """Compose a content slide based on type."""
-        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
+        slide = add_slide_with_layout(
+            self.prs, slide_type, title=str(slide_dict.get("title") or "")
+        )
 
         # Background
         slide.background.fill.solid()
@@ -535,6 +546,14 @@ class SlideComposer:
 
         # Footer
         self._add_footer(slide, page_num, total_pages)
+        set_slide_notes(
+            slide,
+            " ".join(
+                str(slide_dict.get(k) or "").strip()
+                for k in ("notes", "speaker_notes")
+                if str(slide_dict.get(k) or "").strip()
+            ).strip(),
+        )
 
     def _add_title_bar(self, slide: Any, title: str, eyebrow: str = "") -> None:
         """Add primary title bar at top of slide, with optional ALL-CAPS eyebrow label above."""
@@ -1299,8 +1318,13 @@ def render_pptx_with_artifact_tool(
             if topic_overrides:
                 branding_dict.update(topic_overrides)
 
-        # Create presentation
-        prs = Presentation()
+        # Create presentation from shipped .potx (real layouts) when available;
+        # fall back to python-pptx default so render never hard-fails on a missing template.
+        template = Path(__file__).resolve().parents[2] / "config" / "templates" / "processdoc_deck.potx"
+        if template.is_file():
+            prs = Presentation(str(template))
+        else:
+            prs = Presentation()
         prs.slide_width = Inches(SLIDE_W)
         prs.slide_height = Inches(SLIDE_H)
 
