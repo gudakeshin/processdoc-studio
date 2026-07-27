@@ -433,7 +433,7 @@ def save_canvas_artifact(
             },
         )
         db.commit()
-    except Exception:
+    except Exception:  # noqa: S110 — event append is best-effort after patch
         pass
 
     return {

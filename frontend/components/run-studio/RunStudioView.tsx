@@ -249,13 +249,16 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
       </section>
         <div className="relative">
           {activityFeedExpanded ? (
-            <div
-              className="absolute -left-1.5 top-0 z-10 hidden h-full w-3 cursor-col-resize xl:block"
-              onMouseDown={handleResizeStart}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize activity feed panel"
-            />
+            <>
+              {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- drag resize handle */}
+              <div
+                className="absolute -left-1.5 top-0 z-10 hidden h-full w-3 cursor-col-resize xl:block"
+                onMouseDown={handleResizeStart}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize activity feed panel"
+              />
+            </>
           ) : null}
           <ActivityFeedRedesigned
             parsedEvents={parsedRunEvents}

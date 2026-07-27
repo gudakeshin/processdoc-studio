@@ -1786,9 +1786,8 @@ def patch_run_slide_element(
         if snap_path.is_file():
             try:
                 payload["compaction_snapshot"] = json.loads(snap_path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception:  # noqa: S110 — optional compaction snapshot
                 pass
-        out = DeliverableRegistry.get("pptx").render(payload, run_dir, branding=branding)
         regenerated = out is not None
     except Exception as exc:
         logger.warning("deterministic slide patch render failed for %s: %s", run_id, exc)
@@ -1807,7 +1806,7 @@ def patch_run_slide_element(
             },
         )
         db.commit()
-    except Exception:
+    except Exception:  # noqa: S110 — event append is best-effort after patch
         pass
 
     return {

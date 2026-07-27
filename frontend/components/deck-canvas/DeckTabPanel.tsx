@@ -98,6 +98,7 @@ export function DeckTabPanel({
   const focused = normalized[focusIdx];
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- deck keyboard nav region
     <div
       className={className}
       tabIndex={0}

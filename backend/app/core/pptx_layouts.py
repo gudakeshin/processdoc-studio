@@ -60,7 +60,7 @@ def add_slide_with_layout(prs: Any, slide_type: str, title: str = "") -> Any:
         try:
             if slide.shapes.title is not None:
                 slide.shapes.title.text = text[:200]
-        except Exception:  # noqa: BLE001 — placeholder may be absent
+        except Exception:  # noqa: BLE001,S110 — placeholder may be absent
             pass
     return slide
 
@@ -81,5 +81,5 @@ def set_slide_notes(slide: Any, text: str) -> None:
             if i > 0:
                 para = tf.add_paragraph()
             para.text = chunk
-    except Exception:  # noqa: BLE001 — notes are best-effort
+    except Exception:  # noqa: BLE001,S110 — notes are best-effort
         pass

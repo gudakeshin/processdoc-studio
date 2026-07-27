@@ -29,10 +29,8 @@ def pptx_evidence_gate_from_run_dir(run_dir: Any) -> dict[str, Any]:
             raw_status = json.loads(status_path.read_text(encoding="utf-8"))
             if isinstance(raw_status, dict):
                 gate["render_status"] = str(raw_status.get("pptx") or "").strip().lower() or None
-    except Exception:
+    except Exception:  # noqa: S110 — render_status.json is optional
         pass
-
-    qa_raw: dict[str, Any] = {}
     try:
         qa_path = run_dir / "pptx_render_quality.json"
         if qa_path.is_file():

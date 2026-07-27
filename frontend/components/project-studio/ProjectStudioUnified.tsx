@@ -448,6 +448,7 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
         </section>
 
         <aside className="relative min-w-0">
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- drag resize handle */}
           <div
             className="absolute -left-3 top-0 z-10 hidden h-full w-3 cursor-col-resize lg:block"
             onMouseDown={handleSidebarResizeStart}
