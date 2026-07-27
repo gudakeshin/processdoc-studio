@@ -80,6 +80,7 @@ def start_span(name: str, *, attributes: dict[str, Any] | None = None) -> Iterat
                     span.set_attribute(k, v)
                 except Exception:  # noqa: S110 — attribute types vary by OTel backend
                     pass
+        yield span
 
 
 class _NoopSpan:
