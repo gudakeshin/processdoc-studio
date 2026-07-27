@@ -1020,6 +1020,19 @@ def _execute_run_job(
     run_id: str,
     queue_payload: dict[str, Any] | None = None,
 ) -> tuple[bool, str | None]:
+    """Entry point for queued run execution; wraps the body in a top-level OTel span."""
+    with start_span(
+        "run.execute",
+        attributes={"project_id": project_id, "run_id": run_id},
+    ):
+        return _execute_run_job_impl(project_id, run_id, queue_payload)
+
+
+def _execute_run_job_impl(
+    project_id: str,
+    run_id: str,
+    queue_payload: dict[str, Any] | None = None,
+) -> tuple[bool, str | None]:
     started_at = perf_counter()
     _run_usage: dict[str, int] = {}
     _run_cost: float | None = None

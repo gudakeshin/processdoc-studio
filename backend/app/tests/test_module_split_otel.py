@@ -53,7 +53,20 @@ def test_module_split_exports_docx_and_visual_qa(tmp_path) -> None:
     assert augment_visual_qa_with_render_hints({}, Path(tmp_path)) == {}
 
 
-def test_critique_and_repair_pptx_empty_passthrough() -> None:
+def test_run_execute_span_wrapper_exists() -> None:
+    from app.services import run_worker
+
+    assert callable(run_worker._execute_run_job)
+    assert callable(run_worker._execute_run_job_impl)
+
+
+def test_generate_slides_batched_module_export() -> None:
+    from app.agents.pptx_slide_batching import generate_slides_batched, strip_title_override
+
+    assert "Presentation title" not in strip_title_override(
+        'Hello\nPresentation title (use exactly): "X"\nBye'
+    )
+    assert callable(generate_slides_batched)
     from app.agents.agent_types import AgentContext
 
     ctx = AgentContext(
