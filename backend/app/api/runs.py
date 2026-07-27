@@ -1404,6 +1404,39 @@ def final_approve_run_deliverable(
         raise HTTPException(status_code=409, detail="Run is not awaiting final deliverable approval")
 
     run_dir = workspace_path(project_id) / "runs" / run_id
+
+    # Content-level HITL: every unsupported numeric claim must be accepted or rejected.
+    from app.services.evidence_claims import (
+        load_claims_dossier,
+        pending_unsupported_count,
+        write_claims_dossier,
+    )
+
+    claims_dossier = load_claims_dossier(run_dir)
+    if not claims_dossier.get("claims"):
+        qa = {}
+        qa_path = run_dir / "pptx_render_quality.json"
+        if qa_path.is_file():
+            try:
+                qa = json.loads(qa_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                qa = {}
+        if isinstance(qa, dict) and isinstance(qa.get("evidence"), dict):
+            claims_dossier = write_claims_dossier(run_dir, qa["evidence"], source="pptx")
+    pending = pending_unsupported_count(claims_dossier)
+    if pending > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"{pending} unsupported numeric claim(s) still need accept/reject "
+                    "before final approval."
+                ),
+                "pending_claims": pending,
+                "summary": claims_dossier.get("summary"),
+            },
+        )
+
     visual_qa_path = run_dir / "visual_qa_report.json"
     if not visual_qa_path.exists():
         raise HTTPException(status_code=409, detail="Visual QA report is not available yet")

@@ -87,7 +87,7 @@ export function ApprovalBannerRedesigned({ state }: { state: ApprovalBannerState
                 Outputs ready for review
               </p>
               <p className="mt-1 text-xs text-[#666]">
-                Visual QA is complete. Approve to run guardrails and finalize.
+                Review evidence claims on the Deck tab, then approve to run guardrails and finalize.
               </p>
             </>
           )}

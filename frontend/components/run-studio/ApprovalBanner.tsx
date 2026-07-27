@@ -60,7 +60,7 @@ export function ApprovalBanner({ state }: { state: ApprovalBannerState }) {
                 Outputs ready — final review
               </p>
               <p className="mt-0.5 text-xs text-[color:color-mix(in_srgb,var(--warning)_74%,black)]">
-                Visual QA is complete. Approve to run guardrails.
+                Review evidence claims on the Deck tab, then approve to run guardrails.
               </p>
             </>
           )}

@@ -45,6 +45,10 @@ export type RunArtifactsBag = {
   xlsx_base64?: string;
   deck_pdf_base64?: string;
   raci_xlsx_base64?: string;
+  evidence_claims?: {
+    claims?: Array<Record<string, unknown>>;
+    summary?: Record<string, number>;
+  };
 } & Record<string, unknown>;
 
 export const runArtifactsResponseSchema = z.looseObject({

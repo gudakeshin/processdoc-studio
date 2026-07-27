@@ -7,6 +7,7 @@ import { TodoChecklist } from "@/components/run-studio/TodoChecklist";
 import { Button } from "@/components/ui/Button";
 import { DeckCanvas, DeckTabPanel } from "@/components/deck-canvas";
 import { DocumentCanvas, DOCUMENT_CANVAS_ENABLED } from "@/components/run-studio/DocumentCanvas";
+import { EvidenceClaimsPanel } from "@/components/run-studio/EvidenceClaimsPanel";
 import { useTodoChecklistState } from "@/hooks/useTodoChecklistState";
 import {
   toolCallsFromAgentRoundPayload,
@@ -820,8 +821,13 @@ export function ToolActivityFeed({
 
         {/* Deck */}
         {activeTab === "deck" && (
-          <div className="h-full min-h-0">
-            {pptxSlides.length === 0 ? (
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            <EvidenceClaimsPanel
+              projectId={projectId ?? ""}
+              runId={runId ?? ""}
+              enabled={Boolean(projectId && runId)}
+            />
+            {pptxSlides.length === 0 && !artifacts?.deck_pdf_base64 ? (
               <p className="text-[var(--primary-400)]">
                 Deck preview becomes available after the PPTX slide JSON is generated.
               </p>
@@ -830,7 +836,10 @@ export function ToolActivityFeed({
                 slides={pptxSlides}
                 onElementClick={onCanvasElementClick}
                 slideRegenerateBusyIndex={slideRegenerateBusyIndex ?? null}
-                className="flex h-full min-h-0 flex-col gap-3 md:flex-row"
+                deckPdfBase64={
+                  typeof artifacts?.deck_pdf_base64 === "string" ? artifacts.deck_pdf_base64 : null
+                }
+                className="flex h-full min-h-0 flex-col gap-3"
               />
             )}
           </div>

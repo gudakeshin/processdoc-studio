@@ -35,6 +35,7 @@ export function DocumentCanvas({
   const [edited, setEdited] = useState<string>("");
   const [original, setOriginal] = useState<string>("");
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [regenNote, setRegenNote] = useState<string | null>(null);
 
   // When available tabs change (e.g. run finishes), auto-select first
   useEffect(() => {
@@ -74,9 +75,25 @@ export function DocumentCanvas({
         setTimeout(() => setSaveState("idle"), 4000);
         return;
       }
+      const body = (await res.json().catch(() => ({}))) as {
+        regenerated?: string[];
+        regen_errors?: string[];
+      };
       setOriginal(snapshot);
+      const regenerated = Array.isArray(body.regenerated) ? body.regenerated : [];
+      const regenErrors = Array.isArray(body.regen_errors) ? body.regen_errors : [];
+      if (regenerated.length > 0) {
+        setRegenNote(`Refreshed ${regenerated.join(", ").toUpperCase()}`);
+      } else if (regenErrors.length > 0) {
+        setRegenNote("Saved (Office refresh failed)");
+      } else {
+        setRegenNote(null);
+      }
       setSaveState("saved");
-      setTimeout(() => setSaveState("idle"), 2000);
+      setTimeout(() => {
+        setSaveState("idle");
+        setRegenNote(null);
+      }, 3000);
     } catch {
       setSaveState("error");
       setTimeout(() => setSaveState("idle"), 4000);
@@ -145,7 +162,10 @@ export function DocumentCanvas({
               value={edited}
               onChange={(e) => {
                 setEdited(e.target.value);
-                if (saveState === "saved" || saveState === "error") setSaveState("idle");
+                if (saveState === "saved" || saveState === "error") {
+                  setSaveState("idle");
+                  setRegenNote(null);
+                }
               }}
               spellCheck={false}
             />
@@ -167,7 +187,9 @@ export function DocumentCanvas({
       <div className="flex shrink-0 items-center justify-between border-t border-[var(--surface-border)] px-3 py-2">
         <span role="status" aria-live="polite" aria-atomic="true" className="text-xs">
           {saveState === "saved" && (
-            <span className="text-[var(--success,#16a34a)]">Saved</span>
+            <span className="text-[var(--success,#16a34a)]">
+              Saved{regenNote ? ` · ${regenNote}` : ""}
+            </span>
           )}
           {saveState === "error" && (
             <span className="text-[var(--error)]">Save failed — try again</span>

@@ -1491,6 +1491,15 @@ def render_pptx_with_artifact_tool(
                     "Replace unsupported numeric claims with sourced evidence or remove the claim."
                 )
 
+        # Persist a reviewable claim dossier for content-level HITL (Phase 3).
+        try:
+            from app.services.evidence_claims import write_claims_dossier
+
+            dossier = write_claims_dossier(run_dir, evidence_report, source="pptx")
+            qa_report["evidence_claims_summary"] = dossier.get("summary")
+        except Exception as exc:  # noqa: BLE001 — dossier is advisory until final-approve
+            logger.warning("evidence claims dossier skipped: %s", exc)
+
         # Unified design review (Pillar C): arc coherence + action titles + evidence,
         # producing prescriptive per-slide hints and an auditable design_review.json.
         try:
