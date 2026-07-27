@@ -1,12 +1,14 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { memo } from "react";
+import { memo, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 
 import { ZoneAInstruction } from "@/components/run-studio/ZoneAInstruction";
 import { ZoneCLiveMonitor } from "@/components/run-studio/ZoneCLiveMonitor";
-import { ApprovalBanner } from "@/components/run-studio/ApprovalBanner";
+import { ApprovalBannerRedesigned } from "@/components/run-studio/ApprovalBannerRedesigned";
 import { ToolActivityFeed } from "@/components/run-studio/ToolActivityFeed";
+import { ActivityFeedRedesigned } from "@/components/run-studio/ActivityFeedRedesigned";
+import { SystemBanner } from "@/components/run-studio/SystemBanner";
 import { RunChecklist } from "@/components/run-studio/RunChecklist";
 import { SwarmPanel } from "@/components/run-studio/SwarmPanel";
 import { Button } from "@/components/ui/Button";
@@ -16,6 +18,10 @@ const DrawioCollabEditor = dynamic(() => import("@/components/DrawioCollabEditor
   ssr: false,
   loading: () => <p className="text-sm text-[var(--text-muted)]">Loading collaborative editor...</p>,
 });
+const WikiArtifactSection = dynamic(
+  () => import("@/components/wiki/WikiArtifactSection").then((m) => ({ default: m.WikiArtifactSection })),
+  { ssr: false, loading: () => null },
+);
 
 function RunStudioViewInner(props: UseRunStudioReturn) {
   const {
@@ -45,9 +51,6 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
     runChecklistTodos,
     parsedRunEvents,
     artifactsError,
-    backpressureRetrySec,
-    setBackpressureRetrySec,
-    approvePlan,
     runStatus,
     statusSteps,
     currentStepIndex,
@@ -61,15 +64,89 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
     applyTaskAction,
     hooksPanel,
     permissionPanel,
+    runControls,
   } = props;
 
+  const [activityFeedExpanded, setActivityFeedExpanded] = useState(true);
+  const [activityFeedWidth, setActivityFeedWidth] = useState(360);
+
+  const handleResizeStart = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = activityFeedWidth;
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const delta = startX - moveEvent.clientX;
+      const next = Math.min(640, Math.max(280, startWidth + delta));
+      setActivityFeedWidth(next);
+    };
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
+
+  // Collect agreed slide decisions from collaborative building messages.
+  const agreedDecisions = useMemo(() => {
+    const all: Array<{ slide_num: number; title: string; key_message?: string; slide_type?: string; agreed?: boolean }> = [];
+    // First check for a structure_summary message (has all agreed slides).
+    for (let i = instructionChatMessages.length - 1; i >= 0; i--) {
+      const m = instructionChatMessages[i];
+      if (m.role === "assistant" && m.metadata?.kind === "structure_summary" && Array.isArray(m.metadata.slides)) {
+        return m.metadata.slides as typeof all;
+      }
+    }
+    // Fall back to accumulating individual slide_proposal messages.
+    for (const m of instructionChatMessages) {
+      if (m.role === "assistant" && m.metadata?.kind === "slide_proposal" && m.metadata.slide?.agreed) {
+        all.push(m.metadata.slide as typeof all[number]);
+      }
+    }
+    return all;
+  }, [instructionChatMessages]);
+
   return (
-    <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <section className="relative flex min-h-0 flex-col gap-3">
-        <div className="alert alert--info">
-          Expected flow:{" "}
-          <strong>Use uploaded docs, execute, pass visual QA, review/refine, final-approve, then run guardrails.</strong>
-        </div>
+    <div className="min-h-screen flex flex-col">
+      {/* System banners — sticky top bar */}
+      <div className="sticky top-0 z-40 border-b border-[#E0E0E0] bg-white">
+        {pollMode && (
+          <SystemBanner
+            type="info"
+            title="Polling mode active"
+            detail="Waiting for stream reconnection..."
+          />
+        )}
+        {approvalBannerState?.type === "plan_blocked" && (
+          <SystemBanner
+            type="error"
+            title="Governance checks failed"
+            detail={approvalBannerState.blockedReason}
+          />
+        )}
+        {streamError && (
+          <SystemBanner
+            type="warn"
+            title="Stream error"
+            detail={streamError}
+          />
+        )}
+      </div>
+
+      {/* Main layout grid */}
+      <div
+        className={`grid min-w-0 flex-1 gap-3 ${
+          activityFeedExpanded
+            ? "xl:grid-cols-[minmax(0,1fr)_var(--activity-feed-width)]"
+            : "xl:grid-cols-[minmax(0,1fr)_44px]"
+        }`}
+        style={{ "--activity-feed-width": `${activityFeedWidth}px` } as CSSProperties}
+      >
+        <section className="relative flex min-h-0 flex-col gap-3">
+          <div className="alert alert--info">
+            Expected flow:{" "}
+            <strong>Use uploaded docs, execute, pass visual QA, review/refine, final-approve, then run guardrails.</strong>
+          </div>
         <div className="rounded-lg border border-[var(--surface-border)] bg-white p-3 text-xs">
           <p>
             <strong>Run status:</strong> {runStatus ?? "unknown"}
@@ -109,22 +186,6 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
             Live stream is in replay/poll continuity mode. New events may arrive with slight delay.
           </div>
         ) : null}
-        {backpressureRetrySec !== null && backpressureRetrySec > 0 ? (
-          <div className="alert alert--warning">
-            Approval is temporarily throttled. Auto-retry in <strong>{backpressureRetrySec}s</strong>.
-            <Button
-              type="button"
-              variant="secondary"
-              className="ml-3 min-h-9 px-2 py-1 text-xs"
-              onClick={() => {
-                setBackpressureRetrySec(null);
-                void approvePlan();
-              }}
-            >
-              Retry now
-            </Button>
-          </div>
-        ) : null}
         <ZoneAInstruction
           recommendationNote={recommendationNote}
           chatMessages={instructionChatMessages}
@@ -149,6 +210,7 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
         <ZoneCLiveMonitor
           events={liveEvents}
           showAgentGraph={false}
+          runControls={runControls}
           evaluatorSummary={
             evaluatorSummary
               ? {
@@ -180,21 +242,38 @@ function RunStudioViewInner(props: UseRunStudioReturn) {
             ) : null}
           </div>
         ) : null}
-        <ApprovalBanner state={approvalBannerState} />
+        <ApprovalBannerRedesigned state={approvalBannerState} />
+        {pid && rid && (
+          <WikiArtifactSection runId={rid} projectId={pid} />
+        )}
       </section>
-      <ToolActivityFeed
-        events={liveEvents}
-        parsedEvents={parsedRunEvents}
-        runChecklistTodos={runChecklistTodos}
-        artifacts={artifacts}
-        pollMode={pollMode}
-        streamError={streamError}
-        showAgentGraph={AGENT_GRAPH_ENABLED}
-        downloadsContent={downloadsContent}
-        onTaskAction={applyTaskAction}
-        hooksPanel={hooksPanel}
-        permissionPanel={permissionPanel}
-      />
+        <div className="relative">
+          {activityFeedExpanded ? (
+            <>
+              {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- drag resize handle */}
+              <div
+                className="absolute -left-1.5 top-0 z-10 hidden h-full w-3 cursor-col-resize xl:block"
+                onMouseDown={handleResizeStart}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize activity feed panel"
+              />
+            </>
+          ) : null}
+          <ActivityFeedRedesigned
+            parsedEvents={parsedRunEvents}
+            artifacts={artifacts?.ready_downloads || []}
+            runTodos={runChecklistTodos || []}
+            contextMetadata={{
+              leadingPractices: artifacts?.leading_practices || [],
+              nonNegotiables: artifacts?.memory_summary?.non_negotiables || [],
+            }}
+            width={activityFeedExpanded ? activityFeedWidth : 360}
+            expanded={activityFeedExpanded}
+            onToggleExpanded={() => setActivityFeedExpanded((v) => !v)}
+          />
+        </div>
+      </div>
     </div>
   );
 }

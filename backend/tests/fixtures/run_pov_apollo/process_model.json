@@ -1,0 +1,102 @@
+{
+  "process_name": "Agentic AI Interventions for Record to Report Cycle",
+  "roles": [
+    "Process Owner",
+    "AI Agent",
+    "Finance Team"
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "name": "Define R2R cycle scope and touchpoints",
+      "role": "Process Owner",
+      "inputs": [],
+      "outputs": [
+        "R2R cycle scope document"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": "Horizontal mapping across full Record to Report cycle"
+    },
+    {
+      "id": "s2",
+      "name": "Identify agentic AI intervention opportunities",
+      "role": "Process Owner",
+      "inputs": [
+        "R2R cycle scope document"
+      ],
+      "outputs": [
+        "AI intervention map"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": "Case-led approach for Apollo Tyres"
+    },
+    {
+      "id": "s3",
+      "name": "Design AI agent workflows",
+      "role": "AI Agent",
+      "inputs": [
+        "AI intervention map"
+      ],
+      "outputs": [
+        "AI workflow specifications"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": ""
+    },
+    {
+      "id": "s4",
+      "name": "Develop point of view documentation",
+      "role": "Process Owner",
+      "inputs": [
+        "AI workflow specifications"
+      ],
+      "outputs": [
+        "Point of view note"
+      ],
+      "tools": [
+        "PowerPoint"
+      ],
+      "duration_estimate": "",
+      "notes": "PPTX format deliverable"
+    },
+    {
+      "id": "s5",
+      "name": "Review and validate findings",
+      "role": "Finance Team",
+      "inputs": [
+        "Point of view note"
+      ],
+      "outputs": [
+        "Validated point of view document"
+      ],
+      "tools": [],
+      "duration_estimate": "",
+      "notes": ""
+    }
+  ],
+  "decisions": [],
+  "swimlanes": {
+    "Process Owner": [
+      "s1",
+      "s2",
+      "s4"
+    ],
+    "AI Agent": [
+      "s3"
+    ],
+    "Finance Team": [
+      "s5"
+    ]
+  },
+  "metrics": [],
+  "metadata": {
+    "client": "Apollo Tyres",
+    "approach": "case-led",
+    "scope": "horizontal across full R2R cycle",
+    "deliverable_format": "PPTX",
+    "focus_area": "Agentic AI interventions"
+  }
+}

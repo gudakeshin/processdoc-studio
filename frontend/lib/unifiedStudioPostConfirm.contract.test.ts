@@ -18,12 +18,12 @@ describe("unified studio post-confirm", () => {
     expect(src).toMatch(/\[token, pid, rid, refreshChatFromServer\]/);
   });
 
-  it("ProjectStudioUnified approves after create and shows ApprovalBanner when a run is active", () => {
-    const src = readFileSync(join(_dir, "../components/project-studio/ProjectStudioUnified.tsx"), "utf8");
-    expect(src).toContain("/approve");
-    expect(src).toContain("setActiveRunId(runIdCreated)");
-    expect(src).toContain("<ApprovalBanner state={studio.approvalBannerState}");
-    expect(src.indexOf("setActiveRunId(runIdCreated)")).toBeLessThan(src.indexOf("/approve"));
+  it("ProjectStudioUnified shows ApprovalBanner driven by useRunStudio's approve flow", () => {
+    const studioSrc = readFileSync(join(_dir, "../components/project-studio/ProjectStudioUnified.tsx"), "utf8");
+    expect(studioSrc).toContain("<ApprovalBanner state={studio.approvalBannerState}");
+    const hookSrc = readFileSync(join(_dir, "../hooks/useRunStudio.tsx"), "utf8");
+    expect(hookSrc).toContain("/approve");
+    expect(hookSrc).toContain("onApprove: approvePlan");
   });
 
   it(".env.example documents redis queue worker / embedded consumer", () => {

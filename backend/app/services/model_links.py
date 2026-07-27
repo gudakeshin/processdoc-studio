@@ -2,14 +2,15 @@
 
 import json
 from collections import defaultdict, deque
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:
@@ -142,7 +143,7 @@ def create_model_link(
         raise ValueError(f"Creating link would create circular dependency: {target_model_id} → {source_model_id}")
 
     link = {
-        "id": f"link_{datetime.now(UTC).timestamp()}",
+        "id": f"link_{datetime.now(IST).timestamp()}",
         "source_model_id": source_model_id,
         "source_cell_ref": source_cell_ref.upper(),
         "target_model_id": target_model_id,

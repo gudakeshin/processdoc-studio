@@ -159,8 +159,9 @@ export default function LPLibraryPage() {
         <ProjectPicker value={projectId} onChange={setProjectId} />
         <div className="flex flex-wrap items-end gap-2">
           <div className="min-w-[240px] flex-1">
-            <label className="mb-1 block text-xs font-medium text-[var(--text-caption)]">Query</label>
+            <label htmlFor="lp-query" className="mb-1 block text-xs font-medium text-[var(--text-caption)]">Query</label>
             <Input
+              id="lp-query"
               placeholder="Search LP snippets"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -183,10 +184,11 @@ export default function LPLibraryPage() {
           </Button>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-[var(--text-caption)]">
+          <label htmlFor="lp-bookmark-note" className="mb-1 block text-xs font-medium text-[var(--text-caption)]">
             Optional note for next bookmark
           </label>
           <Textarea
+            id="lp-bookmark-note"
             rows={2}
             placeholder="e.g. Use for stakeholder comms tone"
             value={bookmarkNote}

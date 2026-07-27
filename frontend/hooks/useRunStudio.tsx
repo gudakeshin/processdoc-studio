@@ -6,6 +6,7 @@ import { type ApprovalBannerState } from "@/components/run-studio/ApprovalBanner
 import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/lib/auth-context";
 import { extractApiErrorMessage } from "@/lib/api-error";
+import { runArtifactsResponseSchema, type RunArtifactsBag } from "@/lib/apiSchemas";
 import {
   buildVisualQaChatMarkdown,
   chatIncludesVisualQaForRun,
@@ -15,6 +16,8 @@ import { mergeRunEventEnvelope, runTodosFromEvents } from "@/lib/runTodosFromEve
 import { emitToast } from "@/lib/toast-bus";
 import { parseEventLine, type ParsedRunEvent } from "@/lib/runEvents";
 import { useCoworkState } from "@/hooks/useCoworkState";
+import { useHooksGovernance } from "@/hooks/useHooksGovernance";
+import { usePermissionSimulation } from "@/hooks/usePermissionSimulation";
 
 export const AGENT_GRAPH_ENABLED = process.env.NEXT_PUBLIC_AGENT_GRAPH_ENABLED !== "false";
 export const SCRATCHPAD_VISIBLE = process.env.NEXT_PUBLIC_SCRATCHPAD_VISIBLE !== "false";
@@ -40,10 +43,13 @@ export type ChatMessage = {
     decision_prompts?: Array<{
       id: string;
       label: string;
+      description?: string;
       mode: "single_select" | "multi_select";
       required?: boolean;
       min_select?: number;
-      options: Array<{ value: string; label: string }>;
+      allow_custom?: boolean;
+      custom_placeholder?: string;
+      options: Array<{ value: string; label: string; description?: string }>;
       selected_values?: string[];
     }>;
     unresolved_prompt_ids?: string[];
@@ -61,9 +67,48 @@ export type ChatMessage = {
       slides?: Array<{ title?: string; slide_type?: string; purpose?: string }>;
       rationale?: string;
     };
+    document_outline_preview?: {
+      sections?: Array<{
+        heading?: string;
+        purpose?: string;
+        key_points?: string[];
+        evidence_pointer?: string;
+      }>;
+      rationale?: string;
+      target_pages?: number;
+    };
+    wiki_context_refs?: string[];
     kind?: string;
     run_id?: string;
     status?: string;
+    // Collaborative building (Phase 2)
+    arcs?: Array<{
+      arc_key: string;
+      name: string;
+      structure: string;
+      reasoning: string;
+      lp_evidence?: string;
+      is_recommended?: boolean;
+    }>;
+    recommendation?: string;
+    slide?: {
+      slide_num: number;
+      title: string;
+      slide_type: string;
+      slide_type_label?: string;
+      key_message: string;
+      evidence_source?: string;
+      sheldon_view?: string;
+      agreed?: boolean;
+    };
+    arc_agreed?: string;
+    slides?: Array<{
+      slide_num: number;
+      title: string;
+      key_message?: string;
+      agreed?: boolean;
+    }>;
+    ready_to_build?: boolean;
   };
 };
 
@@ -84,14 +129,18 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
 
   const { token, api } = useAuth();
   const canRenderEditor = useMemo(() => Boolean(pid && rid), [pid, rid]);
-  const [artifacts, setArtifacts] = useState<any | null>(null);
+  const [artifacts, setArtifacts] = useState<RunArtifactsBag | null>(null);
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const [artifactsLoading, setArtifactsLoading] = useState(false);
   const [artifactsError, setArtifactsError] = useState<string | null>(null);
   const [backpressureRetrySec, setBackpressureRetrySec] = useState<number | null>(null);
-  const [deadLetters, setDeadLetters] = useState<any[]>([]);
-  const [deadLetterLoading, setDeadLetterLoading] = useState(false);
-  const [deadLetterMsg, setDeadLetterMsg] = useState<string | null>(null);
+  const { hooksBusy, hooksData, loadHooks, disableHookByName } = useHooksGovernance(pid, setArtifactsError);
+  const { permissionSimBusy, permissionSimResult, simulatePermissionPreflight } = usePermissionSimulation(
+    pid,
+    selectedOutputTypes,
+    artifacts?.plan,
+    setArtifactsError
+  );
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
@@ -101,10 +150,9 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
   const [runControlBusy, setRunControlBusy] = useState(false);
   const [slideRegenerateBusyIndex, setSlideRegenerateBusyIndex] = useState<number | null>(null);
   const [decisionBusy, setDecisionBusy] = useState(false);
-  const [permissionSimBusy, setPermissionSimBusy] = useState(false);
-  const [permissionSimResult, setPermissionSimResult] = useState<any | null>(null);
-  const [hooksBusy, setHooksBusy] = useState(false);
-  const [hooksData, setHooksData] = useState<Array<Record<string, unknown>>>([]);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [pptxDownloadBusy, setPptxDownloadBusy] = useState(false);
+  const [copyBundlePromptDone, setCopyBundlePromptDone] = useState(false);
 
   const latestAssistantMetadata = useMemo(() => {
     for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
@@ -261,18 +309,20 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       setArtifactsError(null);
       try {
         const res = await api(`/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/artifacts`);
-        const data = (await res.json().catch(() => ({}))) as {
-          detail?: string;
+        const raw: unknown = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(extractApiErrorMessage(raw, "Failed to load run artifacts"));
+        }
+        // Validation is advisory: on schema mismatch keep the raw payload (current behavior).
+        const validated = runArtifactsResponseSchema.safeParse(raw);
+        const data = (validated.success ? validated.data : raw) as {
           status?: string;
-          artifacts?: any;
+          artifacts?: RunArtifactsBag | null;
           instruction?: string;
           output_types?: string[];
           custom_output_types?: string[];
           output_type_representations?: Record<string, string>;
         };
-        if (!res.ok) {
-          throw new Error(extractApiErrorMessage(data, "Failed to load run artifacts"));
-        }
         setRunStatus(data.status ?? null);
         setArtifacts(data.artifacts ?? null);
         setInstruction(data.instruction ?? "");
@@ -409,22 +459,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
   }, [backpressureRetrySec]);
 
   useEffect(() => {
-    if (backpressureRetrySec !== 0) return;
-    if (runStatus !== "plan_ready") {
-      setBackpressureRetrySec(null);
-      return;
-    }
-    void approvePlan();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backpressureRetrySec, runStatus]);
-
-  useEffect(() => {
-    if (!token || !pid) return;
-    void loadDeadLetters();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, pid]);
-
-  useEffect(() => {
     if (!token || !pid) return;
     void loadHooks();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -468,10 +502,15 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       // Refresh run status + artifacts.
       setArtifactsLoading(true);
       const r2 = await api(`/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/artifacts`);
-      const data2 = (await r2.json().catch(() => ({}))) as any;
+      const raw2: unknown = await r2.json().catch(() => ({}));
       if (!r2.ok) {
-        throw new Error(extractApiErrorMessage(data2, "Failed to refresh artifacts"));
+        throw new Error(extractApiErrorMessage(raw2, "Failed to refresh artifacts"));
       }
+      const validated2 = runArtifactsResponseSchema.safeParse(raw2);
+      const data2 = (validated2.success ? validated2.data : raw2) as {
+        status?: string;
+        artifacts?: RunArtifactsBag | null;
+      };
       setRunStatus(data2.status ?? null);
       setArtifacts(data2.artifacts ?? null);
     } catch (e) {
@@ -486,8 +525,13 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     if (!pid || chatBusy || !msg) return;
     setChatBusy(true);
     setArtifactsError(null);
+    const optimisticId = `opt-${Date.now()}`;
     try {
       setChatInput("");
+      setChatMessages((prev) => [
+        ...prev,
+        { clientId: optimisticId, role: "user" as const, content: msg, ts: Date.now() },
+      ]);
       const res = await api(`/api/projects/${encodeURIComponent(pid)}/conversation/messages`, {
         method: "POST",
         body: JSON.stringify({ content: msg }),
@@ -535,6 +579,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       setChatMessages(mapped);
       setInstruction(msg);
     } catch (e) {
+      setChatMessages((prev) => prev.filter((m) => m.clientId !== optimisticId));
       setArtifactsError(e instanceof Error ? e.message : "Conversation send failed");
     } finally {
       setChatBusy(false);
@@ -569,15 +614,23 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     }
   }
 
-  async function submitDecisionAnswers(answers: Record<string, string[]>) {
+  async function submitDecisionAnswers(
+    answers: Record<string, string[] | { selected_values?: string[]; free_text?: string }>
+  ) {
     if (!pid || !conversationId || decisionBusy) return;
     setDecisionBusy(true);
     setArtifactsError(null);
     try {
-      const formatted = Object.entries(answers).map(([prompt_id, selected_values]) => ({
-        prompt_id,
-        selected_values,
-      }));
+      const formatted = Object.entries(answers).map(([prompt_id, entry]) => {
+        if (Array.isArray(entry)) {
+          return { prompt_id, selected_values: entry };
+        }
+        return {
+          prompt_id,
+          selected_values: entry?.selected_values ?? [],
+          free_text: entry?.free_text && entry.free_text.trim() ? entry.free_text.trim() : undefined,
+        };
+      });
       const res = await api(`/api/projects/${encodeURIComponent(pid)}/conversation/decisions`, {
         method: "POST",
         body: JSON.stringify({
@@ -678,6 +731,41 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     }
   }
 
+  async function patchSlideElement(slideIndex: number, elementPath: string, value: string) {
+    if (!pid || !rid) return;
+    if (!Number.isInteger(slideIndex) || slideIndex < 1) return;
+    if (!elementPath.trim()) return;
+    if (slideRegenerateBusyIndex !== null) return;
+    setSlideRegenerateBusyIndex(slideIndex);
+    setArtifactsError(null);
+    try {
+      const res = await api(
+        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/slides/${slideIndex}/elements`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ element_path: elementPath, value }),
+        }
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        detail?: string;
+        pptx_slides?: unknown;
+        regenerated?: boolean;
+      };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to patch slide element"));
+      await refreshArtifactsFromServer({ silent: true });
+      emitToast({
+        kind: "success",
+        message: data.regenerated
+          ? `Slide ${slideIndex} updated and PPTX re-rendered.`
+          : `Slide ${slideIndex} JSON updated (PPTX re-render pending).`,
+      });
+    } catch (e) {
+      setArtifactsError(e instanceof Error ? e.message : "Failed to patch slide element");
+    } finally {
+      setSlideRegenerateBusyIndex(null);
+    }
+  }
+
   async function regenerateSlide(slideIndex: number, instruction?: string, elementPath?: string) {
     if (!pid || !rid) return;
     if (!Number.isInteger(slideIndex) || slideIndex < 1) return;
@@ -724,120 +812,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       await refreshArtifactsFromServer({ silent: true });
     } catch (e) {
       setArtifactsError(e instanceof Error ? e.message : "Task action failed");
-    }
-  }
-
-  async function simulatePermissionPreflight() {
-    if (!pid || permissionSimBusy) return;
-    setPermissionSimBusy(true);
-    setArtifactsError(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/permission/simulate`, {
-        method: "POST",
-        body: JSON.stringify({
-          run_status: "plan_ready",
-          requested_outputs: selectedOutputTypes,
-          has_approval: true,
-          enforce_policy: false,
-          plan_payload: artifacts?.plan ?? {},
-        }),
-      });
-      const data = (await res.json().catch(() => ({}))) as any;
-      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Permission simulation failed"));
-      setPermissionSimResult(data);
-    } catch (e) {
-      setArtifactsError(e instanceof Error ? e.message : "Permission simulation failed");
-    } finally {
-      setPermissionSimBusy(false);
-    }
-  }
-
-  async function loadHooks() {
-    if (!pid || hooksBusy) return;
-    setHooksBusy(true);
-    setArtifactsError(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/hooks`);
-      const data = (await res.json().catch(() => ({}))) as { hooks?: Array<Record<string, unknown>>; detail?: string };
-      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to load hooks"));
-      setHooksData(Array.isArray(data.hooks) ? data.hooks : []);
-    } catch (e) {
-      setArtifactsError(e instanceof Error ? e.message : "Failed to load hooks");
-    } finally {
-      setHooksBusy(false);
-    }
-  }
-
-  async function disableHookByName(hookName: string, reason: string) {
-    if (!pid || !hookName.trim()) return;
-    setArtifactsError(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/hooks/disable`, {
-        method: "POST",
-        body: JSON.stringify({ hook_name: hookName.trim(), reason: reason.trim() }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { detail?: string };
-      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to disable hook"));
-      await loadHooks();
-      emitToast({ message: `Hook ${hookName.trim()} disabled`, kind: "success" });
-    } catch (e) {
-      setArtifactsError(e instanceof Error ? e.message : "Failed to disable hook");
-    }
-  }
-
-  async function loadDeadLetters() {
-    if (!pid) return;
-    setDeadLetterLoading(true);
-    setDeadLetterMsg(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/queue/dead-letter`);
-      const data = (await res.json().catch(() => ({}))) as { items?: any[]; detail?: string };
-      if (!res.ok) {
-        throw new Error(extractApiErrorMessage(data, "Failed to load dead-letter items"));
-      }
-      setDeadLetters(Array.isArray(data.items) ? data.items : []);
-    } catch (e) {
-      setDeadLetterMsg(e instanceof Error ? e.message : "Failed to load dead-letter items");
-    } finally {
-      setDeadLetterLoading(false);
-    }
-  }
-
-  async function replayDeadLetter(itemId: string) {
-    if (!pid) return;
-    setDeadLetterMsg(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/queue/dead-letter/replay`, {
-        method: "POST",
-        body: JSON.stringify({ item_id: itemId }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { detail?: string | { message?: string } };
-      if (!res.ok) {
-        throw new Error(extractApiErrorMessage(data, "Replay failed"));
-      }
-      setDeadLetterMsg(`Replayed dead-letter item: ${itemId}`);
-      await loadDeadLetters();
-    } catch (e) {
-      setDeadLetterMsg(e instanceof Error ? e.message : "Replay failed");
-    }
-  }
-
-  async function resetDeadLetterAttempts(itemId: string) {
-    if (!pid) return;
-    setDeadLetterMsg(null);
-    try {
-      const res = await api(`/api/runs/${encodeURIComponent(pid)}/queue/dead-letter/reset-attempts`, {
-        method: "POST",
-        body: JSON.stringify({ item_id: itemId }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { detail?: string | { message?: string } };
-      if (!res.ok) {
-        throw new Error(extractApiErrorMessage(data, "Reset attempts failed"));
-      }
-      setDeadLetterMsg(`Reset replay attempts: ${itemId}`);
-      await loadDeadLetters();
-    } catch (e) {
-      setDeadLetterMsg(e instanceof Error ? e.message : "Reset attempts failed");
     }
   }
 
@@ -902,8 +876,33 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     URL.revokeObjectURL(url);
   }
 
-  const [handoffBusy, setHandoffBusy] = useState(false);
-  const [copyBundlePromptDone, setCopyBundlePromptDone] = useState(false);
+  async function downloadPptxFromRun(filename: string) {
+    if (!pid || !rid || pptxDownloadBusy) return;
+    setPptxDownloadBusy(true);
+    setArtifactsError(null);
+    try {
+      const res = await api(
+        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/artifacts/pptx/download`
+      );
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(extractApiErrorMessage(data, "PPTX download failed"));
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setArtifactsError(e instanceof Error ? e.message : "PPTX download failed");
+    } finally {
+      setPptxDownloadBusy(false);
+    }
+  }
 
   async function downloadHandoffBundle(filename: string) {
     if (!pid || !rid || handoffBusy) return;
@@ -1060,14 +1059,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
 
   // Unified approval state for the persistent banner
   const approvalBannerState = useMemo<ApprovalBannerState>(() => {
-    if (runStatus === "plan_ready") {
-      return {
-        type: "plan_ready",
-        saving: savePlanBusy,
-        onSave: savePlan,
-        onApprove: approvePlan,
-      };
-    }
     if (runStatus === "plan_blocked") {
       return {
         type: "plan_blocked",
@@ -1085,9 +1076,8 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
       };
     }
     if (
-      runStatus === "plan_ready" &&
-      (latestAssistantMetadata?.requires_user_approval ||
-        latestAssistantMetadata?.ready_to_run)
+      latestAssistantMetadata?.requires_user_approval ||
+      latestAssistantMetadata?.ready_to_run
     ) {
       return {
         type: "hitl_gate",
@@ -1099,7 +1089,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     }
     return null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runStatus, savePlanBusy, finalApproveBusy, latestAssistantMetadata, blockedContext]);
+  }, [runStatus, finalApproveBusy, latestAssistantMetadata, blockedContext]);
 
   // Download buttons — rendered inside ToolActivityFeed's Artifacts tab
   const downloadsContent =
@@ -1108,7 +1098,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         {readyDownloads.includes("docx") && (() => {
           const fname = downloadDisplayName(outputFilenames, "docx", "output.docx");
           return (
-            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts.docx_base64 || ""), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}>
+            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts?.docx_base64 || ""), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}>
               {fname}
             </Button>
           );
@@ -1116,15 +1106,15 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         {readyDownloads.includes("pptx") && (() => {
           const fname = downloadDisplayName(outputFilenames, "pptx", "output.pptx");
           return (
-            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts.pptx_base64 || ""), "application/vnd.openxmlformats-officedocument.presentationml.presentation")}>
-              {fname}
+            <Button type="button" className={downloadBtnClass} title={fname} disabled={pptxDownloadBusy} onClick={() => downloadPptxFromRun(fname)}>
+              {pptxDownloadBusy ? "Downloading…" : fname}
             </Button>
           );
         })()}
         {readyDownloads.includes("deck_html") && (() => {
           const fname = downloadDisplayName(outputFilenames, "deck_html", "deck.html");
           return (
-            <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, String(artifacts.deck_html || ""))}>
+            <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, String(artifacts?.deck_html || ""))}>
               {fname}
             </Button>
           );
@@ -1132,7 +1122,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         {readyDownloads.includes("deck_pdf") && (() => {
           const fname = downloadDisplayName(outputFilenames, "deck_pdf", "deck.pdf");
           return (
-            <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts.deck_pdf_base64 || ""), "application/pdf")}>
+            <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts?.deck_pdf_base64 || ""), "application/pdf")}>
               {fname}
             </Button>
           );
@@ -1166,7 +1156,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         {readyDownloads.includes("xlsx") && (() => {
           const fname = downloadDisplayName(outputFilenames, "xlsx", "output.xlsx");
           return (
-            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts.xlsx_base64 || ""), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}>
+            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts?.xlsx_base64 || ""), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}>
               {fname}
             </Button>
           );
@@ -1174,7 +1164,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         {readyDownloads.includes("pdf") && (() => {
           const fname = downloadDisplayName(outputFilenames, "pdf", "output.pdf");
           return (
-            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts.pdf_base64 || ""), "application/pdf")}>
+            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadBase64(fname, String(artifacts?.pdf_base64 || ""), "application/pdf")}>
               {fname}
             </Button>
           );
@@ -1187,7 +1177,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
             isMermaid ? "process_map.mmd" : "process_map.drawio.xml"
           );
           return (
-            <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, isMermaid ? (artifacts.process_map_mermaid || "") : (artifacts.drawio_xml || ""))}>
+            <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, isMermaid ? (artifacts?.process_map_mermaid || "") : (artifacts?.drawio_xml || ""))}>
               {fname}
             </Button>
           );
@@ -1197,13 +1187,13 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
           let onClick: () => void;
           if (raciPref === "xlsx") {
             fname = downloadDisplayName(outputFilenames, "raci_xlsx", "raci.xlsx");
-            onClick = () => downloadBase64(fname, String(artifacts.raci_xlsx_base64 || ""), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            onClick = () => downloadBase64(fname, String(artifacts?.raci_xlsx_base64 || ""), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
           } else if (raciPref === "markdown") {
             fname = downloadDisplayName(outputFilenames, "raci_markdown", "raci.md");
-            onClick = () => downloadText(fname, artifacts.raci_markdown || "");
+            onClick = () => downloadText(fname, artifacts?.raci_markdown || "");
           } else {
             fname = downloadDisplayName(outputFilenames, "raci_html", "raci.html");
-            onClick = () => downloadText(fname, artifacts.raci_html || "");
+            onClick = () => downloadText(fname, artifacts?.raci_html || "");
           }
           return (
             <Button type="button" variant="secondary" className={downloadBtnClass} title={fname} onClick={onClick}>
@@ -1214,7 +1204,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         {readyDownloads.includes("sop_markdown") && (() => {
           const fname = downloadDisplayName(outputFilenames, "sop_markdown", "sop.md");
           return (
-            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, artifacts.sop_markdown || "")}>
+            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, artifacts?.sop_markdown || "")}>
               {fname}
             </Button>
           );
@@ -1222,7 +1212,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
         {readyDownloads.includes("narrative_md") && (() => {
           const fname = downloadDisplayName(outputFilenames, "narrative_md", "narrative.md");
           return (
-            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, artifacts.narrative_md || "")}>
+            <Button type="button" className={downloadBtnClass} title={fname} onClick={() => downloadText(fname, artifacts?.narrative_md || "")}>
               {fname}
             </Button>
           );
@@ -1305,12 +1295,10 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     applyTaskAction,
     controlRun,
     regenerateSlide,
+    patchSlideElement,
     simulatePermissionPreflight,
     loadHooks,
     disableHookByName,
-    loadDeadLetters,
-    replayDeadLetter,
-    resetDeadLetterAttempts,
     finalApproveDeliverable,
     downloadText,
     downloadDisplayName,
@@ -1354,9 +1342,6 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     },
     processMapPref,
     raciPref,
-    deadLetters,
-    deadLetterLoading,
-    deadLetterMsg,
   };
 }
 

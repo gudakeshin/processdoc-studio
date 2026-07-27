@@ -1,11 +1,35 @@
 """Helpers for tests that start runs after the confirmed-plan gate."""
 
+from __future__ import annotations
+
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
+
+from app.services.conversation_router import RouterDecision
 
 DEFAULT_PLAN_USER_MESSAGE = (
     "Build a detailed narrative proposal report for the executive steering committee "
-    "including timeline scope and deck outline for delivery."
+    "including timeline scope and deck outline for delivery. "
+    "Client is Acme Corp. Industry is manufacturing. Primary audience is CFO. "
+    "Key win themes are cost reduction, process automation, risk mitigation. "
+    "Transformation problem is modernising the finance operating model."
 )
+
+
+def _stub_route_turn(**_: object) -> RouterDecision:
+    return RouterDecision(
+        intent="commit",
+        confidence=0.95,
+        extracted_slots={},
+        output_types=["docx"],
+        representations={},
+        content_skill_hint=None,
+        next_state="ready_to_plan",
+        missing_slots=[],
+        reply_hint=None,
+        rationale="stubbed plan for tests",
+    )
 
 
 def confirm_plan_for_project(
@@ -15,55 +39,66 @@ def confirm_plan_for_project(
     *,
     content: str | None = None,
 ) -> tuple[str, str]:
-    """Post a coworker message, confirm the plan, return (conversation_id, plan_hash)."""
-    msg = client.post(
-        f"/api/projects/{project_id}/conversation/messages",
-        json={"content": (content or DEFAULT_PLAN_USER_MESSAGE).strip()},
-        headers=headers,
-    )
-    assert msg.status_code == 200, msg.text
-    body = msg.json()
-    conv_id = body["conversation_id"]
-    plan_hash = body["plan_hash"]
+    """Post a coworker message, confirm the plan, return (conversation_id, plan_hash).
 
-    # Newer conversation flow may require explicit decision answers before confirm.
-    if not body.get("ready_for_confirmation"):
-        prompts = body.get("decision_prompts") if isinstance(body, dict) else []
-        unresolved = set(body.get("unresolved_prompt_ids") or [])
-        answers: list[dict[str, object]] = []
-        if isinstance(prompts, list):
-            for prompt in prompts:
-                if not isinstance(prompt, dict):
-                    continue
-                prompt_id = str(prompt.get("id") or "").strip()
-                if not prompt_id or prompt_id not in unresolved:
-                    continue
-                options = prompt.get("options") if isinstance(prompt.get("options"), list) else []
-                first = options[0] if options and isinstance(options[0], dict) else {}
-                first_value = str(first.get("value") or "").strip()
-                if not first_value:
-                    continue
-                answers.append({"prompt_id": prompt_id, "selected_values": [first_value]})
-        if answers:
-            decision_resp = client.post(
-                f"/api/projects/{project_id}/conversation/decisions",
-                json={
-                    "conversation_id": conv_id,
-                    "plan_hash": plan_hash,
-                    "answers": answers,
-                },
-                headers=headers,
-            )
-            assert decision_resp.status_code == 200, decision_resp.text
-            body = decision_resp.json()
-            conv_id = body["conversation_id"]
-            plan_hash = body["plan_hash"]
+    Stubs conversation routing so CI does not depend on Anthropic credits or
+    format-intent short-circuits that can omit a confirmable plan.
+    """
+    with (
+        patch("app.api.projects.conversation.route_turn", side_effect=_stub_route_turn),
+        patch(
+            "app.services.output_format_detection.resolve_output_formats",
+            return_value=([], {}, ""),
+        ),
+    ):
+        msg = client.post(
+            f"/api/projects/{project_id}/conversation/messages",
+            json={"content": (content or DEFAULT_PLAN_USER_MESSAGE).strip()},
+            headers=headers,
+        )
+        assert msg.status_code == 200, msg.text
+        body = msg.json()
+        conv_id = body["conversation_id"]
+        plan_hash = body["plan_hash"]
 
-    assert body.get("ready_for_confirmation"), body
-    conf = client.post(
-        f"/api/projects/{project_id}/conversation/confirm",
-        json={"conversation_id": conv_id, "plan_hash": plan_hash},
-        headers=headers,
-    )
-    assert conf.status_code == 200, conf.text
-    return conv_id, plan_hash
+        # Newer conversation flow may require explicit decision answers before confirm.
+        if not body.get("ready_for_confirmation"):
+            prompts = body.get("decision_prompts") if isinstance(body, dict) else []
+            unresolved = set(body.get("unresolved_prompt_ids") or [])
+            answers: list[dict[str, object]] = []
+            if isinstance(prompts, list):
+                for prompt in prompts:
+                    if not isinstance(prompt, dict):
+                        continue
+                    prompt_id = str(prompt.get("id") or "").strip()
+                    if not prompt_id or prompt_id not in unresolved:
+                        continue
+                    options = prompt.get("options") if isinstance(prompt.get("options"), list) else []
+                    first = options[0] if options and isinstance(options[0], dict) else {}
+                    first_value = str(first.get("value") or "").strip()
+                    if not first_value:
+                        continue
+                    answers.append({"prompt_id": prompt_id, "selected_values": [first_value]})
+            if answers:
+                decision_resp = client.post(
+                    f"/api/projects/{project_id}/conversation/decisions",
+                    json={
+                        "conversation_id": conv_id,
+                        "plan_hash": plan_hash,
+                        "answers": answers,
+                    },
+                    headers=headers,
+                )
+                assert decision_resp.status_code == 200, decision_resp.text
+                body = decision_resp.json()
+                conv_id = body["conversation_id"]
+                plan_hash = body["plan_hash"]
+
+        assert body.get("ready_for_confirmation"), body
+        conf = client.post(
+            f"/api/projects/{project_id}/conversation/confirm",
+            json={"conversation_id": conv_id, "plan_hash": plan_hash},
+            headers=headers,
+        )
+        assert conf.status_code == 200, conf.text
+        return conv_id, plan_hash

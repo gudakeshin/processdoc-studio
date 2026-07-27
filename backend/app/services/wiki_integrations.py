@@ -7,7 +7,8 @@ Enables automatic knowledge capture and bidirectional learning across the platfo
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ class WikiMemoryIntegration:
                     "category": category,
                     "source_count": 1,
                     "confidence": metadata.get("confidence", "medium"),
-                    "last_updated": datetime.now(UTC).isoformat(),
+                    "last_updated": datetime.now(IST).isoformat(),
                     "source_memory_id": item_id,
                     "memory_type": item_type,
                 }),
@@ -100,7 +101,7 @@ class WikiMemoryIntegration:
 
             # Update frontmatter with new timestamp
             frontmatter = json.loads(wiki_page.get("frontmatter", "{}"))
-            frontmatter["last_updated"] = datetime.now(UTC).isoformat()
+            frontmatter["last_updated"] = datetime.now(IST).isoformat()
             wiki_page["frontmatter"] = json.dumps(frontmatter)
 
             logger.info(f"Updated wiki page from memory item {memory_item.get('id')}")
@@ -162,7 +163,7 @@ class WikiRunIntegration:
                     "category": "artifact",
                     "source_count": len(artifacts) + 1,
                     "confidence": "high",
-                    "last_updated": datetime.now(UTC).isoformat(),
+                    "last_updated": datetime.now(IST).isoformat(),
                     "source_run_id": run_id,
                 }),
             }
@@ -181,7 +182,7 @@ class WikiRunIntegration:
                         "category": "concept",
                         "source_count": 1,
                         "confidence": "medium",
-                        "last_updated": datetime.now(UTC).isoformat(),
+                        "last_updated": datetime.now(IST).isoformat(),
                         "source_run_id": run_id,
                     }),
                 }
@@ -198,7 +199,7 @@ class WikiRunIntegration:
                     "category": "artifact",
                     "source_count": len(artifacts),
                     "confidence": "high",
-                    "last_updated": datetime.now(UTC).isoformat(),
+                    "last_updated": datetime.now(IST).isoformat(),
                 }),
             }
             pages_created.append(artifact_page)
@@ -298,7 +299,7 @@ Participants: {len(set(m.get('user_id') for m in messages))}
                     "category": "synthesis",
                     "source_count": len(messages),
                     "confidence": "medium",
-                    "last_updated": datetime.now(UTC).isoformat(),
+                    "last_updated": datetime.now(IST).isoformat(),
                     "conversation_id": conversation_id,
                     "message_count": len(messages),
                 }),
@@ -333,14 +334,28 @@ class WikiCoordinatorIntegration:
             Context dict with relevant pages and learnings
         """
         try:
-            # This will be called by wiki_query_with_retry() in real implementation
-            # For now, return stub context
+            from app.services.wiki_operations import wiki_query_with_retry
+
+            result, error = wiki_query_with_retry(question, wiki_type, project_id)
+            if error or not result:
+                # No relevant pages / empty wiki is an expected outcome, not a failure.
+                return {
+                    "question": question,
+                    "relevant_pages": [],
+                    "past_learnings": [],
+                    "recommendations": [],
+                    "confidence": "low",
+                    "note": error,
+                }
+
+            citations = result.get("citations") or []
             context = {
                 "question": question,
-                "relevant_pages": [],
-                "past_learnings": [],
-                "recommendations": [],
-                "confidence": "low",  # No real query yet
+                "answer": result.get("answer", ""),
+                "relevant_pages": result.get("source_pages") or [],
+                "past_learnings": citations,
+                "recommendations": citations,
+                "confidence": "high" if result.get("source_pages") else "low",
             }
 
             logger.debug(f"Queried wiki for context: {question}")
@@ -402,13 +417,17 @@ class WikiLeadingPracticesIntegration:
             List of relevant LP pages
         """
         try:
-            # This will query the LP wiki
-            # For now, return stub
+            from app.services.wiki_operations import wiki_query_with_retry
+
+            result, error = wiki_query_with_retry(topic, wiki_type="leading_practice")
+            pages = (result or {}).get("source_pages") or []
             practices = {
                 "topic": topic,
                 "category": category,
-                "pages": [],
-                "count": 0,
+                "answer": (result or {}).get("answer", ""),
+                "pages": pages,
+                "count": len(pages),
+                "note": error,
             }
 
             logger.debug(f"Retrieved leading practices for {topic}")
@@ -441,7 +460,7 @@ class WikiLeadingPracticesIntegration:
                 "source_page_title": project_wiki_page.get("title"),
                 "content": project_wiki_page.get("content"),
                 "status": "pending_review",
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now(IST).isoformat(),
             }
 
             logger.info(f"Proposed learning from {project_id} for LP wiki review")

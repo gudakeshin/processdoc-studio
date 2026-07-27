@@ -5,6 +5,7 @@ export default async function SettingsPage({ params }: { params: Promise<{ pid: 
   const tabs = [
     { href: `/projects/${pid}/settings/formats`, label: "Output Types" },
     { href: `/projects/${pid}/settings/brand`, label: "Brand" },
+    { href: `/projects/${pid}/settings/search`, label: "Search" },
     { href: `/projects/${pid}/settings/dpdp`, label: "DPDP" },
     { href: `/projects/${pid}/settings/quality`, label: "Quality" },
   ];

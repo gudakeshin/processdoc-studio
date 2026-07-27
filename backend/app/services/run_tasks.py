@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from sqlalchemy import select
@@ -82,7 +83,7 @@ def sync_run_tasks_from_snapshot(
     todos: list[dict[str, Any]],
     swarm_team_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     existing = session.scalars(select(RunTask).where(RunTask.run_id == run_id)).all()
     by_id = {row.id: row for row in existing}
     out: list[dict[str, Any]] = []

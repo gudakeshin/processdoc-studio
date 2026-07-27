@@ -8,6 +8,8 @@ AI-native process documentation platform. Upload source documents, describe your
 
 The following paths are **machine-local** and must not be committed: `processdoc.db`, the entire `workspace/` tree (per-project uploads, parsed JSON, runs, wiki mirrors), Office lock files such as `~$*.pptx`, and stray generated `.pptx`/`.docx` at the repo root. They are ignored via the root `.gitignore`. After cloning, start the backend once (or run Alembic migrations) so SQLite or Postgres creates a fresh database; project workspaces are created automatically under `workspace/` when you use the app.
 
+**API Key Security:** If you configure per-project Tavily API keys via the Settings UI, they are stored in `workspace/{project_id}/settings.json` (plaintext). Treat this file as sensitive: restrict read access to trusted users, don't commit to version control, and rotate API keys regularly.
+
 ---
 
 ## Architecture
@@ -294,6 +296,8 @@ cd backend && alembic upgrade head && uvicorn app.main:app --reload --port 8000
 For multi-user production, prefer Postgres over SQLite. Full deployment notes (pool sizing, Redis, workers, nginx timeouts): [`infra/PRODUCTION_TOPOLOGY.md`](infra/PRODUCTION_TOPOLOGY.md).
 
 ### Redis (local)
+
+`make redis.up` starts the `redis` docker-compose service and waits until it's ready (`make redis.down` to stop it). Then:
 
 ```bash
 export REDIS_URL="redis://localhost:6379/0"

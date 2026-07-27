@@ -4,7 +4,7 @@ from app.core.config import Settings
 from app.services.run_queue.runtime import RunQueueRuntime
 
 _TEST_SETTINGS = Settings(
-    jwt_secret="test-jwt-secret-min-16chars",
+    jwt_secret="test-jwt-secret-32-chars-long-ok!",
     database_url="sqlite:///:memory:",
 )
 

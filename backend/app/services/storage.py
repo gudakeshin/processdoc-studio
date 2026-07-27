@@ -1,8 +1,10 @@
 import json
+import logging
 import os
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,8 @@ from openpyxl.styles import Font, PatternFill
 
 from app.core.config import settings
 from app.core.deliverable import DeliverableRegistry
+
+logger = logging.getLogger(__name__)
 
 
 def workspace_path(project_id: str) -> Path:
@@ -102,7 +106,7 @@ def create_run(project_id: str, output_types: list[str]) -> dict:
         "project_id": project_id,
         "status": "plan_ready",
         "output_types": output_types,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": datetime.now(IST).isoformat(),
     }
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest
@@ -153,12 +157,38 @@ def save_run_artifacts(project_id: str, run_id: str, payload: dict) -> None:
             suffix = ".md" if key.endswith("_md") else ".txt"
             (run_dir / f"{key}{suffix}").write_text(value, encoding="utf-8")
 
+    archetype = payload.get("deliverable_archetype")
+    if archetype:
+        (run_dir / "deliverable_archetype.txt").write_text(str(archetype).strip(), encoding="utf-8")
+
+    # ``render()`` returns the artifact Path on success and None when the
+    # renderer's own QA gate rejected the output (or it raised). Record that
+    # per-output so a degraded artifact is visible to the run instead of
+    # shipping silently — the renderer already saved the file either way.
+    render_status: dict[str, str] = {}
     for output_type in requested_set:
         try:
             deliverable = DeliverableRegistry.get(output_type)
         except Exception:  # noqa: S112 — best-effort, non-fatal
             continue
-        deliverable.render(payload, run_dir, branding=payload.get("branding"))
+        rendered = deliverable.render(
+            payload, run_dir, branding=payload.get("branding_context") or payload.get("branding")
+        )
+        if rendered is None:
+            render_status[output_type] = "degraded"
+            logger.error(
+                "Deliverable %s did not render cleanly for run %s "
+                "(renderer QA rejected the output or raised)",
+                output_type,
+                run_id,
+            )
+        else:
+            render_status[output_type] = "ok"
+
+    if render_status:
+        (run_dir / "render_status.json").write_text(
+            json.dumps(render_status, indent=2), encoding="utf-8"
+        )
 
     def _rows_from_markdown(md: str) -> list[list[str]]:
         rows: list[list[str]] = []

@@ -1,5 +1,6 @@
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from app.core.tz import IST
 
 from fastapi import Depends, Header, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import Membership, RefreshToken, User
 from app.db.session import get_db
+from app.services.cache import cache_service
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -25,14 +27,14 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(subject: str) -> str:
-    expiry = datetime.now(UTC) + timedelta(minutes=settings.jwt_access_exp_minutes)
+    expiry = datetime.now(IST) + timedelta(minutes=settings.jwt_access_exp_minutes)
     payload = {"sub": subject, "exp": expiry, "typ": "access", "jti": str(uuid.uuid4())}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
 def create_refresh_token(subject: str, db: Session, user_id: str) -> str:
     jti = str(uuid.uuid4())
-    expiry = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_exp_days)
+    expiry = datetime.now(IST) + timedelta(days=settings.jwt_refresh_exp_days)
     row = RefreshToken(id=jti, user_id=user_id, expires_at=expiry)
     db.add(row)
     db.commit()
@@ -55,13 +57,13 @@ def rotate_refresh_token(db: Session, refresh_token: str) -> tuple[User, str]:
     email = payload.get("sub")
     if not jti or not email or not isinstance(email, str):
         raise credentials_exc
-    now = datetime.now(UTC)
+    now = datetime.now(IST)
     row = db.scalar(select(RefreshToken).where(RefreshToken.id == str(jti)))
     if row is None or row.revoked_at is not None:
         raise credentials_exc
     exp_at = row.expires_at
     if exp_at.tzinfo is None:
-        exp_at = exp_at.replace(tzinfo=UTC)
+        exp_at = exp_at.replace(tzinfo=IST)
     if exp_at < now:
         raise credentials_exc
     user = db.scalar(select(User).where(User.email == email))
@@ -82,7 +84,7 @@ def rotate_refresh_token(db: Session, refresh_token: str) -> tuple[User, str]:
 
 
 def create_sse_token(subject: str, *, run_id: str | None = None) -> str:
-    exp = datetime.now(UTC) + timedelta(seconds=max(30, int(settings.jwt_sse_exp_seconds)))
+    exp = datetime.now(IST) + timedelta(seconds=max(30, int(settings.jwt_sse_exp_seconds)))
     pl: dict = {"sub": subject, "exp": exp, "typ": "sse"}
     if run_id:
         pl["run_id"] = str(run_id)
@@ -107,13 +109,23 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         _reject_if_non_access_bearer(payload)
         email = payload.get("sub")
-        if not email:
+        if not email or not isinstance(email, str):
             raise credentials_exc
     except JWTError as exc:
         raise credentials_exc from exc
+
+    cached = cache_service.get(f"user_jwt:{email}")
+    if cached:
+        return User(**cached)
+
     user = db.scalar(select(User).where(User.email == email))
     if not user:
         raise credentials_exc
+    cache_service.set(
+        f"user_jwt:{email}",
+        {"id": user.id, "email": user.email, "hashed_password": user.hashed_password},
+        ttl_seconds=300,
+    )
     return user
 
 
@@ -155,10 +167,17 @@ def get_current_user_sse(
 
 
 def require_project_role(project_id: str, allowed_roles: set[str], user: User, db: Session) -> None:
-    member = db.scalar(
-        select(Membership).where(Membership.project_id == project_id, Membership.user_id == user.id)
-    )
-    if not member or member.role not in allowed_roles:
+    cache_key = f"project_role:{user.id}:{project_id}"
+    cached_role = cache_service.get(cache_key)
+    if cached_role:
+        role = cached_role.get("role", "")
+    else:
+        member = db.scalar(
+            select(Membership).where(Membership.project_id == project_id, Membership.user_id == user.id)
+        )
+        role = member.role if member else ""
+        cache_service.set(cache_key, {"role": role}, ttl_seconds=60)
+    if not role or role not in allowed_roles:
         raise HTTPException(status_code=403, detail="Insufficient project permissions")
 
 
@@ -179,5 +198,4 @@ def ensure_user(email: str, password: str, db: Session) -> User:
     created = User(id=f"u_{uuid.uuid4().hex[:10]}", email=email, hashed_password=get_password_hash(password))
     db.add(created)
     db.commit()
-    db.refresh(created)
     return created

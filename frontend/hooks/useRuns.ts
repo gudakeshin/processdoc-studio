@@ -43,27 +43,6 @@ export function useCreateRunMutation(projectId: string) {
       conversation_id?: string;
       plan_hash?: string;
     }) => {
-      // #region agent log
-      fetch("http://127.0.0.1:7822/ingest/adcfc011-2d2e-4666-bf9d-d7fae35bc85f", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a9841a" },
-        body: JSON.stringify({
-          sessionId: "a9841a",
-          runId: "frontend-create-run",
-          hypothesisId: "H7",
-          location: "frontend/hooks/useRuns.ts:useCreateRunMutation:before_api",
-          message: "Frontend create-run request initiated",
-          data: {
-            project_id: projectId,
-            output_types: payload.output_types,
-            custom_output_types: payload.custom_output_types ?? [],
-            has_conversation_id: Boolean(payload.conversation_id),
-            has_plan_hash: Boolean(payload.plan_hash),
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       const res = await api("/api/runs", {
         method: "POST",
         body: JSON.stringify({
@@ -87,27 +66,6 @@ export function useCreateRunMutation(projectId: string) {
           inferred_rationale?: string;
         };
       };
-      // #region agent log
-      fetch("http://127.0.0.1:7822/ingest/adcfc011-2d2e-4666-bf9d-d7fae35bc85f", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a9841a" },
-        body: JSON.stringify({
-          sessionId: "a9841a",
-          runId: String(data.run_id || "frontend-create-run"),
-          hypothesisId: "H8",
-          location: "frontend/hooks/useRuns.ts:useCreateRunMutation:after_api",
-          message: "Frontend create-run response received",
-          data: {
-            project_id: projectId,
-            response_ok: res.ok,
-            status: res.status,
-            run_id: data.run_id ?? null,
-            error_message: !res.ok ? extractApiErrorMessage(data, "Create run failed") : null,
-          },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       if (!res.ok || !data.run_id) {
         const err = new RunCreationError(extractApiErrorMessage(data, "Create run failed"));
         if (data.detail && typeof data.detail === "object") {

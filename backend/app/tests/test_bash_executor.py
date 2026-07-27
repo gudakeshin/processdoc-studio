@@ -7,7 +7,7 @@ from app.core.config import Settings
 from app.services.bash_executor import BashExecutor, sanitize_output, validate_command
 
 _TEST_SETTINGS_BASE = {
-    "jwt_secret": "test-jwt-secret-min-16chars",
+    "jwt_secret": "test-jwt-secret-32-chars-long-ok!",
     "database_url": "sqlite:///:memory:",
 }
 

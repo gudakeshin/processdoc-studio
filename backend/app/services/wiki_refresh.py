@@ -8,7 +8,8 @@ Implements smart scheduling and handles incremental updates with change detectio
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -86,7 +87,7 @@ class SourceTracker:
                 self.sources_metadata["sources"][page_id]["sources"].append({
                     "url": source_url,
                     "type": source_type,
-                    "added_at": datetime.now(UTC).isoformat(),
+                    "added_at": datetime.now(IST).isoformat(),
                     "last_checked": None,
                     "hash": None,
                     "status": "pending",
@@ -148,7 +149,7 @@ class SourceTracker:
                         })
                     else:
                         source["hash"] = current_hash
-                        source["last_checked"] = datetime.now(UTC).isoformat()
+                        source["last_checked"] = datetime.now(IST).isoformat()
 
                 except Exception as e:
                     _LOG.warning(f"Error checking source {source_url}: {e}")
@@ -229,7 +230,7 @@ class SourceTracker:
             List of page IDs
         """
         try:
-            threshold = datetime.now(UTC) - timedelta(days=days_old)
+            threshold = datetime.now(IST) - timedelta(days=days_old)
             pages_to_refresh = []
 
             for page_id, page_data in self.sources_metadata.get("sources", {}).items():
@@ -288,7 +289,7 @@ class SourceTracker:
                 # Older syncs get higher priority
                 if last_synced:
                     try:
-                        days_since_sync = (datetime.now(UTC) - datetime.fromisoformat(last_synced)).days
+                        days_since_sync = (datetime.now(IST) - datetime.fromisoformat(last_synced)).days
                         priority += days_since_sync
                     except Exception:
                         priority += 30
@@ -314,7 +315,7 @@ class SourceTracker:
     def _persist(self) -> None:
         """Save sources metadata."""
         try:
-            self.sources_metadata["last_checked"] = datetime.now(UTC).isoformat()
+            self.sources_metadata["last_checked"] = datetime.now(IST).isoformat()
 
             meta_dir = self.wiki_dir / ".meta"
             meta_dir.mkdir(exist_ok=True)
@@ -372,7 +373,7 @@ class RefreshScheduler:
                 "total_pages_to_refresh": len(priority_list),
                 "next_batch": next_batch,
                 "priority_scores": priority_scores,
-                "schedule_date": datetime.now(UTC).isoformat(),
+                "schedule_date": datetime.now(IST).isoformat(),
             }
 
         except Exception as e:
@@ -384,7 +385,7 @@ class RefreshScheduler:
         try:
             if page_id in self.tracker.sources_metadata["sources"]:
                 self.tracker.sources_metadata["sources"][page_id]["last_synced"] = \
-                    datetime.now(UTC).isoformat()
+                    datetime.now(IST).isoformat()
                 self.tracker._persist()
                 return True
             return False

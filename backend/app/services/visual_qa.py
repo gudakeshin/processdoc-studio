@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import contextlib
 import json
-import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.core.model_tiers import critique_model
 from app.services.claude import claude_generate_json, claude_generate_json_with_images, is_claude_enabled
 
 
@@ -29,28 +28,9 @@ def _render_pdf_pages_to_png(pdf_path: Path, output_dir: Path, prefix: str) -> l
 
 
 def _convert_office_to_pdf(source_path: Path, output_dir: Path) -> Path | None:
-    soffice_path = shutil.which("soffice")
-    if not soffice_path:
-        return None
-    try:
-        subprocess.run(
-            [
-                soffice_path,
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                str(output_dir),
-                str(source_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        return None
-    candidate = output_dir / f"{source_path.stem}.pdf"
-    return candidate if candidate.exists() else None
+    from app.core.soffice_convert import convert_office_to_pdf
+
+    return convert_office_to_pdf(source_path, output_dir)
 
 
 def _render_text_lines_to_images(
@@ -107,10 +87,15 @@ def _extract_pptx_metadata(path: Path) -> dict[str, Any]:
         H = prs.slide_height.inches
         canvas_area = W * H
         slides_meta: list[dict[str, Any]] = []
+        per_slide_char_budget = 2400
+        per_block_cap = 400
         for idx, slide in enumerate(prs.slides, start=1):
             fills: list[str] = []
             texts: list[str] = []
             covered = 0.0
+            has_table = False
+            table_dims: list[str] = []
+            slide_chars = 0
             for shape in slide.shapes:
                 with contextlib.suppress(Exception):
                     covered += shape.width.inches * shape.height.inches
@@ -119,27 +104,58 @@ def _extract_pptx_metadata(path: Path) -> dict[str, Any]:
                     fills.append(str(rgb).upper())
                 except Exception:  # noqa: S110 — best-effort, non-fatal
                     pass
-                try:
-                    txt = str(shape.text or "").strip()
-                    if txt:
-                        texts.append(txt[:120])
-                except Exception:  # noqa: S110 — best-effort, non-fatal
-                    pass
+                if getattr(shape, "has_table", False):
+                    has_table = True
+                    try:
+                        rows = len(shape.table.rows)
+                        cols = len(shape.table.columns)
+                        table_dims.append(f"{rows}x{cols}")
+                        for row in shape.table.rows:
+                            for cell in row.cells:
+                                t = str(cell.text_frame.text or "").strip()
+                                if not t or slide_chars >= per_slide_char_budget:
+                                    continue
+                                chunk = t[:per_block_cap]
+                                if len(t) > per_block_cap:
+                                    chunk += " …[truncated by extractor]"
+                                texts.append(chunk)
+                                slide_chars += len(chunk)
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
+                        pass
+                else:
+                    try:
+                        txt = str(shape.text or "").strip()
+                        if txt and slide_chars < per_slide_char_budget:
+                            chunk = txt[:per_block_cap]
+                            if len(txt) > per_block_cap:
+                                chunk += " …[truncated by extractor]"
+                            texts.append(chunk)
+                            slide_chars += len(chunk)
+                    except Exception:  # noqa: S110 — best-effort, non-fatal
+                        pass
             unique_fills = list(set(fills))
             slides_meta.append({
                 "index": idx,
                 "shape_count": len(list(slide.shapes)),
                 "text_blocks": texts,
+                "has_table": has_table,
+                "table_dims": table_dims,
                 "fill_colors": unique_fills,
                 "has_green_chrome": "86BC25" in unique_fills,
                 "has_dark_chrome": "1A1A1A" in unique_fills,
                 # Fraction of canvas area that shapes collectively cover (proxy for density)
                 "content_density": round(min(1.0, covered / max(canvas_area, 0.01)), 3),
             })
+        fill_histogram: dict[str, int] = {}
+        for slide in slides_meta:
+            for fill in slide.get("fill_colors", []):
+                fill_histogram[str(fill)] = fill_histogram.get(str(fill), 0) + 1
+        dominant_fills = sorted(fill_histogram.items(), key=lambda kv: kv[1], reverse=True)[:5]
         return {
             "slide_count": len(slides_meta),
             "canvas_w_inches": round(W, 3),
             "canvas_h_inches": round(H, 3),
+            "dominant_fills": [{"rgb": rgb, "count": count} for rgb, count in dominant_fills],
             "slides": slides_meta,
         }
     except Exception as exc:
@@ -147,28 +163,108 @@ def _extract_pptx_metadata(path: Path) -> dict[str, Any]:
 
 
 def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
-    """Dedicated visual QA pass for the PPTX using structural metadata.
+    """Dedicated visual QA pass for the PPTX.
 
-    Sends per-slide structural data (shapes, colours, density) alongside a
-    design-aware prompt.  Returns per-slide findings and remediation_hints that
-    the PPTX generation agent can consume on a retry pass — without any
-    hardcoded pass/fail pixel rules.
+    Mode selection (pptx_visual_critic_mode):
+      "auto"     — pixel path when soffice + pypdfium2 are available; metadata fallback
+      "pixel"    — pixel path only (skips if deps unavailable)
+      "metadata" — structural metadata path only (legacy default)
+
+    Returns per-slide findings and remediation_hints that the PPTX generation
+    agent can consume on a retry pass.
     """
-    _empty = {"status": "skip", "summary": "", "per_slide_findings": [], "remediation_hints": []}
+    _empty = {"status": "skip", "summary": "", "per_slide_findings": [], "remediation_hints": [], "critic_path": "skip"}
     if not bool(getattr(settings, "pptx_visual_critic_enabled", True)):
         return {**_empty, "summary": "PPTX visual critic disabled by configuration"}
     if not path.exists():
         return {**_empty, "summary": "PPTX not found"}
-    metadata = _extract_pptx_metadata(path)
-    if "error" in metadata:
-        return {**_empty, "summary": f"Could not parse PPTX: {metadata['error']}"}
     if not is_claude_enabled():
         return {**_empty, "summary": "Claude API not configured"}
 
+    critic_mode = str(getattr(settings, "pptx_visual_critic_mode", "auto") or "auto").lower()
+    # Records why the pixel path was not taken, so the saved report is
+    # self-describing instead of silently degrading to the metadata path.
+    degraded_reason = ""
+
+    # Pixel path: soffice → PDF → PNG → vision LLM.
+    if critic_mode in {"auto", "pixel"}:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                pdf_path = _convert_office_to_pdf(path, tmp_path)
+                if not (pdf_path and pdf_path.exists()):
+                    degraded_reason = "soffice unavailable or PPTX→PDF conversion failed"
+                if pdf_path and pdf_path.exists():
+                    page_images = _render_pdf_pages_to_png(pdf_path, tmp_path, "pptx")
+                    if not page_images:
+                        degraded_reason = "PDF rendered no pages (pypdfium2 unavailable or empty deck)"
+                    if page_images:
+                        pixel_system = (
+                            "You are a slide design QA reviewer for executive presentations. "
+                            "You receive rendered slide images and evaluate layout quality against the design standard below. "
+                            "Return strict JSON with keys: status (pass|warn|fail), summary (one sentence), "
+                            "per_slide_findings (array of {index, issue, severity: low|medium|high}), "
+                            "remediation_hints (array of {slide_index, instruction})."
+                        )
+                        pixel_user = (
+                            f"Project: {project_id} | Run: {run_id}\n\n"
+                            "Design rubric (evaluate each slide image against these criteria):\n"
+                            "- Alignment: text and shapes should align to an implicit grid; no floating orphan elements.\n"
+                            "- Overlap/clipping: no text clipped by shape borders or slide edge; no two text blocks overlapping.\n"
+                            "- Hierarchy: title clearly dominant; supporting text visibly smaller.\n"
+                            "- Status-color consistency: same status should use the same color throughout the deck.\n"
+                            "- Footer cadence: footer text and page number should appear consistently on every non-title slide.\n"
+                            "- Content density: slides should be neither blank nor overloaded.\n"
+                            "- Whitespace balance: each slide should have breathing room; flag cramped slides where elements touch edges or each other.\n"
+                            "- Readability/contrast: text on filled shapes must have sufficient contrast; flag low-contrast or hard-to-read text.\n"
+                            "- One idea per slide: each slide should carry a single clear message; flag slides juggling multiple unrelated points.\n"
+                            "- Visual variety: across the deck, flag monotony (e.g. every slide is a bullet list) — vary layouts to sustain attention.\n"
+                            "Flag real layout problems — not stylistic preferences. "
+                            "If a slide looks clean, do not manufacture findings."
+                        )
+                        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or critique_model()
+                        result = claude_generate_json_with_images(
+                            system=pixel_system,
+                            user=pixel_user,
+                            image_bytes=page_images,
+                            model=critic_model,
+                            temperature=0.1,
+                            max_tokens=1600,
+                        )
+                        if isinstance(result, dict) and "status" in result:
+                            status = str(result.get("status") or "warn").lower()
+                            if status not in {"pass", "warn", "fail"}:
+                                status = "warn"
+                            return {
+                                "status": status,
+                                "summary": str(result.get("summary", "")),
+                                "per_slide_findings": result.get("per_slide_findings") or [],
+                                "remediation_hints": result.get("remediation_hints") or [],
+                                "critic_path": "pixel",
+                            }
+        except Exception as exc:
+            degraded_reason = f"pixel vision pass failed: {exc}"  # fall through to metadata path
+
+    if critic_mode == "pixel":
+        return {
+            **_empty,
+            "summary": "Pixel critic unavailable (soffice/pypdfium2 not present)",
+            "critic_degraded_reason": degraded_reason or "soffice/pypdfium2 not present",
+        }
+
+    # Metadata path (structural, no images).
+    metadata = _extract_pptx_metadata(path)
+    if "error" in metadata:
+        return {**_empty, "summary": f"Could not parse PPTX: {metadata['error']}"}
+
+
     system = (
         "You are a slide design QA reviewer for executive presentations. "
-        "You receive structured per-slide metadata (shape counts, fill colours, content density, text blocks) "
-        "and evaluate layout quality against the design standard described in the user message. "
+        "You receive structured per-slide metadata (shape counts, fill colours, content density, text blocks, "
+        "table dimensions when present) and evaluate layout quality against the design standard described in the user message. "
+        "Text blocks may end with '…[truncated by extractor]' — that is an extraction limit, NOT missing deck content; "
+        "never report extractor clipping as slide truncation. "
+        "When has_table is true or table_dims is non-empty, do not claim the slide is blank. "
         "Return strict JSON only with keys: "
         "status (pass|warn|fail), "
         "summary (one sentence), "
@@ -180,18 +276,13 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
         f"Project: {project_id} | Run: {run_id}\n\n"
         "Evaluate this PPTX deck using the structural metadata below.\n\n"
         "Design standard for this deck:\n"
-        "- Canvas must be 10.0\" × 5.625\"\n"
-        "- Every content slide (non-title) must carry brand chrome: #86BC25 green top bar "
-        "and #1A1A1A dark left stripe. Flag any content slide where has_green_chrome or "
-        "has_dark_chrome is false.\n"
-        "- stat_cards slides contain exactly 3 full-width columns across the canvas. "
-        "Expected content_density ≥ 0.45. Flag if below.\n"
-        "- bullets slides should have content_density that scales with bullet count. "
-        "Flag if a slide has very few text_blocks (≤ 2) and density < 0.15 — likely under-populated.\n"
-        "- column_cards slides: 3 balanced columns, content_density ≥ 0.45.\n"
-        "- stack_layers slides: horizontal rows, content_density ≥ 0.35.\n"
-        "- Any slide with shape_count < 4 is likely missing chrome — flag it.\n"
-        "- Infer the likely slide_type from the text_blocks and fill_colors present.\n\n"
+        "- Use the provided canvas dimensions as authoritative; do not assume a fixed canvas.\n"
+        "- Infer the active brand palette/chrome from dominant_fills and repeated fill_colors across slides.\n"
+        "- Flag only deviations from this deck's inferred style system (not from any hardcoded color).\n"
+        "- For content slides, assess consistency of title hierarchy, chrome repetition, and footer cadence.\n"
+        "- Assess visual storytelling quality by balancing text_blocks, shape_count, and content_density.\n"
+        "- Flag under-populated slides (very low density + sparse text) and cluttered slides (high density + long text_blocks).\n"
+        "- Infer likely slide_type from text_blocks/fill_colors and evaluate layout plausibility for that type.\n\n"
         "For each problematic slide include a concise instruction in remediation_hints that the "
         "PPTX generation agent can act on directly (e.g. 'Slide 2: stat_cards layout has low "
         "content_density 0.18 — ensure 3 full-width columns spanning the entire canvas width').\n\n"
@@ -199,7 +290,7 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
     )
 
     try:
-        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or None
+        critic_model = str(getattr(settings, "pptx_visual_critic_model", "") or "").strip() or critique_model()
         result = claude_generate_json(
             system=system,
             user=user,
@@ -217,13 +308,18 @@ def _evaluate_pptx(path: Path, project_id: str, run_id: str) -> dict[str, Any]:
     status = str(result.get("status") or "warn").lower()
     if status not in {"pass", "warn", "fail"}:
         status = "warn"
-    return {
+    out: dict[str, Any] = {
         "status": status,
         "summary": str(result.get("summary") or ""),
         "per_slide_findings": result.get("per_slide_findings") or [],
         "remediation_hints": result.get("remediation_hints") or [],
         "metadata": metadata,
+        "critic_path": "metadata",
     }
+    # Only present when the pixel path was eligible (auto/pixel mode) but degraded.
+    if degraded_reason:
+        out["critic_degraded_reason"] = degraded_reason
+    return out
 
 
 def _extract_docx_metadata(path: Path) -> dict[str, Any]:

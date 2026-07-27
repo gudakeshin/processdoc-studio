@@ -1,29 +1,41 @@
+import asyncio
 import contextlib
 import json
 import logging
 import shutil
+import threading
 import time
 import uuid
 from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 
 import redis
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+logger = logging.getLogger(__name__)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.api.formats import _load_output_types
 from app.core.auth import get_current_user, get_current_user_sse, require_project_role
 from app.core.config import settings
-from app.db.models import Conversation, ConversationMessage, MemoryEvent, Run, RunEvent, RunTask, ScheduledTaskRun, User
+from app.core.rate_limit import limiter
+from app.db.models import Conversation, ConversationMessage, MemoryEvent, Run, RunEvent, RunTask, ScheduledTaskRun, User, utcnow
 from app.db.session import SessionLocal, get_db
 from app.schemas.common import RunSummary
 from app.services.claude import claude_generate_json, is_claude_enabled
+from app.services.output_format_detection import (
+    detect_deliverable_keyword_formats,
+    detect_explicit_output_formats,
+    resolve_output_formats,
+)
 from app.services.hooks import disable_hook, list_registered_hooks, sync_disabled_hooks_from_db, upsert_hook_control
 from app.services.observability import increment
 from app.services.permission_pipeline import evaluate_permission_pipeline
+from app.services.run_budget import get_live_usage
 from app.services.run_events import lifecycle_event
 from app.services.run_tasks import serialize_run_task
 from app.services.run_worker import (
@@ -41,8 +53,48 @@ from app.services.swarm import persist_instruction_broadcast_swarm_event_payload
 
 router = APIRouter()
 _log = logging.getLogger(__name__)
-_DEBUG_LOG_PATH = Path("/Users/pallavchaturvedi/Agentic Projects/Process Doc v2/.cursor/debug-a9841a.log")
-_DEBUG_SESSION_ID = "a9841a"
+
+# Shared Redis connection pool for SSE pub/sub subscriptions.
+# Created lazily on first SSE request so the pool is not allocated when Redis is unused.
+# All concurrent streams share this pool; each active subscription borrows one connection.
+_sse_redis_pool: redis.ConnectionPool | None = None
+_sse_redis_pool_lock = threading.Lock()
+
+
+def _get_or_create_sse_redis_pool() -> redis.ConnectionPool | None:
+    global _sse_redis_pool
+    if settings.run_queue_backend != "redis":
+        return None
+    if _sse_redis_pool is not None:
+        return _sse_redis_pool
+    with _sse_redis_pool_lock:
+        if _sse_redis_pool is None:
+            try:
+                _sse_redis_pool = redis.ConnectionPool.from_url(
+                    settings.redis_url,
+                    decode_responses=True,
+                    max_connections=settings.sse_redis_max_connections,
+                )
+            except Exception as exc:
+                _log.warning("%s: suppressed error: %s", '_get_or_create_sse_redis_pool', exc)
+                return None
+    return _sse_redis_pool
+
+
+def _run_create_rate_limit() -> str:
+    return (settings.run_create_rate_limit or "20/minute").strip() or "20/minute"
+
+
+def _run_approve_rate_limit() -> str:
+    return (settings.run_approve_rate_limit or "20/minute").strip() or "20/minute"
+
+
+def _run_recommend_rate_limit() -> str:
+    return (settings.run_recommend_rate_limit or "30/minute").strip() or "30/minute"
+
+
+def _run_regenerate_rate_limit() -> str:
+    return (settings.run_regenerate_rate_limit or "10/minute").strip() or "10/minute"
 
 
 def _ensure_run_enqueued(project_id: str, run_id: str, *, context: str) -> None:
@@ -65,9 +117,12 @@ def _ensure_run_enqueued(project_id: str, run_id: str, *, context: str) -> None:
 
 
 def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    raw = (settings.processdoc_runs_debug_log or "").strip()
+    if not raw:
+        return
     try:
+        path = Path(raw)
         payload = {
-            "sessionId": _DEBUG_SESSION_ID,
             "runId": str(run_id or ""),
             "hypothesisId": hypothesis_id,
             "location": location,
@@ -75,8 +130,8 @@ def _session_debug_log(*, run_id: str | None, hypothesis_id: str, location: str,
             "data": data,
             "timestamp": int(time.time() * 1000),
         }
-        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
     except Exception:  # noqa: S110 — best-effort, non-fatal
         pass
@@ -183,12 +238,12 @@ def _build_plan_payload(
     if parsed_dir.exists():
         for parsed_file in parsed_dir.glob("*.json"):
             try:
-                parsed_payload = json.loads(parsed_file.read_text(encoding="utf-8"))
-            except Exception:  # noqa: S112 — best-effort, non-fatal
-                continue
-            chunks = parsed_payload.get("chunks")
-            if isinstance(chunks, list):
-                parsed_chunk_count += len([c for c in chunks if isinstance(c, str) and c.strip()])
+                # Estimate chunk count from file size; avoids reading every parsed document
+                # at run-start time (major I/O bottleneck under concurrent load).
+                # Parsed JSON is ~1–3 KB per text chunk including metadata.
+                parsed_chunk_count += max(1, parsed_file.stat().st_size // 1500)
+            except OSError:
+                parsed_chunk_count += 3
     estimated_tokens = max(800, min(12000, len(instruction.split()) * 6 + (parsed_count * 120)))
     canonical_outputs = list(dict.fromkeys(output_types))
     contract_nodes: list[dict] = []
@@ -312,6 +367,8 @@ def _load_confirmed_plan(
             "strategy_dossier": metadata.get("strategy_dossier") if isinstance(metadata.get("strategy_dossier"), dict) else None,
             "selected_strategy": metadata.get("selected_strategy") if isinstance(metadata.get("selected_strategy"), dict) else None,
             "deck_outline_preview": metadata.get("deck_outline_preview") if isinstance(metadata.get("deck_outline_preview"), dict) else None,
+            "document_outline_preview": metadata.get("document_outline_preview") if isinstance(metadata.get("document_outline_preview"), dict) else None,
+            "wiki_context_refs": metadata.get("wiki_context_refs") if isinstance(metadata.get("wiki_context_refs"), list) else [],
         }
     raise HTTPException(
         status_code=409,
@@ -354,6 +411,11 @@ class RegenerateSlideRequest(BaseModel):
     element_path: str | None = None
 
 
+class PatchSlideElementRequest(BaseModel):
+    element_path: str
+    value: str | int | float | bool | None = None
+
+
 class RecommendOutputTypesRequest(BaseModel):
     project_id: str
     instruction: str
@@ -389,153 +451,15 @@ def _recommend_output_types(
         "Use proposal_operations for supply chain, logistics, manufacturing, quality. "
         "Use proposal_generic for proposals without a clear domain specialization."
     )
-    deliverable_keyword_map = {
-        # Maps deliverables to canonical output formats only.
-        "proposal": {"types": ["docx", "pptx"]},
-        "approach_note": {"types": ["docx", "pptx"]},
-        "process_flow": {"types": ["process_map", "docx"]},
-        "narrative": {"types": ["docx"]},
-        "raci": {"types": ["xlsx"]},
-        "sop": {"types": ["docx"]},
-        "brd": {"types": ["docx", "pptx"]},
-        "business_requirement_document": {"types": ["docx", "pptx"]},
-        "improvement_report": {"types": ["docx", "pptx"]},
-        "financial_model": {"types": ["xlsx"]},
-        "training_deck": {"types": ["pptx"]},
-    }
-
     lowered = (instruction or "").lower()
-    desired_types: list[str] = []
+    explicit_formats_requested = detect_explicit_output_formats(lowered)
+    desired_types = detect_deliverable_keyword_formats(lowered)
 
-    # ── Detect explicit output format constraints (user saying "only pptx", "just slides", etc.) ──
-    # These explicit constraints override the keyword-based recommendations.
-    explicit_output_constraints = {
-        "pptx": [
-            "only pptx",
-            "only slides",
-            "only slide",
-            "just pptx",
-            "just slides",
-            "pptx only",
-            "slides only",
-            "slide only",
-            "in pptx",
-            "in slides",
-            "in slide",
-            "presentation format",
-            "presentation only",
-            "ppt only",
-            "ppt format",
-            "powerpoint only",
-            "powerpoint format",
-            "in powerpoint",
-            "as ppt",
-            "as pptx",
-            "in ppt",
-        ],
-        "docx": [
-            "only docx",
-            "only word",
-            "only doc",
-            "just docx",
-            "just word",
-            "docx only",
-            "word only",
-            "doc only",
-            "in docx",
-            "in word",
-            "document format",
-            "document only",
-            "word format",
-            "word document only",
-            "as word",
-            "as docx",
-        ],
-        "xlsx": [
-            "only xlsx",
-            "only excel",
-            "only spreadsheet",
-            "just xlsx",
-            "just excel",
-            "xlsx only",
-            "excel only",
-            "spreadsheet only",
-            "in xlsx",
-            "in excel",
-            "spreadsheet format",
-            "excel format",
-            "as excel",
-            "as xlsx",
-        ],
-        "process_map": [
-            "only process map",
-            "only process_map",
-            "only diagram",
-            "just process map",
-            "process map only",
-            "diagram only",
-            "flowchart only",
-            "as process map",
-            "in drawio",
-        ],
-    }
-
-    explicit_formats_requested = []
-    for output_type, constraint_phrases in explicit_output_constraints.items():
-        for phrase in constraint_phrases:
-            if phrase in lowered:
-                explicit_formats_requested.append(output_type)
-                break
-
-    # If explicit output format constraints found, ONLY use those (override deliverable defaults)
-    if explicit_formats_requested:
-        desired_types = explicit_formats_requested
-    # Otherwise use keyword-based recommendations
-    else:
-        # Use specific phrases/keywords to avoid over-triggering the recommendation constraints.
-        if "proposal" in lowered:
-            desired_types.extend(deliverable_keyword_map["proposal"]["types"])
-        if "approach note" in lowered or "approach" in lowered and "note" in lowered:
-            desired_types.extend(deliverable_keyword_map["approach_note"]["types"])
-        if "process flow" in lowered:
-            desired_types.extend(deliverable_keyword_map["process_flow"]["types"])
-        if "narratives" in lowered or "narrative" in lowered:
-            desired_types.extend(deliverable_keyword_map["narrative"]["types"])
-        if "raci" in lowered:
-            desired_types.extend(deliverable_keyword_map["raci"]["types"])
-        if "sop" in lowered:
-            desired_types.extend(deliverable_keyword_map["sop"]["types"])
-        if "business requirement document" in lowered or "brd" in lowered:
-            desired_types.extend(deliverable_keyword_map["brd"]["types"])
-        if "improvement report" in lowered:
-            desired_types.extend(deliverable_keyword_map["improvement_report"]["types"])
-        if "financial model" in lowered:
-            desired_types.extend(deliverable_keyword_map["financial_model"]["types"])
-        if "training deck" in lowered:
-            desired_types.extend(deliverable_keyword_map["training_deck"]["types"])
-
-    # De-dup while preserving order.
-    desired_types = list(dict.fromkeys(desired_types))
-
-    # ── Short-circuit: explicit format fully determines the answer ──────────────
-    # When the user explicitly named an output format (e.g. "in PPT format", "pptx only"),
-    # we already know the answer — no need to call the LLM. Returning here eliminates
-    # LLM failures (timeout, invalid JSON, rate limit) as a source of false out-of-scope responses.
-    if explicit_formats_requested:
-        _catalog_ids = {str(item.get("output_type_id")) for item in catalog}
-        allowed_explicit = [t for t in explicit_formats_requested if t in _catalog_ids]
-        if allowed_explicit:
-            _FAST_PREF_REPR = {
-                "pptx": "pptx",
-                "docx": "docx",
-                "xlsx": "xlsx",
-                "process_map": "drawio_xml",
-                "pdf": "pdf",
-            }
-            fast_prefs: dict[str, str] = {
-                t: _FAST_PREF_REPR[t] for t in allowed_explicit if t in _FAST_PREF_REPR
-            }
-            return allowed_explicit, [], fast_prefs, "Explicit format constraint detected.", None
+    # ── Short-circuit: format intent fully determines the answer ──────────────
+    _catalog_ids = {str(item.get("output_type_id")) for item in catalog}
+    resolved_formats, resolved_reps, resolved_rationale = resolve_output_formats(instruction, _catalog_ids)
+    if resolved_formats:
+        return resolved_formats, [], resolved_reps, resolved_rationale, None
 
     deliverable_constraints_text = (
         "Deliverable intent -> preferred output types/representations:\n"
@@ -655,10 +579,88 @@ def list_runs(
                 "status": r.status,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "instruction": r.instruction[:200] + ("…" if len(r.instruction) > 200 else ""),
+                "tokens_input": r.tokens_input,
+                "tokens_output": r.tokens_output,
+                "tokens_cache_read": r.tokens_cache_read,
+                "tokens_cache_creation": r.tokens_cache_creation,
+                "cost_usd": r.cost_usd,
             }
             for r in rows
         ]
     }
+
+
+# In-flight run states surfaced by the agentops health endpoint.
+_ACTIVE_RUN_STATES = ("approved", "running", "plan_ready", "plan_blocked")
+
+
+@router.get("/{project_id}/active")
+def list_active_runs(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """AgentOps health view: in-flight runs with staleness so an operator can tell a hung run
+    from one merely awaiting approval or queued behind a busy worker.
+
+    state: working | hung | awaiting_approval | blocked | queued.
+    """
+    require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    rows = db.scalars(
+        select(Run)
+        .where(Run.project_id == project_id, Run.status.in_(_ACTIVE_RUN_STATES))
+        .order_by(Run.created_at.desc())
+    ).all()
+    run_ids = [r.id for r in rows]
+    latest_event: dict[str, tuple[datetime, str]] = {}
+    if run_ids:
+        latest_ids = (
+            select(func.max(RunEvent.id).label("max_id"))
+            .where(RunEvent.run_id.in_(run_ids))
+            .group_by(RunEvent.run_id)
+            .subquery()
+        )
+        for rid, created_at, et in db.execute(
+            select(RunEvent.run_id, RunEvent.created_at, RunEvent.event_type).join(
+                latest_ids, RunEvent.id == latest_ids.c.max_id
+            )
+        ).all():
+            latest_event[rid] = (created_at, et)
+    now = utcnow()
+    timeout_sec = int(getattr(settings, "run_stuck_timeout_sec", 0) or 0)
+    items = []
+    for r in rows:
+        ev = latest_event.get(r.id)
+        last_at = ev[0] if ev else (r.approved_at or r.created_at)
+        secs = (now - last_at).total_seconds() if last_at else None
+        stale = bool(r.status == "running" and timeout_sec > 0 and secs is not None and secs > timeout_sec)
+        if r.status == "running":
+            state = "hung" if stale else "working"
+        elif r.status == "plan_ready":
+            state = "awaiting_approval"
+        elif r.status == "plan_blocked":
+            state = "blocked"
+        else:  # approved → admitted but not yet executing
+            state = "queued"
+        live = get_live_usage(r.id) or {}
+        items.append(
+            {
+                "id": r.id,
+                "status": r.status,
+                "state": state,
+                "stale": stale,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "approved_at": r.approved_at.isoformat() if r.approved_at else None,
+                "latest_event_at": last_at.isoformat() if last_at else None,
+                "latest_event_type": ev[1] if ev else None,
+                "seconds_since_last_event": int(secs) if secs is not None else None,
+                "instruction": r.instruction[:200] + ("…" if len(r.instruction) > 200 else ""),
+                "tokens_input": live.get("input_tokens", r.tokens_input),
+                "tokens_output": live.get("output_tokens", r.tokens_output),
+                "cost_usd": r.cost_usd,
+            }
+        )
+    return {"project_id": project_id, "stuck_timeout_sec": timeout_sec, "items": items}
 
 
 @router.delete("/{project_id}")
@@ -711,7 +713,9 @@ def delete_run(
 
 
 @router.post("/recommend-output-types")
+@limiter.limit(_run_recommend_rate_limit)
 def recommend_output_types(
+    request: Request,
     body: RecommendOutputTypesRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -735,7 +739,9 @@ def recommend_output_types(
 
 
 @router.post("")
+@limiter.limit(_run_create_rate_limit)
 def start_run(
+    request: Request,
     body: CreateRunRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -844,6 +850,12 @@ def start_run(
     deck_outline = confirmed_plan.get("deck_outline_preview")
     if isinstance(deck_outline, dict) and deck_outline.get("slides"):
         plan["deck_outline_preview"] = deck_outline
+    document_outline = confirmed_plan.get("document_outline_preview")
+    if isinstance(document_outline, dict) and document_outline.get("sections"):
+        plan["document_outline_preview"] = document_outline
+    wiki_refs = confirmed_plan.get("wiki_context_refs")
+    if isinstance(wiki_refs, list) and wiki_refs:
+        plan["wiki_context_refs"] = [str(r).strip() for r in wiki_refs if str(r).strip()][:20]
     if body.conversation_id and str(body.conversation_id).strip():
         plan["conversation_id"] = str(body.conversation_id).strip()
     if body.plan_hash and str(body.plan_hash).strip():
@@ -925,7 +937,9 @@ def start_run(
 
 
 @router.post("/{project_id}/{run_id}/approve")
+@limiter.limit(_run_approve_rate_limit)
 def approve_run(
+    request: Request,
     project_id: str,
     run_id: str,
     user: User = Depends(get_current_user),
@@ -956,7 +970,7 @@ def approve_run(
         raise HTTPException(status_code=409, detail="Run is not awaiting approval")
     run.status = "approved"
     run.approved_by = user.id
-    run.approved_at = datetime.utcnow()
+    run.approved_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     append_run_event(
         db,
@@ -1044,6 +1058,37 @@ def update_run_plan(
     return {"run_id": run.id, "status": run.status, "plan": plan}
 
 
+@router.get("/{project_id}/{run_id}/usage")
+def get_run_usage(
+    project_id: str,
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return live token usage for an executing run, or final values from the DB."""
+    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    from app.services.run_budget import get_live_usage
+    from app.services.llm_pricing import calculate_run_cost_usd
+
+    live = get_live_usage(run_id)
+    if live is not None:
+        cost = calculate_run_cost_usd(**live)
+        return {"run_id": run_id, "live": True, **live, "cost_usd": cost}
+
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {
+        "run_id": run_id,
+        "live": False,
+        "input_tokens": run.tokens_input or 0,
+        "output_tokens": run.tokens_output or 0,
+        "cache_read_tokens": run.tokens_cache_read or 0,
+        "cache_creation_tokens": run.tokens_cache_creation or 0,
+        "cost_usd": run.cost_usd,
+    }
+
+
 @router.get("/{project_id}/{run_id}/events")
 def list_run_events(
     project_id: str,
@@ -1075,6 +1120,29 @@ def list_run_events(
         "plan": plan,
         "items": [{"id": e.id, "event_type": e.event_type, "payload": e.payload_json} for e in rows],
     }
+
+
+@router.get("/{project_id}/{run_id}/context_trace")
+def get_run_context_trace(
+    project_id: str,
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return latest persisted context trace payload for this run."""
+    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    rows = db.scalars(
+        select(RunEvent)
+        .where(RunEvent.run_id == run_id, RunEvent.event_type == "context_trace")
+        .order_by(RunEvent.id.desc())
+        .limit(1)
+    ).all()
+    if not rows:
+        return {"run_id": run_id, "context_trace": None}
+    return {"run_id": run_id, "context_trace": rows[0].payload_json}
 
 
 @router.get("/{project_id}/{run_id}/tasks")
@@ -1127,7 +1195,7 @@ def apply_run_task_action(
         if task.status in {"completed", "skipped"}:
             raise HTTPException(status_code=409, detail="Task is already terminal")
         task.status = "skipped"
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now(IST).replace(tzinfo=None)
         append_run_event(db, run_id, "task.skipped", {"task_id": task.id, "title": task.title, "phase": task.phase, "reason": reason})
     elif action == "approve":
         task.requires_approval = False
@@ -1139,7 +1207,7 @@ def apply_run_task_action(
         append_run_event(db, run_id, "task.intervention_applied", {"action": "modify", **payload})
     else:
         raise HTTPException(status_code=400, detail="Unsupported action")
-    task.updated_at = datetime.utcnow()
+    task.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"run_id": run_id, "project_id": project_id, "task": serialize_run_task(task)}
 
@@ -1159,91 +1227,119 @@ def stream_run(
     if after_event_id > 0:
         increment("sse_replay_continuity_check_total")
 
-    def event_stream():
+    async def event_stream():
+        # Async generator: runs in the event loop (not a thread), so 500 concurrent
+        # SSE streams do not consume 500 threads. DB calls are dispatched via
+        # asyncio.to_thread so they don't block other streams during polling.
         pubsub = None
-        redis_client = None
         if settings.run_queue_backend == "redis":
+            def _setup_pubsub():
+                try:
+                    pool = _get_or_create_sse_redis_pool()
+                    if pool is None:
+                        return None
+                    _rc = redis.Redis(connection_pool=pool)
+                    _rc.ping()
+                    _ps = _rc.pubsub(ignore_subscribe_messages=True)
+                    _ps.subscribe(f"{settings.run_events_channel_prefix}:{run_id}")
+                    return _ps
+                except Exception as exc:
+                    _log.warning("%s: suppressed error: %s", '_setup_pubsub', exc)
+                    return None
+            pubsub = await asyncio.to_thread(_setup_pubsub)
+
+        # Initial DB check: verify run exists, emit legacy plan_ready burst if no events yet.
+        def _initial_check():
+            _sess = SessionLocal()
             try:
-                redis_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
-                redis_client.ping()
-                pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
-                pubsub.subscribe(f"{settings.run_events_channel_prefix}:{run_id}")
-            except Exception:
-                pubsub = None
-        session = SessionLocal()
-        try:
-            row = session.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
-            if not row:
-                return
-            # Older runs without a persisted timeline replay from the run row once.
-            if after_event_id == 0:
-                has_events = (
-                    session.scalar(
-                        select(RunEvent.id).where(RunEvent.run_id == run_id).limit(1)
+                _row = _sess.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+                if not _row:
+                    return None
+                if after_event_id == 0:
+                    _has_events = (
+                        _sess.scalar(select(RunEvent.id).where(RunEvent.run_id == run_id).limit(1))
+                        is not None
                     )
-                    is not None
-                )
-                if not has_events and row.status == "plan_ready":
-                    yield f"event: plan_ready\ndata: {row.plan_payload}\n\n"
-                    yield 'event: step\ndata: {"status": "awaiting_hitl_approval"}\n\n'
-                    return
-            if row.status == "approved":
-                maybe_start_run_execution(project_id, run_id)
-        finally:
-            session.close()
+                    if not _has_events and _row.status == "plan_ready":
+                        return ("plan_ready_no_events", _row.plan_payload)
+                if _row.status == "approved":
+                    maybe_start_run_execution(project_id, run_id)
+                return ("stream", _row.status)
+            finally:
+                _sess.close()
+
+        init_result = await asyncio.to_thread(_initial_check)
+        if init_result is None:
+            return
+        if init_result[0] == "plan_ready_no_events":
+            yield f"event: plan_ready\ndata: {init_result[1]}\n\n"
+            yield 'event: step\ndata: {"status": "awaiting_hitl_approval"}\n\n'
+            return
 
         last_id = after_event_id
         deadline = time.monotonic() + 600.0
         idle_cycles = 0
         try:
             while time.monotonic() < deadline:
+                # Fast path: Redis pub/sub delivers events without a DB round-trip.
                 if pubsub is not None:
                     try:
-                        msg = pubsub.get_message(timeout=0.25)
-                        if msg and msg.get("type") == "message":
-                            raw = msg.get("data")
+                        ps_msg = await asyncio.to_thread(pubsub.get_message, timeout=0.1)
+                        if ps_msg and ps_msg.get("type") == "message":
+                            raw = ps_msg.get("data")
                             if isinstance(raw, str):
-                                payload = json.loads(raw)
-                                ev_id = int(payload.get("id", 0) or 0)
+                                ps_payload = json.loads(raw)
+                                ev_id = int(ps_payload.get("id", 0) or 0)
                                 if ev_id > last_id:
                                     last_id = ev_id
                                     yield (
                                         f"id: {ev_id}\n"
-                                        f"event: {payload.get('event_type', 'step')}\n"
-                                        f"data: {payload.get('payload', '{}')}\n\n"
+                                        f"event: {ps_payload.get('event_type', 'step')}\n"
+                                        f"data: {ps_payload.get('payload', '{}')}\n\n"
                                     )
-                                    if payload.get("event_type") in ("done", "failed"):
+                                    if ps_payload.get("event_type") in ("done", "failed"):
                                         return
                     except Exception:
                         pubsub = None
-                session = SessionLocal()
-                try:
-                    row = session.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
-                    if not row:
+
+                # DB poll: authoritative fallback and run-status termination check.
+                # One session per poll cycle, closed immediately after use.
+                def _poll_db(lid=last_id):
+                    _sess = SessionLocal()
+                    try:
+                        _row = _sess.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+                        if not _row:
+                            return None, []
+                        _events = list(
+                            _sess.scalars(
+                                select(RunEvent)
+                                .where(RunEvent.run_id == run_id, RunEvent.id > lid)
+                                .order_by(RunEvent.id)
+                            ).all()
+                        )
+                        return _row.status, _events
+                    finally:
+                        _sess.close()
+
+                row_status, events = await asyncio.to_thread(_poll_db)
+                if row_status is None:
+                    return
+                for ev in events:
+                    last_id = ev.id
+                    yield f"id: {ev.id}\nevent: {ev.event_type}\ndata: {ev.payload}\n\n"
+                    if ev.event_type in ("done", "failed"):
                         return
-                    events = session.scalars(
-                        select(RunEvent)
-                        .where(RunEvent.run_id == run_id, RunEvent.id > last_id)
-                        .order_by(RunEvent.id)
-                    ).all()
-                    for ev in events:
-                        last_id = ev.id
-                        yield f"id: {ev.id}\nevent: {ev.event_type}\ndata: {ev.payload}\n\n"
-                        if ev.event_type in ("done", "failed"):
-                            return
-                    if row.status in ("review_ready", "done", "failed") and not events:
-                        return
-                    # Stay connected while awaiting HITL: closing here caused immediate EventSource
-                    # reconnect loops and false "stream error" + poll-only UX in the browser.
-                    idle_cycles = 0 if events else min(idle_cycles + 1, 20)
-                finally:
-                    session.close()
-                sleep_sec = 0.25 if idle_cycles < 8 else 0.75
-                time.sleep(sleep_sec)
+                if row_status in ("review_ready", "done", "failed") and not events:
+                    return
+                # Stay connected while awaiting HITL: closing here caused immediate EventSource
+                # reconnect loops and false "stream error" + poll-only UX in the browser.
+                idle_cycles = 0 if events else min(idle_cycles + 1, 20)
+                sleep_sec = 0.5 if idle_cycles < 8 else 1.5
+                await asyncio.sleep(sleep_sec)
         finally:
             if pubsub is not None:
                 with contextlib.suppress(Exception):
-                    pubsub.close()
+                    pubsub.close()  # returns connection to the shared pool
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -1315,6 +1411,39 @@ def final_approve_run_deliverable(
         raise HTTPException(status_code=409, detail="Run is not awaiting final deliverable approval")
 
     run_dir = workspace_path(project_id) / "runs" / run_id
+
+    # Content-level HITL: every unsupported numeric claim must be accepted or rejected.
+    from app.services.evidence_claims import (
+        load_claims_dossier,
+        pending_unsupported_count,
+        write_claims_dossier,
+    )
+
+    claims_dossier = load_claims_dossier(run_dir)
+    if not claims_dossier.get("claims"):
+        qa = {}
+        qa_path = run_dir / "pptx_render_quality.json"
+        if qa_path.is_file():
+            try:
+                qa = json.loads(qa_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                qa = {}
+        if isinstance(qa, dict) and isinstance(qa.get("evidence"), dict):
+            claims_dossier = write_claims_dossier(run_dir, qa["evidence"], source="pptx")
+    pending = pending_unsupported_count(claims_dossier)
+    if pending > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"{pending} unsupported numeric claim(s) still need accept/reject "
+                    "before final approval."
+                ),
+                "pending_claims": pending,
+                "summary": claims_dossier.get("summary"),
+            },
+        )
+
     visual_qa_path = run_dir / "visual_qa_report.json"
     if not visual_qa_path.exists():
         raise HTTPException(status_code=409, detail="Visual QA report is not available yet")
@@ -1470,7 +1599,9 @@ def control_run(
 
 
 @router.post("/{project_id}/{run_id}/slides/{slide_index}/regenerate")
+@limiter.limit(_run_regenerate_rate_limit)
 def regenerate_run_slide(
+    request: Request,
     project_id: str,
     run_id: str,
     slide_index: int,
@@ -1541,7 +1672,7 @@ def regenerate_run_slide(
             "element_path": element_path or None,
             "instruction": instruction[:1000],
             "requested_by": str(user.id),
-            "requested_at": datetime.utcnow().isoformat() + "Z",
+            "requested_at": datetime.now(IST).isoformat() + "Z",
         }
     )
     plan_payload["pptx_inline_comments"] = inline_comments[-200:]
@@ -1582,6 +1713,111 @@ def regenerate_run_slide(
         "element_path": element_path or None,
         "queued": True,
         "status": "approved",
+    }
+
+
+@router.patch("/{project_id}/{run_id}/slides/{slide_index}/elements")
+def patch_run_slide_element(
+    project_id: str,
+    run_id: str,
+    slide_index: int,
+    body: PatchSlideElementRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Deterministic in-place slide mutation — no LLM re-queue."""
+    require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    element_path = str(body.element_path or "").strip()
+    if not element_path:
+        raise HTTPException(status_code=400, detail="element_path is required")
+    if slide_index < 1:
+        raise HTTPException(status_code=400, detail="slide_index must be >= 1")
+
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    slides_path = run_dir / "pptx_slides.json"
+    if not slides_path.is_file():
+        raise HTTPException(status_code=409, detail="pptx_slides.json is not available for this run")
+    try:
+        prior_slides = json.loads(slides_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Could not read pptx slide state") from exc
+    if not isinstance(prior_slides, list) or not prior_slides:
+        raise HTTPException(status_code=409, detail="pptx slide state is empty")
+
+    from app.core.pptx_slide_patch import patch_slide_element
+
+    try:
+        updated = patch_slide_element(
+            prior_slides,
+            slide_index,
+            element_path=element_path,
+            value=body.value,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    slides_path.write_text(json.dumps(updated, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Re-render PPTX from mutated JSON so downloads stay in sync.
+    regenerated = False
+    try:
+        from app.core.deliverable import DeliverableRegistry, _init_default_deliverables
+        from app.services.branding_service import BrandingService
+
+        _init_default_deliverables()
+        branding = BrandingService(db).get_branding_for_run(project_id)
+        process_model = {}
+        pm_path = run_dir / "process_model.json"
+        if pm_path.is_file():
+            try:
+                process_model = json.loads(pm_path.read_text(encoding="utf-8"))
+            except Exception:
+                process_model = {}
+        payload = {
+            "pptx_slides": updated,
+            "process_model": process_model if isinstance(process_model, dict) else {},
+            "requested_outputs": ["pptx"],
+            "compaction_snapshot": {},
+        }
+        snap_path = run_dir / "compaction_snapshot.json"
+        if snap_path.is_file():
+            try:
+                payload["compaction_snapshot"] = json.loads(snap_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: S110 — optional compaction snapshot
+                pass
+        regenerated = out is not None
+    except Exception as exc:
+        logger.warning("deterministic slide patch render failed for %s: %s", run_id, exc)
+
+    try:
+        from app.services.run_events import append_run_event
+
+        append_run_event(
+            db,
+            run_id,
+            "slide_element_patched",
+            {
+                "slide_index": slide_index,
+                "element_path": element_path,
+                "regenerated": regenerated,
+            },
+        )
+        db.commit()
+    except Exception:  # noqa: S110 — event append is best-effort after patch
+        pass
+
+    return {
+        "project_id": project_id,
+        "run_id": run_id,
+        "slide_index": slide_index,
+        "element_path": element_path,
+        "queued": False,
+        "deterministic": True,
+        "regenerated": regenerated,
+        "pptx_slides": updated,
     }
 
 

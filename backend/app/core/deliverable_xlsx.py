@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -139,20 +141,27 @@ def apply_cells_to_workbook(
     by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
     charts_by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
     tables_by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    validations_by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    named_ranges: list[dict[str, Any]] = []
 
     for item in cells:
         if not isinstance(item, dict):
+            continue
+        if item.get("_type") == "named_range":
+            named_ranges.append(item)
             continue
         sheet = str(item.get("sheet") or "Output")
         if item.get("_type") == "chart":
             charts_by_sheet[sheet].append(item)
         elif item.get("_type") == "table":
             tables_by_sheet[sheet].append(item)
+        elif item.get("_type") == "data_validation":
+            validations_by_sheet[sheet].append(item)
         else:
             by_sheet[sheet].append(item)
 
     all_sheets = list(dict.fromkeys(
-        list(by_sheet) + list(charts_by_sheet) + list(tables_by_sheet)
+        list(by_sheet) + list(charts_by_sheet) + list(tables_by_sheet) + list(validations_by_sheet)
     ))
     if not all_sheets:
         all_sheets = ["Output"]
@@ -243,6 +252,46 @@ def apply_cells_to_workbook(
             except Exception as exc:
                 logger.warning("Chart add failed (%s): %s", sheet_name, exc)
 
+        # Scenario / list dropdowns
+        for vdef in validations_by_sheet.get(sheet_name, []):
+            try:
+                from openpyxl.worksheet.datavalidation import DataValidation
+
+                cell_ref = str(vdef.get("cell") or "").strip()
+                formula1 = str(vdef.get("formula1") or "").strip()
+                if not cell_ref or not formula1:
+                    continue
+                dv = DataValidation(
+                    type=str(vdef.get("type") or "list"),
+                    formula1=formula1,
+                    allow_blank=True,
+                    showDropDown=False,
+                )
+                dv.error = str(vdef.get("error") or "Select a valid scenario")
+                dv.errorTitle = str(vdef.get("error_title") or "Invalid selection")
+                ws.add_data_validation(dv)
+                dv.add(cell_ref)
+            except Exception as exc:
+                logger.warning("data validation skipped (%s): %s", sheet_name, exc)
+
+    # Named ranges after sheets exist so Absolute/relative refs resolve.
+    if named_ranges:
+        from openpyxl.workbook.defined_name import DefinedName
+
+        for nr in named_ranges:
+            name = str(nr.get("name") or "").strip()
+            ref = str(nr.get("ref") or "").strip()
+            if not name or not ref:
+                continue
+            # Excel defined names: alphanumeric + underscore only.
+            safe = re.sub(r"[^A-Za-z0-9_]", "_", name)[:64]
+            if not safe or safe[0].isdigit():
+                safe = f"_{safe}" if safe else "NamedRange"
+            try:
+                wb.defined_names.add(DefinedName(name=safe, attr_text=ref))
+            except Exception as exc:
+                logger.debug("named range skipped (%s): %s", safe, exc)
+
 
 class XLSXDeliverable(IDeliverable):
     def get_metadata(self) -> DeliverableMetadata:
@@ -255,6 +304,54 @@ class XLSXDeliverable(IDeliverable):
         )
 
     def render(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
+        from app.core.config import settings
+
+        if getattr(settings, "xlsx_composer_enabled", True):
+            try:
+                return self._render_composed(payload, run_dir, branding)
+            except Exception as exc:  # noqa: BLE001 - fail-soft to the legacy path
+                logger.warning("XLSX composer path failed (%s); falling back to legacy render", exc)
+        return self._render_legacy(payload, run_dir, branding)
+
+    def _render_composed(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
+        import json
+
+        from app.core.doc_theme import resolve_doc_theme
+        from app.core.xlsx_composer import XlsxComposer
+
+        out = run_dir / "output.xlsx"
+        wb = Workbook()
+
+        pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
+        process_name = str((pm or {}).get("process_name") or payload.get("presentation_title") or "")
+        # Resolve through the shared token layer — fixes dict-shaped branding (the old
+        # getattr path silently fell back to default green) and applies the topic palette.
+        theme = resolve_doc_theme(branding, process_name)
+
+        self._apply_workbook_properties(wb, payload, branding)
+        composer = XlsxComposer(wb, theme)
+        composer.compose(payload)
+        wb.save(out)
+
+        try:
+            (run_dir / "xlsx_render_signals.json").write_text(
+                json.dumps({"fit_report": composer.fit_report}, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("xlsx_render_signals persist skipped: %s", exc)
+
+        try:
+            from app.core.xlsx_qa import validate_xlsx
+
+            (run_dir / "xlsx_qa.json").write_text(
+                json.dumps(validate_xlsx(out), indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("xlsx_qa skipped: %s", exc)
+
+        return out
+
+    def _render_legacy(self, payload: dict[str, Any], run_dir: Path, branding: Any | None = None) -> Path | None:
         out = run_dir / "output.xlsx"
         wb = Workbook()
 
@@ -325,7 +422,7 @@ class XLSXDeliverable(IDeliverable):
                 payload.get("presentation_title") or pm.get("process_name") or "ProcessDoc Output"
             )[:255]
             props.company = str(getattr(branding, "company_name", None) or "")[:255]
-            props.modified = datetime.now(UTC)
+            props.modified = datetime.now(IST)
         except Exception as exc:
             logger.debug("Workbook properties skipped: %s", exc)
 

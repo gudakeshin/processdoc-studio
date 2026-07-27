@@ -42,7 +42,12 @@ def validate_zip_for_read(zf: zipfile.ZipFile, *, max_uncompressed_bytes: int) -
 
 
 def safe_extract_all(zf: zipfile.ZipFile, target_dir: Path, *, max_uncompressed_bytes: int) -> None:
-    """Extract only after path + size checks; assert each member stays under target_dir."""
+    """Extract only after path + size checks; assert each member stays under target_dir.
+
+    Declared uncompressed sizes in zip metadata can be spoofed (zip-bomb variant).
+    This function extracts member-by-member and tracks actual bytes written so the
+    cap is enforced on real decompressed output, not just declared metadata.
+    """
     validate_zip_for_read(zf, max_uncompressed_bytes=max_uncompressed_bytes)
     root = target_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -50,4 +55,24 @@ def safe_extract_all(zf: zipfile.ZipFile, target_dir: Path, *, max_uncompressed_
         dest = (root / info.filename).resolve()
         if root not in dest.parents and dest != root:
             raise UnsafeZipError(f"Zip-slip: member {info.filename!r} resolves outside target")
-    zf.extractall(root)
+
+    # Extract member-by-member and count actual bytes to catch spoofed declared sizes.
+    actual_bytes = 0
+    for info in zf.infolist():
+        dest = (root / info.filename).resolve()
+        if info.filename.endswith("/"):
+            dest.mkdir(parents=True, exist_ok=True)
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(info) as src, dest.open("wb") as out:
+            while True:
+                chunk = src.read(65536)
+                if not chunk:
+                    break
+                actual_bytes += len(chunk)
+                if actual_bytes > max_uncompressed_bytes:
+                    raise UnsafeZipError(
+                        f"Actual extracted size exceeds limit {max_uncompressed_bytes} "
+                        f"(declared size was within limit — possible zip-bomb)"
+                    )
+                out.write(chunk)

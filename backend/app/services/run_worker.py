@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -12,6 +14,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta
+from app.core.tz import IST
 from time import perf_counter
 from typing import Any
 
@@ -30,16 +33,27 @@ from app.core.narrative_feedback import (
 )
 from app.core.run_control import RunAborted
 from app.core.sanitization import sanitize_memory_payload_dict
-from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEvent, RunTask, UserProjectPreference
+from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEvent, RunTask, UserProjectPreference, utcnow
 from app.db.session import SessionLocal
 from app.schemas.coordinator_run import CoordinatorRunInput
 from app.schemas.run_payloads import GuardrailReportDoc, QaReportDoc
-from app.services.conversation_digest import build_conversation_digest_for_run
+from app.services.conversation_digest import build_conversation_digest_for_run_with_trace
 from app.services.hooks import hook_execution_exists, record_hook_execution, run_hooks_sync, sync_disabled_hooks_from_db
 from app.services.langfuse_tracing import langfuse_event, langfuse_span
 from app.services.observability import increment, observe_latency, record_run_trace, set_gauge
 from app.services.permission_pipeline import evaluate_permission_pipeline
-from app.services.proposal_policy import proposal_quality_policy
+from app.services.proposal_policy import PROPOSAL_SKILL_ID
+from app.services.run_evaluator_pipeline import (
+    _build_evaluator_pipeline,
+    _guardrail_regeneration_directive,
+    _pptx_evidence_gate_from_run_dir,
+)
+from app.services.run_visual_qa_augment import (
+    _augment_visual_qa_with_design_review,
+    _augment_visual_qa_with_render_hints,
+    _persist_pptx_visual_critic_signals,
+)
+from app.services.otel_tracing import start_span
 from app.services.retry_policy import (
     classify_retry_mode,
     compute_rate_limit_backoff,
@@ -49,8 +63,10 @@ from app.services.retry_policy import (
     should_apply_fallback,
     validate_retry_transition,
 )
-from app.services.run_budget import run_llm_budget
-from app.services.run_events import build_event_payload, canonical_event_aliases, hook_exec_id
+from app.services.run_budget import get_run_usage, project_token_context, run_llm_budget
+from app.services.llm_pricing import calculate_run_cost_usd
+from app.services.run_events import hook_exec_id
+from app.services.run_event_service import RunEventService
 from app.services.run_queue.runtime import RunQueueRuntime
 from app.services.run_tasks import sync_run_tasks_from_snapshot
 from app.services.run_todo_snapshot import emit_run_todo_snapshot, todo_set_status
@@ -59,13 +75,51 @@ from app.services.swarm import enrich_run_todos_with_dependencies, ensure_swarm_
 from app.services.visual_qa import run_visual_quality_check, save_visual_qa_report
 from app.services.visual_qa_chat import persist_visual_qa_assistant_message
 from app.services.wiki_maintenance import run_weekly_librarian_tick
+from app.services.wiki_graph import build_relationships_incremental
 
 _queue_rt = RunQueueRuntime(settings)
+_run_event_service = RunEventService(publish_event=_queue_rt.publish_run_event)
 _log = logging.getLogger(__name__)
 _embedded_redis_consumer_lock = threading.Lock()
 _embedded_redis_consumer_started = False
 _last_librarian_tick_ts = 0.0
 _librarian_tick_interval_sec = 7 * 24 * 60 * 60
+_stuck_sweep_interval_sec = 30.0
+_stuck_watchdog_lock = threading.Lock()
+_stuck_watchdog_started = False
+
+# Graceful shutdown: set by drain_execution_worker() on SIGTERM/SIGINT (via the
+# FastAPI lifespan shutdown hook) so dispatch loops stop pulling new jobs while
+# in-flight runs are given a bounded window to finish instead of being killed
+# mid-execution when the process exits.
+_draining = threading.Event()
+_active_futures: set[concurrent.futures.Future] = set()
+_active_futures_lock = threading.Lock()
+
+
+def _consume_wiki_rebuild_events() -> None:
+    """Best-effort consumer for wiki rebuild events emitted by ingest."""
+    if not bool(getattr(settings, "wiki_evented_graph_rebuild_enabled", False)):
+        return
+    root = workspace_path("")
+    event_files = list(root.glob("*/wiki/.meta/wiki_rebuild_events.jsonl"))
+    event_files.append(root / "leading_practices" / "wiki" / ".meta" / "wiki_rebuild_events.jsonl")
+    for events_file in event_files:
+        if not events_file.exists():
+            continue
+        try:
+            lines = [ln for ln in events_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if not lines:
+                continue
+            latest = json.loads(lines[-1])
+            wiki_type = str(latest.get("wiki_type") or "project")
+            project_id = latest.get("project_id")
+            if wiki_type == "project" and not project_id:
+                continue
+            build_relationships_incremental(wiki_type, project_id)
+            events_file.write_text("", encoding="utf-8")
+        except Exception as exc:
+            _log.debug("wiki rebuild event consume skipped for %s: %s", events_file, exc)
 
 # Auto re-run after Visual / evaluator gate failure: max remediation enqueue rounds.
 MAX_EVALUATOR_REMEDIATION_ROUNDS = 3
@@ -79,6 +133,7 @@ _PLAN_KEYS_TO_CLEAR_AFTER_SUCCESSFUL_EVALUATOR: tuple[str, ...] = (
     "process_map_visual_feedback",
     "docx_narrative_feedback",
     "pdf_narrative_feedback",
+    "pptx_narrative_feedback",
 )
 
 
@@ -95,168 +150,6 @@ def _strip_visual_remediation_from_plan(plan_json: str | None) -> str | None:
         return json.dumps(obj)
     except Exception:
         return plan_json
-
-
-def _load_pptx_render_signal_hints(run_dir: Any) -> tuple[list[dict[str, Any]], list[str]]:
-    path = run_dir / "pptx_render_signals.json"
-    if not path.exists():
-        return [], []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return [], []
-    pending = raw.get("content_pending") if isinstance(raw, dict) else None
-    if not isinstance(pending, list):
-        return [], []
-    hints: list[dict[str, Any]] = []
-    findings: list[str] = []
-    for item in pending:
-        if not isinstance(item, dict):
-            continue
-        try:
-            idx = int(item.get("slide_index") or 0)
-        except Exception:
-            idx = 0
-        if idx <= 0:
-            continue
-        reason = str(item.get("reason") or "Rendered with content pending placeholder.").strip()
-        title = str(item.get("title") or f"Slide {idx}").strip()
-        hints.append({"slide_index": idx, "instruction": f"{title}: {reason}"})
-        findings.append(f"[PPTX Render] Slide {idx} ({title}): {reason}")
-    return hints, findings
-
-
-def _augment_visual_qa_with_render_hints(visual_qa_report: dict[str, Any], run_dir: Any) -> dict[str, Any]:
-    hints, findings = _load_pptx_render_signal_hints(run_dir)
-    if not hints:
-        return visual_qa_report
-    report = dict(visual_qa_report or {})
-    per_artifact = report.get("per_artifact")
-    if not isinstance(per_artifact, dict):
-        per_artifact = {}
-        report["per_artifact"] = per_artifact
-    pptx_assessment = per_artifact.get("pptx")
-    if not isinstance(pptx_assessment, dict):
-        pptx_assessment = {}
-    existing_hints = pptx_assessment.get("remediation_hints")
-    merged_hints = existing_hints if isinstance(existing_hints, list) else []
-    merged_hints.extend(hints)
-    pptx_assessment["remediation_hints"] = merged_hints
-    pptx_assessment["status"] = "fail"
-    prior_summary = str(pptx_assessment.get("summary") or "").strip()
-    suffix = f"{len(hints)} slide(s) contain render placeholders."
-    pptx_assessment["summary"] = f"{prior_summary} {suffix}".strip()
-    per_artifact["pptx"] = pptx_assessment
-    report["pptx_assessment"] = pptx_assessment
-    report_findings = report.get("findings")
-    merged_findings = report_findings if isinstance(report_findings, list) else []
-    merged_findings.extend(findings)
-    report["findings"] = merged_findings
-    report["status"] = "fail"
-    base_summary = str(report.get("summary") or "").strip()
-    report["summary"] = f"{base_summary} PPTX render checks found unresolved placeholders.".strip()
-    return report
-
-
-def _persist_pptx_visual_critic_signals(run_dir: Any, visual_qa_report: dict[str, Any]) -> None:
-    """Persist PPTX critic signals into pptx_render_signals.json (best effort)."""
-    if not isinstance(visual_qa_report, dict):
-        return
-    per_artifact = visual_qa_report.get("per_artifact")
-    pptx = per_artifact.get("pptx") if isinstance(per_artifact, dict) else None
-    if not isinstance(pptx, dict):
-        pptx = visual_qa_report.get("pptx_assessment")
-    if not isinstance(pptx, dict):
-        return
-    payload = {
-        "status": str(pptx.get("status") or "skip").lower(),
-        "summary": str(pptx.get("summary") or "").strip(),
-        "per_slide_findings": pptx.get("per_slide_findings") if isinstance(pptx.get("per_slide_findings"), list) else [],
-        "remediation_hints": pptx.get("remediation_hints") if isinstance(pptx.get("remediation_hints"), list) else [],
-        "generated_at": datetime.utcnow().isoformat() + "Z",
-    }
-    path = run_dir / "pptx_render_signals.json"
-    try:
-        current: dict[str, Any] = {}
-        if path.exists():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    current = loaded
-            except Exception:
-                current = {}
-        current["visual_critic"] = payload
-        path.write_text(json.dumps(current, indent=2), encoding="utf-8")
-    except Exception:  # noqa: S110 — best-effort, non-fatal
-        # Fail-open: render-signal persistence should never break run completion.
-        pass
-
-
-def _build_evaluator_pipeline(
-    *,
-    requested_outputs: list[str],
-    plan_payload: dict[str, Any],
-    qa_report: dict[str, Any],
-    visual_qa_report: dict[str, Any],
-    guardrail_report: dict[str, Any],
-) -> dict[str, Any]:
-    requested_set = {str(x).strip().lower() for x in (requested_outputs or []) if str(x).strip()}
-    base_textual_outputs = {"narrative", "raci", "sop", "process_map"}
-    proposal_policy = proposal_quality_policy(plan_payload, requested_outputs)
-    if proposal_policy.get("active"):
-        base_textual_outputs |= set(proposal_policy.get("required_outputs") or [])
-    has_textual_outputs = bool(requested_set & base_textual_outputs)
-    qa_passed = True if not has_textual_outputs else bool((qa_report or {}).get("passed"))
-    visual_status = str((visual_qa_report or {}).get("status") or "").lower()
-    visual_passed = visual_status in set(proposal_policy.get("visual_pass_statuses") or {"pass", "warn", "skip"})
-    guardrail_passed = True if not has_textual_outputs else str((guardrail_report or {}).get("status") or "").lower() == "pass"
-    return {
-        "qa_passed": qa_passed,
-        "visual_qa_passed": visual_passed,
-        "guardrails_passed": guardrail_passed,
-        "status": "pass" if (qa_passed and visual_passed and guardrail_passed) else "fail",
-        "quality_policy": proposal_policy,
-    }
-
-
-def _guardrail_regeneration_directive(guardrail_report: dict[str, Any]) -> str:
-    failed_gate = str((guardrail_report or {}).get("failed_gate") or "").strip()
-    events = (guardrail_report or {}).get("guardrail_events") or []
-    reason = ""
-    if isinstance(events, list):
-        for ev in events:
-            if not isinstance(ev, dict):
-                continue
-            if str(ev.get("gate") or "").strip() != failed_gate:
-                continue
-            reason = str(ev.get("reason") or "").strip()
-            break
-    base = (
-        "Guardrail remediation required before final review. "
-        "Revise outputs to satisfy compliance gates and remove unsupported claims."
-    )
-    if failed_gate == "gate_1_source_grounding":
-        return (
-            f"{base} Gate failed: source grounding. "
-            "For each factual or quantitative claim, add explicit provenance in-line "
-            "(for example: '(source: client-provided data)', '(source: benchmark assumptions)', "
-            "or '(source: internal estimate; illustrative)'). Add a short 'Sources and assumptions' "
-            "section summarizing key evidence used. Do not leave benchmark or percentage claims uncited."
-        )
-    if failed_gate == "gate_2_hallucination_check":
-        return (
-            f"{base} Gate failed: hallucination check. "
-            "Remove or qualify unsupported claims, and mark unknowns as [TBC] rather than inventing values."
-        )
-    if failed_gate == "gate_4_reference_validation":
-        return (
-            f"{base} Gate failed: reference validation. "
-            "Use a consistent source format for claims (for example '(source: ...)') and ensure references "
-            "are directly tied to the statement they support."
-        )
-    if reason:
-        return f"{base} Failed gate: {failed_gate}. Reason: {reason}"
-    return f"{base} Failed gate: {failed_gate or 'unknown'}."
 
 
 def _sanitize_memory_payload(payload_obj: Any) -> dict[str, Any]:
@@ -306,11 +199,17 @@ def _project_retention_days(project_id: str) -> int:
     return default_days
 
 
+# Track last prune time per project to avoid a DELETE on every single event write.
+# Pruning is idempotent, so running it once per hour per project is sufficient.
+_prune_last_run: dict[str, float] = {}
+_PRUNE_MIN_INTERVAL_S = 3600
+
+
 def _prune_old_memory_events(session: Session, *, project_id: str) -> None:
     retention_days = _project_retention_days(project_id)
     if retention_days <= 0:
         return
-    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    cutoff = datetime.now(IST).replace(tzinfo=None) - timedelta(days=retention_days)
     result = session.execute(
         delete(MemoryEvent).where(
             MemoryEvent.project_id == project_id,
@@ -357,7 +256,10 @@ def append_memory_event(
     )
     session.add(ev)
     session.flush()
-    _prune_old_memory_events(session, project_id=project_id)
+    now = time.time()
+    if now - _prune_last_run.get(project_id, 0.0) >= _PRUNE_MIN_INTERVAL_S:
+        _prune_old_memory_events(session, project_id=project_id)
+        _prune_last_run[project_id] = now
     increment("memory_events_written_total")
     return ev
 
@@ -401,7 +303,7 @@ def _bump_learning_runs_completed(session: Session, user_id: str, project_id: st
     ls["runs_completed"] = min(n, 1_000_000)
     base["learning_signals"] = ls
     payload = json.dumps(base, sort_keys=True)
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     if row is None:
         session.add(
             UserProjectPreference(
@@ -418,26 +320,12 @@ def _bump_learning_runs_completed(session: Session, user_id: str, project_id: st
 
 
 def append_run_event(session: Session, run_id: str, event_type: str, payload_obj: Any) -> RunEvent:
-    payload_obj_dict = payload_obj if isinstance(payload_obj, dict) else {"value": payload_obj}
-    event_payload = build_event_payload(run_id=run_id, event_type=event_type, payload_obj=payload_obj_dict)
-    payload = json.dumps(event_payload)
-    ev = RunEvent(run_id=run_id, event_type=event_type, payload=payload)
-    session.add(ev)
-    session.flush()
-    _queue_rt.publish_run_event(run_id, ev.id, event_type, payload)
-    langfuse_event(
-        trace_id=run_id,
-        name=f"run_event.{event_type}",
-        metadata={"run_id": run_id, "payload": event_payload},
+    return _run_event_service.record_event(
+        session,
+        run_id=run_id,
+        event_type=event_type,
+        payload_obj=payload_obj,
     )
-    for alias in canonical_event_aliases(event_type=event_type, payload=payload_obj_dict):
-        alias_payload = build_event_payload(run_id=run_id, event_type=alias, payload_obj=payload_obj_dict)
-        alias_payload_str = json.dumps(alias_payload)
-        alias_ev = RunEvent(run_id=run_id, event_type=alias, payload=alias_payload_str)
-        session.add(alias_ev)
-        session.flush()
-        _queue_rt.publish_run_event(run_id, alias_ev.id, alias, alias_payload_str)
-    return ev
 
 
 def _emit_and_sync_todo_snapshot(
@@ -498,7 +386,38 @@ def _start_embedded_redis_consumer_once() -> None:
     _log.info("Started embedded Redis run-execution consumer (RUN_QUEUE_EMBED_REDIS_CONSUMER=true).")
 
 
+def _stuck_watchdog_loop() -> None:
+    """Auto-fail stuck runs on a fixed timer, independent of queue activity.
+
+    The dispatch loop blocks in local_wait_pop_job() while the queue is idle — which is
+    exactly when a wedged run needs sweeping — so the watchdog runs in its own thread.
+    """
+    while True:
+        try:
+            auto_fail_stuck_runs()
+        except Exception as exc:  # never let the watchdog thread die
+            _log.warning("stuck-run watchdog tick error: %s", exc)
+        time.sleep(_stuck_sweep_interval_sec)
+
+
+def _start_stuck_watchdog_once() -> None:
+    global _stuck_watchdog_started
+    if int(getattr(settings, "run_stuck_timeout_sec", 0) or 0) <= 0:
+        return
+    with _stuck_watchdog_lock:
+        if _stuck_watchdog_started:
+            return
+        _stuck_watchdog_started = True
+    threading.Thread(target=_stuck_watchdog_loop, name="run-stuck-watchdog", daemon=True).start()
+    _log.info(
+        "Started stuck-run watchdog (interval=%ss, timeout=%ss).",
+        _stuck_sweep_interval_sec,
+        settings.run_stuck_timeout_sec,
+    )
+
+
 def start_execution_worker() -> None:
+    _start_stuck_watchdog_once()
     if _queue_rt.queue_backend == "redis":
         if not bool(getattr(settings, "run_queue_embed_redis_consumer", False)):
             _log.warning(
@@ -510,6 +429,34 @@ def start_execution_worker() -> None:
         _start_embedded_redis_consumer_once()
         return
     _queue_rt.start_local_daemon(_queue_worker_loop)
+
+
+def drain_execution_worker(timeout_sec: float = 30.0) -> None:
+    """Stop dispatching new local-queue jobs and wait (bounded) for in-flight runs to finish.
+
+    Called from the FastAPI lifespan shutdown hook so SIGTERM/SIGINT (docker stop,
+    rolling deploy) doesn't kill a run mid-composition. Daemon threads are otherwise
+    killed outright on process exit with no chance to persist state.
+    """
+    if _queue_rt.queue_backend == "redis":
+        # The embedded Redis consumer isn't the primary deployment path (a dedicated
+        # `run_execution_worker` process is); nothing local to drain here.
+        return
+    _draining.set()
+    with _active_futures_lock:
+        futures = list(_active_futures)
+    if not futures:
+        return
+    _log.warning("Draining %d in-flight run(s) before shutdown (up to %ss)...", len(futures), timeout_sec)
+    done, not_done = concurrent.futures.wait(futures, timeout=timeout_sec)
+    if not_done:
+        _log.critical(
+            "%d run(s) still executing after %ss drain timeout; process is exiting with work in flight.",
+            len(not_done),
+            timeout_sec,
+        )
+    else:
+        _log.info("Drained %d in-flight run(s) cleanly.", len(done))
 
 
 def enqueue_run_execution(project_id: str, run_id: str) -> bool:
@@ -587,35 +534,8 @@ def enqueue_run_execution(project_id: str, run_id: str) -> bool:
             session.close()
 
 
-def _step_status_from_stored_event_payload(payload_str: str | None) -> str | None:
-    if not payload_str:
-        return None
-    try:
-        obj = json.loads(payload_str)
-    except Exception:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    inner = obj.get("payload")
-    status = None
-    if isinstance(inner, dict):
-        status = inner.get("status")
-    if status is None:
-        status = obj.get("status")
-    return str(status).strip().lower() if status is not None else None
-
-
 def _run_has_execution_enqueued_not_started(session: Session, run_id: str) -> bool:
-    evs = session.scalars(select(RunEvent).where(RunEvent.run_id == run_id)).all()
-    seen_enq = False
-    seen_start = False
-    for ev in evs:
-        st = _step_status_from_stored_event_payload(ev.payload)
-        if st == "execution_enqueued":
-            seen_enq = True
-        elif st == "execution_started":
-            seen_start = True
-    return seen_enq and not seen_start
+    return _run_event_service.has_execution_enqueued_not_started(session, run_id=run_id)
 
 
 _STARTUP_RECONCILE_LOCK_KEY = "processdoc:run-queue:startup-reconcile"
@@ -660,10 +580,76 @@ def reconcile_stalled_approved_runs_on_startup() -> None:
             )
         if re_enqueued:
             _log.info("run_queue startup reconcile: total re_enqueued=%s", re_enqueued)
+        # A run still in status="running" on a fresh process is definitionally orphaned: the
+        # worker thread that owned it died with the previous process. Fail it so its admission
+        # slot frees and the UI stops showing it as active.
+        orphaned = session.scalars(select(Run).where(Run.status == "running")).all()
+        for run in orphaned:
+            run.status = "failed"
+            run.abort_requested = True
+            run.error_message = "Orphaned by restart: worker thread no longer running."
+            session.commit()
+            append_run_event(session, run.id, "stuck_auto_failed", {"reason": "orphaned_by_restart"})
+            session.commit()
+        if orphaned:
+            _log.info("run_queue startup reconcile: failed %s orphaned running run(s)", len(orphaned))
     except SQLAlchemyError as exc:
         _log.warning("run_queue startup reconcile failed: %s", exc)
     finally:
         session.close()
+
+
+def auto_fail_stuck_runs() -> int:
+    """Fail runs wedged in status="running" with no RunEvent newer than run_stuck_timeout_sec.
+
+    Backstop for the cooperative deadline in _execute_run_job: catches runs whose coordinator
+    never yields (so _abort_check is never polled) or whose worker thread died without flipping
+    status. Flipping status to "failed" frees the admission slot immediately; with the local
+    fixed thread pool a truly wedged OS thread is only reclaimed on process restart.
+    Returns the number of runs auto-failed.
+    """
+    timeout_sec = int(getattr(settings, "run_stuck_timeout_sec", 0) or 0)
+    if timeout_sec <= 0:
+        return 0
+    cutoff = utcnow() - timedelta(seconds=timeout_sec)
+    failed = 0
+    session = SessionLocal()
+    try:
+        running = session.scalars(select(Run).where(Run.status == "running")).all()
+        for run in running:
+            last_event_at = session.scalar(
+                select(func.max(RunEvent.created_at)).where(RunEvent.run_id == run.id)
+            )
+            ref = last_event_at or run.approved_at or run.created_at
+            if ref is None or ref > cutoff:
+                continue
+            run.abort_requested = True
+            run.status = "failed"
+            run.error_message = f"Auto-failed: no progress for over {timeout_sec}s (stuck-run watchdog)."
+            session.commit()
+            append_run_event(
+                session,
+                run.id,
+                "stuck_auto_failed",
+                {
+                    "reason": "no_progress",
+                    "timeout_sec": timeout_sec,
+                    "last_event_at": ref.isoformat() if ref else None,
+                },
+            )
+            session.commit()
+            failed += 1
+            _log.warning(
+                "stuck-run watchdog auto-failed run_id=%s project_id=%s (idle since %s)",
+                run.id,
+                run.project_id,
+                ref.isoformat() if ref else "n/a",
+            )
+    except SQLAlchemyError as exc:
+        _log.warning("stuck-run watchdog failed: %s", exc)
+    finally:
+        session.close()
+    return failed
 
 
 def admission_status(project_id: str, *, user_id: str | None = None) -> dict[str, Any]:
@@ -733,17 +719,26 @@ def maybe_start_run_execution(project_id: str, run_id: str) -> None:
 
 
 def _queue_worker_loop() -> None:
-    while True:
+    """Dispatch loop: pops jobs and submits them to a thread pool so multiple runs execute concurrently."""
+    max_workers = int(getattr(settings, "run_queue_local_max_workers", 4))
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=max_workers,
+        thread_name_prefix="run-exec",
+    )
+    while not _draining.is_set():
         _queue_rt.mark_worker_heartbeat()
         global _last_librarian_tick_ts
         now = time.time()
         if now - _last_librarian_tick_ts >= _librarian_tick_interval_sec:
             try:
                 run_weekly_librarian_tick("leading_practice", None)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.warning("%s: suppressed error: %s", '_queue_worker_loop', exc)
             _last_librarian_tick_ts = now
-        job = _queue_rt.local_wait_pop_job()
+        _consume_wiki_rebuild_events()
+        job = _queue_rt.local_wait_pop_job(timeout=1.0)
+        if job is None:
+            continue
         project_id = str(job.get("project_id", ""))
         run_id = str(job.get("run_id", ""))
         attempt = int(job.get("attempt", 0) or 0)
@@ -752,30 +747,39 @@ def _queue_worker_loop() -> None:
             attempt_history = []
         key = f"{project_id}:{run_id}"
         _queue_rt.local_discard_key(key)
-        try:
-            success, error_detail = _execute_run_job(project_id, run_id, job)
-            if success:
-                _queue_rt.bump_processed()
-            else:
+
+        def _on_done(future, _pid=project_id, _rid=run_id, _att=attempt, _hist=attempt_history, _key=key):
+            try:
+                success, error_detail = future.result()
+                if success:
+                    _queue_rt.bump_processed()
+                else:
+                    _handle_failed_job(
+                        project_id=_pid,
+                        run_id=_rid,
+                        attempt=_att,
+                        last_error=error_detail,
+                        prior_attempt_history=_hist,
+                        backend="local",
+                    )
+            except Exception as exc:
                 _handle_failed_job(
-                    project_id=project_id,
-                    run_id=run_id,
-                    attempt=attempt,
-                    last_error=error_detail,
-                    prior_attempt_history=attempt_history,
+                    project_id=_pid,
+                    run_id=_rid,
+                    attempt=_att,
+                    last_error=str(exc),
+                    prior_attempt_history=_hist,
                     backend="local",
                 )
-        except Exception as exc:
-            _handle_failed_job(
-                project_id=project_id,
-                run_id=run_id,
-                attempt=attempt,
-                last_error=str(exc),
-                prior_attempt_history=attempt_history,
-                backend="local",
-            )
-        finally:
-            _queue_rt.local_discard_key(key)
+            finally:
+                _queue_rt.local_discard_key(_key)
+                with _active_futures_lock:
+                    _active_futures.discard(future)
+
+        future = executor.submit(_execute_run_job, project_id, run_id, job)
+        with _active_futures_lock:
+            _active_futures.add(future)
+        future.add_done_callback(_on_done)
 
 
 def run_redis_worker_loop() -> None:
@@ -810,7 +814,8 @@ def replay_dead_letter_item(item_id: str) -> dict[str, Any] | None:
         try:
             parsed = json.loads(raw)
             payload = parsed if isinstance(parsed, dict) else None
-        except Exception:
+        except Exception as exc:
+            _log.warning("%s: suppressed error: %s", 'replay_dead_letter_item', exc)
             return None
         if payload is None:
             return None
@@ -877,7 +882,8 @@ def reset_dead_letter_attempts(item_id: str, *, actor: str | None = None) -> dic
             return None
         try:
             payload = json.loads(raw)
-        except Exception:
+        except Exception as exc:
+            _log.warning("%s: suppressed error: %s", 'reset_dead_letter_attempts', exc)
             return None
         if not isinstance(payload, dict):
             return None
@@ -995,12 +1001,41 @@ def _handle_failed_job(
     increment("run_execution_retry_exhausted_total")
 
 
+def _write_token_usage(run: Run, usage: dict[str, int], cost: float | None) -> None:
+    """Write accumulated token counts and cost to the Run row. Best-effort — never raises."""
+    if not usage:
+        return
+    try:
+        run.tokens_input = usage.get("input_tokens", 0)
+        run.tokens_output = usage.get("output_tokens", 0)
+        run.tokens_cache_read = usage.get("cache_read_tokens", 0)
+        run.tokens_cache_creation = usage.get("cache_creation_tokens", 0)
+        run.cost_usd = cost
+    except Exception as _exc:
+        _log.warning("Failed to set token usage on run %s: %s", getattr(run, "id", "?"), _exc)
+
+
 def _execute_run_job(
     project_id: str,
     run_id: str,
     queue_payload: dict[str, Any] | None = None,
 ) -> tuple[bool, str | None]:
+    """Entry point for queued run execution; wraps the body in a top-level OTel span."""
+    with start_span(
+        "run.execute",
+        attributes={"project_id": project_id, "run_id": run_id},
+    ):
+        return _execute_run_job_impl(project_id, run_id, queue_payload)
+
+
+def _execute_run_job_impl(
+    project_id: str,
+    run_id: str,
+    queue_payload: dict[str, Any] | None = None,
+) -> tuple[bool, str | None]:
     started_at = perf_counter()
+    _run_usage: dict[str, int] = {}
+    _run_cost: float | None = None
     session = SessionLocal()
     try:
         run = session.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
@@ -1076,10 +1111,14 @@ def _execute_run_job(
             session.commit()
             return False, run.error_message
         if run.status == "approved":
+            was_resume_requested = bool(run.resume_requested)
             run.status = "running"
             run.pause_requested = False
             run.resume_requested = False
             session.commit()
+            if was_resume_requested:
+                resume_state = _run_event_service.load_resume_state(session, run_id=run_id)
+                append_run_event(session, run_id, "resume_state_loaded", resume_state)
             append_run_event(session, run_id, "step", {"status": "execution_started"})
             append_run_event(session, run_id, "heartbeat", heartbeat_event(run_id=run_id, phase="execution_started"))
             session.commit()
@@ -1182,8 +1221,9 @@ def _execute_run_job(
             if isinstance(_raw_cid, str) and _raw_cid.strip():
                 conv_id = _raw_cid.strip()
             digest = ""
+            digest_trace_payload: dict[str, Any] | None = None
             if conv_id:
-                digest = build_conversation_digest_for_run(
+                digest, digest_trace = build_conversation_digest_for_run_with_trace(
                     session=session,
                     project_id=project_id,
                     conversation_id=conv_id,
@@ -1192,6 +1232,21 @@ def _execute_run_job(
                 )
                 if digest:
                     increment("conversation_digest_built_total")
+                if digest_trace.tiers_applied:
+                    increment("conversation_digest_tiered_compaction_total")
+                digest_trace_payload = {
+                    "conversation_id": conv_id,
+                    "char_cap": int(settings.conversation_digest_max_chars),
+                    "message_limit": int(settings.conversation_digest_message_limit),
+                    "trace": digest_trace.to_dict(),
+                }
+                append_run_event(session, run_id, "context_trace", {"conversation_digest": digest_trace_payload})
+                record_run_trace(
+                    "conversation_digest_trace",
+                    project_id=project_id,
+                    run_id=run_id,
+                    extra={"tiers_applied": list(digest_trace.tiers_applied), "final_char_count": digest_trace.final_char_count},
+                )
             inp = CoordinatorRunInput(
                 raw_text=run.instruction or "",
                 user_instruction=run.instruction or "",
@@ -1209,7 +1264,16 @@ def _execute_run_job(
             if digest:
                 init_state["conversation_digest"] = digest
 
+            _timeout_sec = int(getattr(settings, "run_stuck_timeout_sec", 0) or 0)
+            _deadline = perf_counter() + _timeout_sec if _timeout_sec > 0 else None
+            _timeout_tripped = {"v": False}
+
             def _abort_check() -> bool:
+                # Wall-clock deadline first: a slow-but-yielding coordinator self-terminates
+                # via the existing RunAborted path (emitted as execution_timeout below).
+                if _deadline is not None and perf_counter() >= _deadline:
+                    _timeout_tripped["v"] = True
+                    return True
                 session.refresh(run)
                 return bool(run.abort_requested)
 
@@ -1246,7 +1310,8 @@ def _execute_run_job(
                     except BaseException as exc:
                         err_holder["error"] = exc
 
-                t = threading.Thread(target=_runner, daemon=True)
+                _ctx_copy = contextvars.copy_context()
+                t = threading.Thread(target=_ctx_copy.run, args=(_runner,), daemon=True)
                 t.start()
                 t.join()
                 if "error" in err_holder:
@@ -1254,18 +1319,36 @@ def _execute_run_job(
                 return result_holder.get("value", {})
 
             try:
-                with run_llm_budget(int(settings.anthropic_max_tokens_per_run or 0)):
-                    state = _run_coordinator_async()
+                with project_token_context(project_id), run_llm_budget(int(settings.anthropic_max_tokens_per_run or 0), run_id=run_id):
+                    try:
+                        with start_span(
+                            "run.coordinator",
+                            attributes={"project_id": project_id, "run_id": run_id},
+                        ):
+                            state = _run_coordinator_async()
+                    finally:
+                        _run_usage = get_run_usage()
+                        _run_cost = calculate_run_cost_usd(**_run_usage)
             except RunAborted:
                 session.refresh(run)
-                append_run_event(
-                    session,
-                    run_id,
-                    "run_control_applied",
-                    {"action": "abort", "checkpoint": "during_generation"},
-                )
+                if _timeout_tripped["v"]:
+                    append_run_event(
+                        session,
+                        run_id,
+                        "execution_timeout",
+                        {"timeout_sec": _timeout_sec, "checkpoint": "during_generation"},
+                    )
+                    run.error_message = f"Execution timed out after {_timeout_sec}s without completing."
+                else:
+                    append_run_event(
+                        session,
+                        run_id,
+                        "run_control_applied",
+                        {"action": "abort", "checkpoint": "during_generation"},
+                    )
+                    run.error_message = "Aborted during generation."
+                _write_token_usage(run, _run_usage, _run_cost)
                 run.status = "failed"
-                run.error_message = "Aborted during generation."
                 session.commit()
                 return False, run.error_message
             except RunBudgetExceeded as budget_exc:
@@ -1276,6 +1359,7 @@ def _execute_run_job(
                     "failed",
                     {"error": "run_token_budget_exhausted", "detail": str(budget_exc)[:500]},
                 )
+                _write_token_usage(run, _run_usage, _run_cost)
                 run.status = "failed"
                 run.error_message = str(budget_exc)[:2000]
                 session.commit()
@@ -1372,6 +1456,42 @@ def _execute_run_job(
             )
             save_run_artifacts(project_id, run_id, state)
 
+            run_dir = workspace_path(project_id) / "runs" / run_id
+            final_artifact_report: dict[str, Any] = {}
+            if settings.final_artifact_qa_enabled:
+                from app.services.final_artifact_qa import verify_final_artifacts, write_final_artifact_qa
+
+                try:
+                    final_artifact_report = verify_final_artifacts(
+                        run_dir,
+                        qa_report=state.get("qa_report") if isinstance(state.get("qa_report"), dict) else {},
+                        guardrail_report=state.get("guardrail_report")
+                        if isinstance(state.get("guardrail_report"), dict)
+                        else {},
+                        remediation_notes=str(state.get("qa_remediation_notes") or ""),
+                    )
+                    write_final_artifact_qa(run_dir, final_artifact_report)
+                    langfuse_span(
+                        trace_id=str(project_id),
+                        name="final_artifact_qa",
+                        input_payload={"run_id": run_id},
+                        output_payload={
+                            "passed": bool(final_artifact_report.get("passed")),
+                            "issues": final_artifact_report.get("issues") or [],
+                        },
+                    )
+                except Exception as exc:
+                    _log.warning("final_artifact_qa failed for run %s: %s", run_id, exc)
+                if (
+                    isinstance(final_artifact_report, dict)
+                    and not final_artifact_report.get("passed")
+                    and isinstance(state.get("qa_report"), dict)
+                ):
+                    qa_state = dict(state["qa_report"])
+                    qa_state["remediation_converged"] = False
+                    qa_state["final_artifact_qa_failed"] = True
+                    state["qa_report"] = qa_state
+
             # Stream output chunks after generation completes (coarse-grained chunking for now).
             raci_pref = output_type_representations.get("raci")
             if raci_pref in {"markdown", "xlsx"}:
@@ -1402,7 +1522,6 @@ def _execute_run_job(
                             "chunk": chunk,
                         },
                     )
-            run_dir = workspace_path(project_id) / "runs" / run_id
             if run_todos:
                 todo_set_status(run_todos, "visual_qa", "running")
                 _emit_and_sync_todo_snapshot(
@@ -1414,6 +1533,7 @@ def _execute_run_job(
             visual_qa_report = run_visual_quality_check(project_id, run_id, run_dir)
             if isinstance(visual_qa_report, dict):
                 visual_qa_report = _augment_visual_qa_with_render_hints(visual_qa_report, run_dir)
+                visual_qa_report = _augment_visual_qa_with_design_review(visual_qa_report, run_dir)
                 _persist_pptx_visual_critic_signals(run_dir, visual_qa_report)
             save_visual_qa_report(run_dir, visual_qa_report)
             try:
@@ -1505,13 +1625,20 @@ def _execute_run_job(
                     if kept_total > 0:
                         set_gauge("context_compaction_drop_ratio", dropped_total / max(1.0, kept_total))
 
-            evaluator_pipeline = _build_evaluator_pipeline(
-                requested_outputs=requested,
-                plan_payload=plan_payload_obj,
-                qa_report=state.get("qa_report") if isinstance(state.get("qa_report"), dict) else {},
-                visual_qa_report=visual_qa_report if isinstance(visual_qa_report, dict) else {},
-                guardrail_report=guardrail_report if isinstance(guardrail_report, dict) else {},
-            )
+            with start_span(
+                "run.evaluator_pipeline",
+                attributes={"project_id": project_id, "run_id": run_id},
+            ):
+                evidence_gate = _pptx_evidence_gate_from_run_dir(run_dir)
+                evaluator_pipeline = _build_evaluator_pipeline(
+                    requested_outputs=requested,
+                    plan_payload=plan_payload_obj,
+                    qa_report=state.get("qa_report") if isinstance(state.get("qa_report"), dict) else {},
+                    visual_qa_report=visual_qa_report if isinstance(visual_qa_report, dict) else {},
+                    guardrail_report=guardrail_report if isinstance(guardrail_report, dict) else {},
+                    final_artifact_report=final_artifact_report if isinstance(final_artifact_report, dict) else {},
+                    evidence_gate=evidence_gate,
+                )
             append_run_event(session, run_id, "evaluator_pipeline", evaluator_pipeline)
             if hard_gate_enabled and evaluator_pipeline["status"] != "pass":
                 prior_retry_count = int(
@@ -1569,6 +1696,35 @@ def _execute_run_job(
                                 continue
                             retry_plan[payload_key] = hints
                             hints_injected[artifact_key] = len(hints)
+                        # Evidence hard-fail: inject per-slide unsupported-claim fixes so the
+                        # PPTX agent can remove or re-source fabricated numbers on retry.
+                        if evidence_gate.get("hard_fail"):
+                            evidence_hints = evidence_gate.get("remediation_hints") or []
+                            if evidence_hints:
+                                prior_pptx_hints = retry_plan.get("pptx_visual_feedback")
+                                merged_evidence = (
+                                    list(prior_pptx_hints)
+                                    if isinstance(prior_pptx_hints, list)
+                                    else []
+                                )
+                                merged_evidence.extend(evidence_hints)
+                                retry_plan["pptx_visual_feedback"] = merged_evidence
+                                hints_injected["pptx_evidence"] = len(evidence_hints)
+                            prior_regen = str(retry_plan.get("regeneration_directive") or "").strip()
+                            evidence_directive = (
+                                "Evidence hard-fail remediation required. Remove unsupported "
+                                "numeric claims or replace them with values present in retrieved "
+                                "client source documents, and cite Source: <filename, sheet/page>."
+                            )
+                            retry_plan["regeneration_directive"] = (
+                                f"{prior_regen}\n\n{evidence_directive}".strip()
+                                if prior_regen
+                                else evidence_directive
+                            )
+                            hints_injected.setdefault(
+                                "pptx_evidence",
+                                int(evidence_gate.get("unsupported_claims_count") or 1),
+                            )
                         # Narrative coherence feedback: mirror pptx_visual_feedback
                         # by loading persisted narrative_signals.json (or deriving from
                         # unified_quality_reports) and injecting per-output hints for
@@ -1590,6 +1746,23 @@ def _execute_run_job(
                                 narrative_key = f"{narrative_output}_narrative_feedback"
                                 retry_plan[narrative_key] = narrative_hints
                                 hints_injected[narrative_key] = len(narrative_hints)
+                            # Also surface narrative arc issues to the PPTX agent so it can
+                            # tighten slide titles and story flow on retry.
+                            _pptx_narrative_src = next(
+                                (
+                                    t for t in ("docx", "pdf")
+                                    if isinstance(narrative_signals.get(t), dict)
+                                    and not narrative_signals[t].get("passed")
+                                ),
+                                None,
+                            )
+                            if _pptx_narrative_src:
+                                _pptx_narrative_hints = build_narrative_feedback_hints(
+                                    narrative_signals, _pptx_narrative_src
+                                )
+                                if _pptx_narrative_hints:
+                                    retry_plan["pptx_narrative_feedback"] = _pptx_narrative_hints
+                                    hints_injected["pptx_narrative_feedback"] = len(_pptx_narrative_hints)
                         except Exception as narrative_exc:
                             _log.debug(
                                 "narrative_feedback retry injection skipped for run %s: %s",
@@ -1640,11 +1813,54 @@ def _execute_run_job(
                     session.commit()
                     enqueue_run_execution(project_id, run_id)
                     return True, None
-                run.status = "failed"
-                run.error_message = (
-                    f"Pre-review evaluator pipeline failed after {MAX_EVALUATOR_REMEDIATION_ROUNDS} "
-                    "remediation attempt(s). See visual_qa_report and run events."
+                guardrails_only_failure = (
+                    not evaluator_pipeline.get("guardrails_passed")
+                    and evaluator_pipeline.get("qa_passed", True)
+                    and evaluator_pipeline.get("visual_qa_passed", True)
+                    and evaluator_pipeline.get("final_artifact_qa_passed", True)
+                    and evaluator_pipeline.get("evidence_passed", True)
                 )
+                if guardrails_only_failure and getattr(settings, "guardrails_fail_open_enabled", False):
+                    _write_token_usage(run, _run_usage, _run_cost)
+                    run.status = "review_ready"
+                    run.error_message = (
+                        "Completed with guardrail failures — review recommended before distribution."
+                    )
+                    run.plan_payload = _strip_visual_remediation_from_plan(run.plan_payload)
+                    session.commit()
+                    append_run_event(
+                        session,
+                        run_id,
+                        "completed_with_guardrail_failures",
+                        {"evaluator_pipeline": evaluator_pipeline},
+                    )
+                    session.commit()
+                    if run_todos:
+                        todo_set_status(run_todos, "finalize", "done")
+                        _emit_and_sync_todo_snapshot(
+                            session,
+                            project_id=project_id,
+                            run_id=run_id,
+                            run_todos=run_todos,
+                        )
+                    observe_latency("run_execution", (perf_counter() - started_at) * 1000.0)
+                    return True, None
+
+                run.status = "failed"
+                if not evaluator_pipeline.get("evidence_passed", True):
+                    unsupported = int(
+                        ((evaluator_pipeline.get("evidence_gate") or {}).get("unsupported_claims_count")) or 0
+                    )
+                    run.error_message = (
+                        f"Evidence hard-fail: {unsupported} unsupported numeric claim(s) in the PPTX "
+                        f"after {MAX_EVALUATOR_REMEDIATION_ROUNDS} remediation attempt(s). "
+                        "Replace fabricated figures with sourced client data or remove them."
+                    )
+                else:
+                    run.error_message = (
+                        f"Pre-review evaluator pipeline failed after {MAX_EVALUATOR_REMEDIATION_ROUNDS} "
+                        "remediation attempt(s). See visual_qa_report and run events."
+                    )
                 session.commit()
                 if run_todos:
                     todo_set_status(run_todos, "finalize", "failed")
@@ -1666,6 +1882,7 @@ def _execute_run_job(
                 )
                 return False, run.error_message
 
+            _write_token_usage(run, _run_usage, _run_cost)
             run.status = "review_ready"
             run.error_message = None
             run.plan_payload = _strip_visual_remediation_from_plan(run.plan_payload)
@@ -1706,6 +1923,14 @@ def _execute_run_job(
                 "non_negotiables": state.get("memory_summary", {}).get("non_negotiables", []),
                 "recent_changes": state.get("memory_summary", {}).get("recent_changes", []),
             }
+            proposal_discovery = state.get("proposal_discovery")
+            if isinstance(proposal_discovery, dict):
+                profile_obj["proposal_discovery"] = {
+                    "client": proposal_discovery.get("client") if isinstance(proposal_discovery.get("client"), dict) else {},
+                    "outcome": proposal_discovery.get("outcome") if isinstance(proposal_discovery.get("outcome"), dict) else {},
+                    "audience": str(proposal_discovery.get("audience") or "").strip(),
+                    "win_themes": proposal_discovery.get("win_themes") if isinstance(proposal_discovery.get("win_themes"), list) else [],
+                }
             upsert_project_memory_profile(session, project_id, profile_obj)
             if run.approved_by:
                 _bump_learning_runs_completed(session, run.approved_by, project_id)
@@ -1775,6 +2000,7 @@ def _execute_run_job(
             )
             run = session.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
             if run:
+                _write_token_usage(run, _run_usage, _run_cost)
                 run.status = "failed"
                 run.error_message = str(exc)[:2000]
                 session.commit()

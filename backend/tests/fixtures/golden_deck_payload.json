@@ -1,0 +1,269 @@
+{
+  "requested_outputs": ["pptx"],
+  "process_model": {
+    "process_name": "Finance AI Transformation",
+    "steps": [],
+    "roles": []
+  },
+  "pptx_slides": [
+    {
+      "slide_type": "title",
+      "title": "Agentic AI for Enterprise Finance",
+      "emphasis": "Enterprise Finance",
+      "eyebrow": "INDIA · FINANCE TRANSFORMATION",
+      "subtitle": "A coordinated operating plan.",
+      "kicker": "Thirty-three agents. Five towers. Five quarters.",
+      "metadata": {"PREPARED FOR": "MD & SP", "HORIZON": "5 quarters", "DATE": "Q2 2026"},
+      "badges": ["33 agents", "£4.2M identified", "18-week delivery"]
+    },
+    {
+      "slide_type": "stat_cards",
+      "title": "The asset portfolio.",
+      "subtitle": "THE PRACTICE",
+      "section_number": "01",
+      "emphasis": "asset portfolio",
+      "kicker": "Thirty-three agents across the value chain.",
+      "stat_cards": [
+        {"stat": "33", "label": "Use cases", "description": "Five towers spanning the enterprise value chain.", "fill": "dark"},
+        {"stat": "6", "label": "Workstreams", "description": "Running in parallel from Q1 2025.", "fill": "mid_dark"},
+        {"stat": "£4.2M", "label": "Identified savings", "description": "Across Finance, Procurement and HR.", "fill": "green"},
+        {"stat": "5", "label": "Quarters", "description": "Phased delivery sequenced by ROI.", "fill": "gray"}
+      ]
+    },
+    {
+      "slide_type": "column_cards",
+      "title": "Three modes of participation.",
+      "subtitle": "WHERE WE PLAY",
+      "section_number": "02",
+      "column_cards": [
+        {"heading": "Build", "body": "Proprietary IP that we own and license. Highest margin. Longest lead time.", "accent": "green"},
+        {"heading": "Deploy", "body": "Client-funded implementations of proven assets. Fastest to revenue.", "accent": "dark"},
+        {"heading": "Partner", "body": "Co-sell and referral arrangements with hyperscalers and ISVs.", "accent": "gray"}
+      ]
+    },
+    {
+      "slide_type": "bullets",
+      "title": "Six workstreams. One coordinated build.",
+      "subtitle": "THE PLAN",
+      "kicker": "Sequenced for speed, not elegance.",
+      "bullets": [
+        "Hiring starts now — senior AI engineers and a delivery lead are the rate-limiting constraint.",
+        "Platform and GTM run in parallel from Q2 — waiting risks the market window.",
+        "Delivery revenue from Q3 sustains the investment through to profitable scale.",
+        "Partner agreements unlock the enterprise sales motion we cannot build alone.",
+        "Risk and governance run as a thread, not a gate — quality without bureaucracy."
+      ]
+    },
+    {
+      "slide_type": "stack_layers",
+      "title": "A three-layer operating model.",
+      "subtitle": "HOW WE OPERATE",
+      "stack_layers": [
+        {"label": "Strategy", "description": "Portfolio decisions, pricing, and partner governance at the leadership level.", "fill": "dark"},
+        {"label": "Platform", "description": "Shared inference infrastructure, data connectors, and agent orchestration.", "fill": "mid_dark"},
+        {"label": "Delivery", "description": "Client-facing squads executing against defined workstream targets.", "fill": "green"},
+        {"label": "Feedback", "description": "Real-time agent telemetry drives continuous improvement cycles.", "fill": "gray"}
+      ]
+    },
+    {
+      "slide_type": "table",
+      "title": "Investment and return by workstream.",
+      "subtitle": "THE COMMERCIAL CASE",
+      "table": {
+        "headers": ["Workstream", "Q1 Investment", "Q2 Investment", "ARR Target", "Status"],
+        "rows": [
+          ["AI Engineering", "£340K", "£280K", "£1.8M", "Live"],
+          ["Data Platform", "£120K", "£200K", "£0.6M", "In build"],
+          ["GTM & Sales", "£80K", "£160K", "£0.9M", "Planned"],
+          ["Risk & Compliance", "£60K", "£80K", "£0.4M", "Planned"],
+          ["Partnerships", "£40K", "£60K", "£0.5M", "Planned"]
+        ],
+        "x": 0.28, "y": 1.0, "w": 9.44, "h": 4.3
+      }
+    },
+    {
+      "slide_type": "chart",
+      "title": "Revenue ramp by quarter.",
+      "subtitle": "FINANCIAL PROJECTION",
+      "chart": {
+        "type": "column",
+        "categories": ["Q1 2025", "Q2 2025", "Q3 2025", "Q4 2025", "Q1 2026"],
+        "series": [
+          {"name": "Build Cost (£K)", "values": [600, 700, 500, 400, 300]},
+          {"name": "Revenue (£K)", "values": [0, 80, 340, 780, 1200]}
+        ],
+        "subtitle": "Internal forecast — 60% confidence interval"
+      }
+    },
+    {
+      "slide_type": "big_number",
+      "title": "The prize.",
+      "subtitle": "THE OPPORTUNITY",
+      "big_number": {"stat": "£4.2M", "label": "Identified savings", "context": "Across 33 use cases in 5 quarters.", "fill": "dark"}
+    },
+    {
+      "slide_type": "process_flow",
+      "title": "Five-quarter delivery sequence.",
+      "subtitle": "DELIVERY PHASES",
+      "process_flow": {
+        "steps": [
+          {"label": "Establish", "description": "Hire leads, set infrastructure, sign first client.", "fill": "dark"},
+          {"label": "Build", "description": "Develop priority agents, stand up data platform.", "fill": "mid_dark"},
+          {"label": "Deploy", "description": "First client deployments, measure ROI.", "fill": "green"},
+          {"label": "Scale", "description": "Expand client base, productise winners.", "fill": "dark_green"},
+          {"label": "Sustain", "description": "Partner ecosystem, recurring revenue.", "fill": "gray"}
+        ]
+      }
+    },
+    {
+      "slide_type": "section_divider",
+      "title": "The build begins now.",
+      "emphasis": "now.",
+      "subtitle": "DELOITTE INDIA"
+    },
+    {
+      "slide_type": "split_panel",
+      "title": "Six reasons to move now.",
+      "subtitle": "THE CASE FOR URGENCY",
+      "section_number": "03",
+      "left_label": "The window is 18 months.",
+      "items": [
+        {"label": "Market timing", "body": "Competitors are 6–12 months ahead; the gap is closeable now but not in 2026."},
+        {"label": "Talent availability", "body": "Senior AI engineers are scarce; the best are choosing in Q1 2025."},
+        {"label": "Client appetite", "body": "Three qualified prospects are waiting for a credible capability signal."},
+        {"label": "Regulatory runway", "body": "AI governance frameworks give 18 months before mandatory controls land."},
+        {"label": "Hyperscaler credits", "body": "AWS and Azure credits expire in Q3 — worth £200K in free infrastructure."}
+      ]
+    },
+    {
+      "slide_type": "lanes",
+      "title": "Three build tracks in parallel.",
+      "subtitle": "BUILD PLAN",
+      "section_number": "04",
+      "kicker": "No sequential dependencies — all tracks start Q1.",
+      "lanes": [
+        {"label": "Talent", "items": ["Hire AI engineering lead", "Recruit 4 senior engineers", "Onboard delivery manager", "Activate alumni network"]},
+        {"label": "Platform", "items": ["Select inference vendor", "Integrate data connectors", "Build agent orchestrator", "Security and compliance review"]},
+        {"label": "GTM", "items": ["Finalise pricing model", "Build sales playbook", "Warm three prospects", "Sign first engagement"]}
+      ]
+    },
+    {
+      "slide_type": "workstream_cards",
+      "title": "Six workstreams.",
+      "subtitle": "DELIVERY PORTFOLIO",
+      "status_legend": true,
+      "workstream_cards": [
+        {"heading": "AI Engineering", "owner": "CTO", "body": "Core platform build and agent development.", "status": "live"},
+        {"heading": "Data Platform", "owner": "CDO", "body": "Unified data layer and connectors.", "status": "in_build"},
+        {"heading": "GTM & Sales", "owner": "CMO", "body": "Pipeline, pricing, and first client.", "status": "planned"},
+        {"heading": "Risk & Compliance", "owner": "CRO", "body": "Model governance and audit trail.", "status": "planned"},
+        {"heading": "Partnerships", "owner": "CPO", "body": "Hyperscaler and ISV co-sell motions.", "status": "partner"},
+        {"heading": "Finance & Ops", "owner": "CFO", "body": "Investment tracking and board reporting.", "status": "in_build"}
+      ]
+    },
+    {
+      "slide_type": "tower_cards",
+      "title": "Five asset towers.",
+      "subtitle": "THE PORTFOLIO",
+      "tower_cards": [
+        {
+          "heading": "Finance",
+          "items": [
+            {"text": "AP automation", "status": "live"},
+            {"text": "Close acceleration", "status": "in_build"},
+            {"text": "FP&A narrative", "status": "planned"}
+          ],
+          "takeaway": "£1.2M identified."
+        },
+        {
+          "heading": "Procurement",
+          "items": [
+            {"text": "Vendor scoring", "status": "live"},
+            {"text": "Contract mining", "status": "in_build"},
+            {"text": "Spend analytics", "status": "planned"}
+          ],
+          "takeaway": "12% savings."
+        },
+        {
+          "heading": "HR",
+          "items": [
+            {"text": "Resume screening", "status": "in_build"},
+            {"text": "Offer drafting", "status": "planned"},
+            {"text": "L&D personalisation", "status": "planned"}
+          ],
+          "takeaway": "40% faster hire."
+        },
+        {
+          "heading": "Risk",
+          "items": [
+            {"text": "Model risk scanning", "status": "in_build"},
+            {"text": "Regulatory monitoring", "status": "planned"}
+          ],
+          "takeaway": "Audit-ready."
+        },
+        {
+          "heading": "Tax",
+          "items": [
+            {"text": "Transfer pricing AI", "status": "planned"},
+            {"text": "R&D credits agent", "status": "planned"}
+          ],
+          "takeaway": "Q4 2025 target."
+        }
+      ]
+    },
+    {
+      "slide_type": "roadmap_matrix",
+      "title": "Delivery roadmap.",
+      "subtitle": "THE PLAN ON A PAGE",
+      "roadmap_matrix": {
+        "periods": ["Q1 25", "Q2 25", "Q3 25", "Q4 25", "Q1 26"],
+        "tracks": [
+          {"label": "AI Engineering", "cells": [{"label": "Infra setup", "status": "live"}, {"label": "Agent v1", "status": "in_build"}, {"label": "Agent v2", "status": "planned"}, {"label": "Scale", "status": "planned"}, {}]},
+          {"label": "Data Platform", "cells": [{}, {"label": "Connectors", "status": "in_build"}, {"label": "Lake", "status": "planned"}, {"label": "Real-time", "status": "planned"}, {}]},
+          {"label": "GTM", "cells": [{}, {"label": "Pilot client", "status": "in_build"}, {"label": "Scale", "status": "planned"}, {"label": "Expand", "status": "planned"}, {}]},
+          {"label": "Risk", "cells": [{}, {}, {"label": "Framework", "status": "planned"}, {"label": "Audit", "status": "planned"}, {}]},
+          {"label": "Partnerships", "cells": [{}, {}, {"label": "AWS deal", "status": "partner"}, {"label": "Azure deal", "status": "partner"}, {}]}
+        ]
+      }
+    },
+    {
+      "slide_type": "swimlane_timeline",
+      "title": "Programme schedule.",
+      "subtitle": "18-MONTH VIEW",
+      "swimlane_timeline": {
+        "periods": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"],
+        "lanes": [
+          {"label": "Talent", "bars": [{"start": 0, "end": 2, "label": "Recruit", "status": "live"}, {"start": 2, "end": 5, "label": "Onboard", "status": "in_build"}]},
+          {"label": "Platform", "bars": [{"start": 1, "end": 4, "label": "Build", "status": "in_build"}, {"start": 4, "end": 8, "label": "Scale", "status": "planned"}]},
+          {"label": "GTM", "bars": [{"start": 2, "end": 5, "label": "First client", "status": "in_build"}, {"start": 5, "end": 8, "label": "Pipeline", "status": "planned"}]},
+          {"label": "Partnerships", "bars": [{"start": 4, "end": 8, "label": "AWS + Azure", "status": "partner"}]}
+        ]
+      }
+    },
+    {
+      "slide_type": "flagship_cards",
+      "title": "Three flagship offers.",
+      "subtitle": "GO-TO-MARKET",
+      "flagship_cards": [
+        {
+          "heading": "AI Due Diligence",
+          "body": "Rapid 3-week assessment of an organisation's AI readiness, identifying the top 10 use cases by ROI.",
+          "kpis": [{"label": "Weeks", "value": "3"}, {"label": "Use cases", "value": "10"}, {"label": "NPS", "value": "87"}],
+          "client": "Private Equity"
+        },
+        {
+          "heading": "Process AI Sprint",
+          "body": "8-week implementation of a single high-value process automation with measurable outcome guarantees.",
+          "kpis": [{"label": "Duration", "value": "8 wks"}, {"label": "ROI", "value": "3.2×"}],
+          "client": "Fortune 500"
+        },
+        {
+          "heading": "AI Platform Build",
+          "body": "Full-programme delivery of an enterprise AI platform including data, inference, governance and change management.",
+          "kpis": [{"label": "ARR", "value": "£1.8M"}, {"label": "Agents", "value": "12+"}],
+          "client": "FTSE 100"
+        }
+      ]
+    }
+  ]
+}

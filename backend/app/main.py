@@ -26,7 +26,7 @@ load_dotenv(_backend_root / ".env", override=True)
 # for this file only (see [tool.ruff.lint.per-file-ignores] in pyproject.toml).
 from app.api.routes import router
 from app.api.wiki import router as wiki_router
-from app.core.config import log_memory_config_warnings, log_run_queue_startup_config, settings
+from app.core.config import log_memory_config_warnings, log_run_queue_startup_config, log_wiki_config_warnings, settings
 from app.core.deliverable import DeliverableRegistry
 from app.core.deliverable_docx import DOCXDeliverable
 from app.core.deliverable_pdf import PDFDeliverable
@@ -43,6 +43,7 @@ from app.services.observability import snapshot as observability_snapshot
 from app.services.otel_tracing import init_otel_if_enabled
 from app.services.run_worker import (
     admission_status,
+    drain_execution_worker,
     list_worker_heartbeats,
     queue_runtime_stats,
     reconcile_stalled_approved_runs_on_startup,
@@ -76,6 +77,7 @@ if settings.structured_logging_enabled:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     log_memory_config_warnings()
+    log_wiki_config_warnings()
     log_run_queue_startup_config(
         repo_env_present=(_repo_root / ".env").is_file(),
         backend_env_present=(_backend_root / ".env").is_file(),
@@ -94,6 +96,7 @@ async def lifespan(_app: FastAPI):
     if settings.scheduler_enabled:
         start_scheduler_worker()
     yield
+    drain_execution_worker(timeout_sec=settings.run_drain_timeout_sec)
     await shutdown_mcp_servers()
 
 

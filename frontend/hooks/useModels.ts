@@ -27,12 +27,84 @@ export type ModelConflict = {
   sheet: string;
   cell_ref: string;
   type: "value_mismatch" | "type_mismatch" | "formula_changed" | "deleted_range" | "structural_shift";
-  severity: "medium" | "high";
-  status: "open" | "resolved";
+  severity: "medium" | "high" | "low";
+  status: "open" | "resolved" | "reopened";
   base?: { value?: unknown };
   local?: { value?: unknown };
   remote?: { value?: unknown };
+  history?: Array<{ timestamp: string; value: unknown; source: "base" | "local" | "remote"; user?: string }>;
+  impact?: { dependentCells: string[]; affectedModels: string[]; impactCount: number };
+  formula?: string;
+  createdAt?: string;
+  resolvedAt?: string;
   resolution?: { chosen_side?: "local" | "remote" | "policy"; rationale?: string; actor?: string; timestamp?: string } | null;
+};
+
+export type ConsolidatedFinancialMetrics = {
+  profitability: {
+    grossMargin: number;
+    operatingMargin: number;
+    netMargin: number;
+    roe: number | null;
+    roa: number | null;
+    roic: number | null;
+  };
+  liquidity: {
+    currentRatio: number | null;
+    quickRatio: number | null;
+    cashConversionCycle: number | null;
+  };
+  leverage: {
+    debtToEquity: number | null;
+    interestCoverage: number | null;
+    netDebtToEbitda: number | null;
+  };
+  growth: {
+    revenueGrowth: number;
+    ebitdaGrowth: number;
+    fcfGrowth: number;
+    cagr: number;
+  };
+};
+
+export type ConsolidatedFinancialStatement = {
+  name: string;
+  periods: string[];
+  revenue: number[];
+  cogs: number[];
+  grossProfit: number[];
+  opex: number[];
+  ebit: number[];
+  taxes: number[];
+  netIncome: number[];
+};
+
+export type ConsolidatedVarianceData = {
+  period: number;
+  budget: number;
+  actual: number;
+  variance: number;
+  variancePct: number;
+  favorable: boolean;
+};
+
+export type ConsolidatedForecastData = {
+  period: number;
+  revenue: number;
+  margin: number;
+  ebit: number;
+  ebitda?: number;
+  netIncome?: number;
+  confidence: number;
+};
+
+export type ConsolidatedFinancialData = {
+  metrics: ConsolidatedFinancialMetrics;
+  statements: ConsolidatedFinancialStatement;
+  variances: ConsolidatedVarianceData[];
+  forecasts: ConsolidatedForecastData[];
+  assumptions: Record<string, number>;
+  data_source: "snapshot" | "assumptions";
 };
 
 export function useModels(projectId: string) {
@@ -205,6 +277,177 @@ export function useResolveModelConflict(projectId: string, modelId: string) {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["model-conflicts", projectId, modelId] });
+    },
+  });
+}
+
+export function useConflictDetail(projectId: string, modelId: string, conflictId: string | null) {
+  const { api, token } = useAuth();
+  return useQuery({
+    queryKey: ["model-conflict-detail", projectId, modelId, conflictId],
+    enabled: Boolean(token && projectId && modelId && conflictId),
+    queryFn: async (): Promise<Partial<ModelConflict>> => {
+      const res = await api(
+        `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/conflicts/${encodeURIComponent(conflictId!)}`
+      );
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown> & { detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Load conflict detail failed"));
+      return data as Partial<ModelConflict>;
+    },
+  });
+}
+
+export function useBatchResolveConflicts(projectId: string, modelId: string) {
+  const { api } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { conflictIds: string[]; chosen_side: "local" | "remote" | "policy"; rationale?: string }) => {
+      const results = await Promise.all(
+        payload.conflictIds.map((cid) =>
+          api(
+            `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/conflicts/${encodeURIComponent(cid)}/resolve`,
+            { method: "POST", body: JSON.stringify({ chosen_side: payload.chosen_side, rationale: payload.rationale ?? "" }) }
+          )
+        )
+      );
+      const failed = results.find((res) => !res.ok);
+      if (failed) {
+        const { data: parsed, rawText } = await parseResponseBodyLoose(failed);
+        const data = (parsed && typeof parsed === "object" ? parsed : {}) as { detail?: string };
+        throw new Error(extractApiErrorMessage(data, rawText || "Batch resolve failed"));
+      }
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["model-conflicts", projectId, modelId] });
+    },
+  });
+}
+
+export function useAuditLog(
+  projectId: string,
+  modelId: string,
+  filters?: { event_type?: string; cell_ref?: string; offset?: number; limit?: number }
+) {
+  const { api, token } = useAuth();
+  const offset = filters?.offset ?? 0;
+  const limit = filters?.limit ?? 200;
+  return useQuery({
+    queryKey: ["model-audit-log", projectId, modelId, filters?.event_type, filters?.cell_ref, offset, limit],
+    enabled: Boolean(token && projectId && modelId),
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      if (filters?.event_type) params.set("event_type", filters.event_type);
+      if (filters?.cell_ref) params.set("cell_ref", filters.cell_ref);
+      const res = await api(
+        `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/excel/audit-log?${params.toString()}`
+      );
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as {
+        events?: unknown[];
+        total?: number;
+        has_more?: boolean;
+        detail?: string;
+      };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Load audit log failed"));
+      return {
+        events: (data.events ?? []) as import("@/components/excel/AuditLogViewer").AuditEvent[],
+        total: data.total ?? 0,
+        hasMore: data.has_more ?? false,
+      };
+    },
+  });
+}
+
+export function useConsolidatedFinancial(projectId: string, modelId: string) {
+  const { api, token } = useAuth();
+  return useQuery({
+    queryKey: ["model-consolidated-financial", projectId, modelId],
+    enabled: Boolean(token && projectId && modelId),
+    queryFn: async (): Promise<ConsolidatedFinancialData> => {
+      const res = await api(
+        `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/financial/consolidated`
+      );
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown> & { detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Load consolidated financial failed"));
+      return data as ConsolidatedFinancialData;
+    },
+  });
+}
+
+export function useGenerateReport(projectId: string, modelId: string) {
+  const { api } = useAuth();
+  return useMutation({
+    mutationFn: async (payload: {
+      reportType: string;
+      format: string;
+      title: string;
+      includeCharts: boolean;
+      includeTables: boolean;
+      recipients: string;
+    }) => {
+      const res = await api(
+        `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/reports/generate`,
+        { method: "POST", body: JSON.stringify(payload) }
+      );
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as {
+        download_path?: string;
+        status?: string;
+        detail?: string;
+        emailed?: boolean;
+        email_reason?: string | null;
+      };
+      if (!res.ok || data.status === "not_yet_implemented") {
+        throw new Error(extractApiErrorMessage(data, rawText || data.detail || "Generate report failed"));
+      }
+      return data;
+    },
+  });
+}
+
+export type StyleProfile = {
+  formality: string;
+  tone: string;
+  persona: string;
+  verbosity: string;
+  audience: string;
+};
+
+export function useStyleProfile(projectId: string, modelId: string) {
+  const { api, token } = useAuth();
+  return useQuery({
+    queryKey: ["style-profile", projectId, modelId],
+    enabled: Boolean(token && projectId && modelId),
+    queryFn: async (): Promise<StyleProfile> => {
+      const res = await api(
+        `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/style-profile`
+      );
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as StyleProfile & { detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Load style profile failed"));
+      return data;
+    },
+  });
+}
+
+export function useSaveStyleProfile(projectId: string, modelId: string) {
+  const { api } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: StyleProfile) => {
+      const res = await api(
+        `/api/projects/${encodeURIComponent(projectId)}/models/${encodeURIComponent(modelId)}/style-profile`,
+        { method: "PUT", body: JSON.stringify(payload) }
+      );
+      const { data: parsed, rawText } = await parseResponseBodyLoose(res);
+      const data = (parsed && typeof parsed === "object" ? parsed : {}) as { detail?: string };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, rawText || "Save style profile failed"));
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["style-profile", projectId, modelId] });
     },
   });
 }

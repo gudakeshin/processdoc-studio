@@ -1,12 +1,13 @@
 """Budget vs actual tracking and variance analysis for ongoing periods."""
 
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def create_budget_setup(
@@ -28,7 +29,7 @@ def create_budget_setup(
         Budget setup object
     """
     budget_setup = {
-        "id": f"budget_{datetime.now(UTC).timestamp()}",
+        "id": f"budget_{datetime.now(IST).timestamp()}",
         "model_id": model_id,
         "fiscal_year": fiscal_year,
         "periods": periods,
@@ -81,7 +82,7 @@ def record_actual_results(
         total_ytd_actual += actual_amount
 
     recording = {
-        "id": f"actual_{datetime.now(UTC).timestamp()}",
+        "id": f"actual_{datetime.now(IST).timestamp()}",
         "budget_id": budget_setup["id"],
         "period": period,
         "recorded_at": _now_iso(),

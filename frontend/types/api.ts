@@ -8,6 +8,11 @@ export type RunRow = {
   status: string;
   created_at: string | null;
   instruction: string;
+  tokens_input?: number | null;
+  tokens_output?: number | null;
+  tokens_cache_read?: number | null;
+  tokens_cache_creation?: number | null;
+  cost_usd?: number | null;
 };
 
 export type RunsListResponse = { items: RunRow[] };

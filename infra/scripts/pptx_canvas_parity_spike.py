@@ -17,7 +17,18 @@ SUPPORTED_SLIDE_TYPES = {
     "column_cards",
     "stack_layers",
     "table",
+    "chart",
     "section_divider",
+    "big_number",
+    "process_flow",
+    # Phase-3 editorial vocabulary (classic composer degrades to nearest classic type)
+    "split_panel",
+    "lanes",
+    "workstream_cards",
+    "tower_cards",
+    "roadmap_matrix",
+    "swimlane_timeline",
+    "flagship_cards",
 }
 
 

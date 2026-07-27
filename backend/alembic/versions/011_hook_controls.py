@@ -1,7 +1,7 @@
 """add hook controls table
 
 Revision ID: 011_hook_controls
-Revises: 010_run_controls_and_hook_execution
+Revises: 010_run_controls_hooks
 Create Date: 2026-04-01
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision = "011_hook_controls"
-down_revision = "010_run_controls_and_hook_execution"
+down_revision = "010_run_controls_hooks"
 branch_labels = None
 depends_on = None
 

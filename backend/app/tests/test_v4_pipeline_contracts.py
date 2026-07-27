@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.core.config import settings
@@ -230,7 +230,7 @@ def test_memory_event_retention_days_setting() -> None:
                 event_type="qa_outcome",
                 fingerprint="legacy_old",
                 payload=json.dumps({"summary": "old"}),
-                created_at=datetime.utcnow() - timedelta(days=45),
+                created_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=45),
             )
         )
         session.commit()
@@ -254,7 +254,7 @@ def test_memory_event_retention_days_setting() -> None:
                 event_type="qa_outcome",
                 fingerprint="legacy_old_2",
                 payload=json.dumps({"summary": "old-keep"}),
-                created_at=datetime.utcnow() - timedelta(days=45),
+                created_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=45),
             )
         )
         session.commit()
@@ -308,7 +308,7 @@ def test_project_level_retention_days_override(tmp_path) -> None:
                 event_type="qa_outcome",
                 fingerprint="legacy_keep",
                 payload=json.dumps({"summary": "old"}),
-                created_at=datetime.utcnow() - timedelta(days=60),
+                created_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=60),
             )
         )
         session.commit()

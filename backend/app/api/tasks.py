@@ -1,6 +1,7 @@
 import json
 import uuid
 from datetime import datetime, timedelta
+from app.core.tz import IST
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -44,7 +45,7 @@ class UpdateTaskRequest(BaseModel):
 
 
 def _next_run_for(trigger_type: str, cadence_minutes: int, run_at: datetime | None) -> datetime | None:
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     if trigger_type == "once":
         return run_at
     minutes = max(1, min(10080, int(cadence_minutes or 60)))
@@ -153,7 +154,7 @@ def update_task(
     if body.run_at is not None:
         row.run_at = datetime.fromisoformat(body.run_at.replace("Z", "+00:00")).replace(tzinfo=None) if body.run_at else None
     row.next_run_at = _next_run_for(row.trigger_type, row.cadence_minutes, row.run_at) if row.status == "active" else None
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"project_id": project_id, "task_id": task_id, "status": "updated"}
 
@@ -205,7 +206,7 @@ def run_task_now(
     db.flush()
     append_run_event(db, run_id, "plan_ready", plan)
     append_run_event(db, run_id, "step", {"status": "awaiting_hitl_approval", "source": "scheduled_task"})
-    task.last_run_at = datetime.utcnow()
+    task.last_run_at = datetime.now(IST).replace(tzinfo=None)
     task.last_run_status = "queued"
     task.next_run_at = _next_run_for(task.trigger_type, task.cadence_minutes, task.run_at) if task.status == "active" else None
     db.add(
@@ -264,7 +265,7 @@ def pause_task(
         raise HTTPException(status_code=404, detail="Task not found")
     row.status = "paused"
     row.next_run_at = None
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"project_id": project_id, "task_id": task_id, "status": "paused"}
 
@@ -282,6 +283,6 @@ def resume_task(
         raise HTTPException(status_code=404, detail="Task not found")
     row.status = "active"
     row.next_run_at = _next_run_for(row.trigger_type, row.cadence_minutes, row.run_at)
-    row.updated_at = datetime.utcnow()
+    row.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.commit()
     return {"project_id": project_id, "task_id": task_id, "status": "active"}

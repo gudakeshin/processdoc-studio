@@ -97,15 +97,17 @@ def test_zip_slip_rejected() -> None:
 
 
 def test_wiki_pdf_over_page_limit_rejected() -> None:
-    """Wiki ingest text extraction must reject PDFs above the same 50-page cap as document upload."""
+    """Wiki ingest text extraction must reject PDFs above the configured page cap."""
     from pypdf import PdfWriter
 
+    from app.core.config import settings
     from app.services.wiki_ingest import _extract_text_from_file
 
+    max_pages = int(getattr(settings, "pdf_max_pages", 200))
     buf = io.BytesIO()
     writer = PdfWriter()
-    for _ in range(55):
+    for _ in range(max_pages + 5):
         writer.add_blank_page(width=72, height=72)
     writer.write(buf)
     out = _extract_text_from_file("large.pdf", buf.getvalue())
-    assert "50" in out and "reject" in out.lower()
+    assert str(max_pages) in out and "reject" in out.lower()

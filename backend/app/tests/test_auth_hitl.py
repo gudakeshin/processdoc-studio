@@ -1,9 +1,12 @@
 import json
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+from app.services.conversation_router import RouterDecision
 
 from app.core.config import settings
 from app.main import app as fastapi_app
@@ -213,76 +216,102 @@ def test_start_run_respects_explicit_output_types_without_defaults(monkeypatch: 
 
 
 def test_redo_proposal_plan_persists_content_skill_targets_into_run_plan() -> None:
-    client = TestClient(fastapi_app)
-    headers = auth_header(client, email="proposal@test.com")
-    project_resp = client.post("/api/projects", json={"name": "Proposal"}, headers=headers)
-    assert project_resp.status_code == 200
-    project_id = project_resp.json()["id"]
+    def _fake_route_turn(**_: object) -> RouterDecision:
+        return RouterDecision(
+            intent="commit",
+            confidence=0.9,
+            extracted_slots={},
+            output_types=["docx", "pptx"],
+            representations={"docx": "proposal", "pptx": "deck"},
+            content_skill_hint={"domain": "proposal_finance_transformation", "confidence": 0.9},
+            next_state="ready_to_plan",
+            missing_slots=[],
+            reply_hint=None,
+            rationale="Finance transformation proposal and pitch deck",
+        )
 
-    msg = client.post(
-        f"/api/projects/{project_id}/conversation/messages",
-        json={"content": "Draft a finance transformation proposal and pitch deck for CFO review."},
-        headers=headers,
-    )
-    assert msg.status_code == 200
-    body = msg.json()
-    conv_id = body["conversation_id"]
-    plan_hash = body["plan_hash"]
-    cst = body.get("content_skill_targets") or {}
-    assert cst.get("docx") == "proposal_finance_transformation_v1"
-    if not body.get("ready_for_confirmation"):
-        prompts = body.get("decision_prompts") if isinstance(body, dict) else []
-        unresolved = set(body.get("unresolved_prompt_ids") or [])
-        answers: list[dict[str, object]] = []
-        if isinstance(prompts, list):
-            for prompt in prompts:
-                if not isinstance(prompt, dict):
-                    continue
-                prompt_id = str(prompt.get("id") or "").strip()
-                if not prompt_id or prompt_id not in unresolved:
-                    continue
-                options = prompt.get("options") if isinstance(prompt.get("options"), list) else []
-                first = options[0] if options and isinstance(options[0], dict) else {}
-                first_value = str(first.get("value") or "").strip()
-                if not first_value:
-                    continue
-                answers.append({"prompt_id": prompt_id, "selected_values": [first_value]})
-        if answers:
-            decision_resp = client.post(
-                f"/api/projects/{project_id}/conversation/decisions",
-                json={
-                    "conversation_id": conv_id,
-                    "plan_hash": plan_hash,
-                    "answers": answers,
-                },
-                headers=headers,
-            )
-            assert decision_resp.status_code == 200
-            body = decision_resp.json()
-            conv_id = body["conversation_id"]
-            plan_hash = body["plan_hash"]
+    with patch("app.api.projects.conversation.route_turn", side_effect=_fake_route_turn), \
+         patch(
+             "app.services.output_format_detection.resolve_output_formats",
+             return_value=([], {}, ""),
+         ):
+        client = TestClient(fastapi_app)
+        headers = auth_header(client, email="proposal@test.com")
+        project_resp = client.post("/api/projects", json={"name": "Proposal"}, headers=headers)
+        assert project_resp.status_code == 200
+        project_id = project_resp.json()["id"]
 
-    conf = client.post(
-        f"/api/projects/{project_id}/conversation/confirm",
-        json={"conversation_id": conv_id, "plan_hash": plan_hash},
-        headers=headers,
-    )
-    assert conf.status_code == 200
+        msg = client.post(
+            f"/api/projects/{project_id}/conversation/messages",
+            json={
+                "content": (
+                    "Draft a finance transformation proposal and pitch deck for CFO review. "
+                    "Client is Acme Corp. Industry is manufacturing. Primary audience is CFO. "
+                    "Key win themes are cost reduction, process automation, risk mitigation. "
+                    "Transformation problem is modernising the finance operating model."
+                )
+            },
+            headers=headers,
+        )
+        assert msg.status_code == 200
+        body = msg.json()
+        conv_id = body["conversation_id"]
+        plan_hash = body["plan_hash"]
+        cst = body.get("content_skill_targets") or {}
+        assert cst.get("docx") == "proposal_finance_transformation_v1"
+        if not body.get("ready_for_confirmation"):
+            prompts = body.get("decision_prompts") if isinstance(body, dict) else []
+            unresolved = set(body.get("unresolved_prompt_ids") or [])
+            answers: list[dict[str, object]] = []
+            if isinstance(prompts, list):
+                for prompt in prompts:
+                    if not isinstance(prompt, dict):
+                        continue
+                    prompt_id = str(prompt.get("id") or "").strip()
+                    if not prompt_id or prompt_id not in unresolved:
+                        continue
+                    options = prompt.get("options") if isinstance(prompt.get("options"), list) else []
+                    first = options[0] if options and isinstance(options[0], dict) else {}
+                    first_value = str(first.get("value") or "").strip()
+                    if not first_value:
+                        continue
+                    answers.append({"prompt_id": prompt_id, "selected_values": [first_value]})
+            if answers:
+                decision_resp = client.post(
+                    f"/api/projects/{project_id}/conversation/decisions",
+                    json={
+                        "conversation_id": conv_id,
+                        "plan_hash": plan_hash,
+                        "answers": answers,
+                    },
+                    headers=headers,
+                )
+                assert decision_resp.status_code == 200
+                body = decision_resp.json()
+                conv_id = body["conversation_id"]
+                plan_hash = body["plan_hash"]
 
-    run_resp = client.post(
-        "/api/runs",
-        json={
-            "project_id": project_id,
-            "conversation_id": conv_id,
-            "plan_hash": plan_hash,
-            "instruction": "Create deliverables",
-        },
-        headers=headers,
-    )
-    assert run_resp.status_code == 200
-    plan = run_resp.json().get("plan") or {}
-    run_targets = plan.get("content_skill_targets") or {}
-    assert run_targets.get("docx") == "proposal_finance_transformation_v1"
+        conf = client.post(
+            f"/api/projects/{project_id}/conversation/confirm",
+            json={"conversation_id": conv_id, "plan_hash": plan_hash},
+            headers=headers,
+        )
+        assert conf.status_code == 200
+
+        run_resp = client.post(
+            "/api/runs",
+            json={
+                "project_id": project_id,
+                "conversation_id": conv_id,
+                "plan_hash": plan_hash,
+                "instruction": "Create deliverables",
+            },
+            headers=headers,
+        )
+        assert run_resp.status_code == 200
+        plan = run_resp.json().get("plan") or {}
+        run_targets = plan.get("content_skill_targets") or {}
+        assert run_targets.get("docx") == "proposal_finance_transformation_v1"
 
 
 def test_update_run_plan_preserves_existing_content_skill_targets() -> None:
@@ -294,7 +323,14 @@ def test_update_run_plan_preserves_existing_content_skill_targets() -> None:
 
     msg = client.post(
         f"/api/projects/{project_id}/conversation/messages",
-        json={"content": "Create a finance transformation proposal for CFO and controllership leaders."},
+        json={
+            "content": (
+                "Create a finance transformation proposal for CFO and controllership leaders. "
+                "Client is Acme Corp. Industry is manufacturing. Primary audience is CFO. "
+                "Key win themes are cost reduction, process automation, risk mitigation. "
+                "Transformation problem is modernising the finance operating model."
+            )
+        },
         headers=headers,
     )
     assert msg.status_code == 200

@@ -2,7 +2,8 @@
 
 import contextlib
 import json
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ from app.services.financial_calculations import (
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:

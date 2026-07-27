@@ -1,14 +1,15 @@
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.tz import ist_now
 from app.db.base import Base
 
 
 def utcnow() -> datetime:
-    return datetime.now(UTC)
+    return ist_now()
 
 
 class User(Base):
@@ -63,6 +64,7 @@ class Membership(Base):
     __tablename__ = "memberships"
     __table_args__ = (
         Index("ix_memberships_project_user", "project_id", "user_id"),
+        UniqueConstraint("project_id", "user_id", name="uq_memberships_project_user"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -90,6 +92,11 @@ class Run(Base):
     pause_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resume_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     abort_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_cache_read: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_cache_creation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class SwarmTeam(Base):
@@ -181,8 +188,8 @@ class RunTask(Base):
     requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     estimated_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class HookExecution(Base):
@@ -199,7 +206,7 @@ class HookExecution(Base):
     hook_exec_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     outcome: Mapped[str] = mapped_column(String(16), nullable=False, default="OK")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class HookControl(Base):
@@ -215,7 +222,7 @@ class HookControl(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     actor: Mapped[str | None] = mapped_column(String(255), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ConsentLedger(Base):
@@ -232,7 +239,7 @@ class ConsentLedger(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     granted_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class DPDPRightsRequest(Base):
@@ -244,7 +251,7 @@ class DPDPRightsRequest(Base):
     request_type: Mapped[str] = mapped_column(String(32), nullable=False)  # access|correction|erasure
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class MemoryEvent(Base):
@@ -256,7 +263,7 @@ class MemoryEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     payload: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
 
 
 class ProjectMemoryProfile(Base):
@@ -264,7 +271,7 @@ class ProjectMemoryProfile(Base):
 
     project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.id"), primary_key=True)
     summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class UserProjectPreference(Base):
@@ -275,7 +282,7 @@ class UserProjectPreference(Base):
     user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.id"), primary_key=True)
     preferences_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class Conversation(Base):
@@ -285,8 +292,8 @@ class Conversation(Base):
     project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.id"), nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="Creative Studio")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ConversationMessage(Base):
@@ -302,11 +309,16 @@ class ConversationMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    source_type: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    source_freshness_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
 
 
 class MemoryItem(Base):
     __tablename__ = "memory_items"
+    __table_args__ = (
+        UniqueConstraint("project_id", "memory_type", "key", name="uq_memory_item_project_type_key"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.id"), nullable=False, index=True)
@@ -319,8 +331,8 @@ class MemoryItem(Base):
     # When set, optional DPDP Consent Ledger check for this principal (see memory_enforce_consent_ledger).
     principal_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ScheduledTask(Base):
@@ -344,8 +356,8 @@ class ScheduledTask(Base):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_run_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ScheduledTaskRun(Base):
@@ -357,7 +369,7 @@ class ScheduledTaskRun(Base):
     run_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("runs.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
 
 
 class WikiPage(Base):
@@ -380,8 +392,8 @@ class WikiPage(Base):
     frontmatter: Mapped[str] = mapped_column(Text, nullable=False, default="{}")  # YAML metadata as JSON
     inbound_links: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON list of page IDs
     outbound_links: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON list of page IDs
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)  # "system" for auto-generated
     source_memory_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON list
     source_run_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON list
@@ -401,7 +413,7 @@ class WikiLog(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     wiki_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     project_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("projects.id"), nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
     operation: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # ingest|query|lint|update
     source_name: Mapped[str | None] = mapped_column(String(512), nullable=True)  # e.g., article title, run_id, URL
     pages_touched: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON list of page IDs
@@ -423,6 +435,6 @@ class WikiIndex(Base):
     wiki_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     project_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("projects.id"), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)  # Markdown: catalog of all pages by category
-    last_updated: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     category_counts: Mapped[str] = mapped_column(Text, nullable=False, default="{}")  # JSON: {entity: N, concept: M, ...}

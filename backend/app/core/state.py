@@ -57,6 +57,9 @@ class ProcessDocState(TypedDict, total=False):
     memory_summary: dict
     coordinator_execution_plan: dict
     run_todos: list[dict]
+    deliverable_archetype: str
+    branding_context: object
+    qa_remediation_notes: str
     _emit_run_event: object
 
 

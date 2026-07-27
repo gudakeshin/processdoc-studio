@@ -46,7 +46,10 @@ class ExcelQAEvaluator:
 
         Returns:
             QA result dict with:
-            - passed: bool indicating if all outputs meet threshold
+            - passed: True/False when QA actually ran; None when it could not be
+              evaluated (import unavailable or runtime error). Callers must treat
+              None as "not assessed" — never as a pass.
+            - status: "evaluated" | "skipped" | "error"
             - iterations: number of evaluation iterations
             - scores: dict mapping output keys to quality scores
             - remediation_instructions: dict with improvement suggestions
@@ -54,9 +57,12 @@ class ExcelQAEvaluator:
         try:
             from app.services.qa import QAAgentLoop
         except ImportError:
-            log.warning("QAAgentLoop not available; returning mock QA result")
+            # QA machinery unavailable: report "not assessed" (passed=None) rather
+            # than a false pass, so exports are not silently waved through.
+            log.warning("QAAgentLoop not available; QA evaluation skipped (not a pass)")
             return {
-                "passed": True,
+                "passed": None,
+                "status": "skipped",
                 "iterations": 0,
                 "scores": {},
                 "remediation_instructions": {},
@@ -93,13 +99,17 @@ class ExcelQAEvaluator:
                 f"iterations={qa_result.get('iterations', 1)}"
             )
 
+            if isinstance(qa_result, dict):
+                qa_result.setdefault("status", "evaluated")
             return qa_result
 
         except Exception as e:
             log.error(f"QA evaluation failed: {e}", exc_info=True)
-            # QA failure should not block export; return neutral result
+            # QA failure must not block export, but must NOT report a false pass:
+            # passed=None signals "not assessed" so the caller records it honestly.
             return {
-                "passed": True,
+                "passed": None,
+                "status": "error",
                 "iterations": 0,
                 "scores": {},
                 "remediation_instructions": {},

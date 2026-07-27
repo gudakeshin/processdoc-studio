@@ -9,6 +9,9 @@ from typing import Any
 from app.services.claude import _extract_first_json_object, claude_generate_with_thinking, is_claude_enabled
 from app.services.skill_document import load_builtin_skills
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _trim_skill_catalog(max_items: int = 36) -> list[dict[str, str]]:
     skills = load_builtin_skills()
@@ -70,14 +73,16 @@ def generate_strategy_options(*, instruction: str) -> dict[str, Any] | None:
             max_tokens=min(4096, int(settings.anthropic_coordinator_plan_max_tokens)),
             budget_tokens=min(6000, int(settings.anthropic_thinking_budget_tokens)),
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'generate_strategy_options', exc)
         return None
     text = str(result.get("text") or "").strip()
     if not text:
         return None
     try:
         parsed = _extract_first_json_object(text)
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'generate_strategy_options', exc)
         return None
     if not isinstance(parsed, dict):
         return None

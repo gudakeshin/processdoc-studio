@@ -204,6 +204,7 @@ export default function ProjectsIndexPage() {
 
       {deleteConfirmOpen && pendingDelete ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- modal dialog owns Escape/focus-trap key handling per ARIA APG */}
           <div
             role="dialog"
             aria-modal="true"

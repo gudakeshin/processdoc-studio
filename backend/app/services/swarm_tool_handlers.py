@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from sqlalchemy import select
@@ -109,7 +110,7 @@ def swarm_create_task(*_: Any, **kwargs: Any) -> dict[str, Any]:
             validate_task_dag(id_set, depends_map)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        now = datetime.utcnow()
+        now = datetime.now(IST).replace(tzinfo=None)
         row = RunTask(
             id=tid,
             run_id=run_id,
@@ -163,7 +164,7 @@ def swarm_update_task(*_: Any, **kwargs: Any) -> dict[str, Any]:
             task.assigned_teammate_id = None if raw is None or str(raw).strip() == "" else str(raw).strip()
         if kwargs.get("priority") is not None:
             task.priority = int(kwargs.get("priority") or 0)
-        task.updated_at = datetime.utcnow()
+        task.updated_at = datetime.now(IST).replace(tzinfo=None)
         db.flush()
         append_run_event(db, run_id, "swarm.task_updated", {"task_id": task_id, "status": task.status})
         db.commit()

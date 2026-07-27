@@ -7,7 +7,9 @@ contradictions, coverage gaps, staleness, and overall wiki QA evaluation.
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
+from app.services.wiki_io import resolve_relationships_file
 
 try:
     import yaml
@@ -237,11 +239,8 @@ def get_relationship_counts(wiki_type: str, project_id: str | None) -> dict:
         else:
             wiki_dir = workspace_path(project_id) / "wiki"
 
-        relationships_file = wiki_dir / ".meta" / "relationships.json"
-        if not relationships_file.exists():
-            # Fallback to old location
-            relationships_file = wiki_dir / "relationships.json"
-        if not relationships_file.exists():
+        relationships_file = resolve_relationships_file(wiki_dir)
+        if relationships_file is None:
             return {}
 
         rels_data = json.loads(relationships_file.read_text())
@@ -474,7 +473,7 @@ def _check_staleness(pages: list) -> list:
             return []
 
         issues = []
-        now = datetime.now(UTC)
+        now = datetime.now(IST)
         staleness_threshold = now - timedelta(days=30)
 
         for page in pages:
@@ -725,6 +724,26 @@ def _evaluate_wiki_qa(wiki_type: str, project_id: str | None) -> dict:
         }
 
 
+def get_lint_summary(wiki_type: str, project_id: str | None) -> dict:
+    """Structured lint summary for dashboard/scorecards."""
+    qa = _evaluate_wiki_qa(wiki_type, project_id)
+    issues = qa.get("issues", [])
+    summary = qa.get("summary", {})
+    issue_types = {}
+    for issue in issues:
+        issue_type = str(issue.get("type") or "unknown")
+        issue_types[issue_type] = issue_types.get(issue_type, 0) + 1
+    return {
+        "passed": bool(qa.get("passed", False)),
+        "severity": qa.get("severity", "low"),
+        "summary": summary,
+        "issue_type_counts": issue_types,
+        "schema_issues": issue_types.get("schema", 0),
+        "no_relationships": issue_types.get("no_relationships", 0),
+        "orphan_pages": int(summary.get("orphaned_pages", 0) or 0),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Enhanced temporal tracking (Phase 1)
 # ---------------------------------------------------------------------------
@@ -790,7 +809,7 @@ def _check_source_freshness(wiki_type: str, project_id: str | None) -> list:
                     last_refreshed_dt = datetime.fromisoformat(
                         last_refreshed.replace("Z", "+00:00")
                     )
-                    now = datetime.now(UTC)
+                    now = datetime.now(IST)
 
                     # If page sources track metadata, check for changes
                     source_metadata_file = wiki_dir / ".meta" / f"{page_id}_sources.json"
@@ -845,7 +864,7 @@ def _get_temporal_metrics(wiki_type: str, project_id: str | None) -> dict:
         if not wiki_dir.exists():
             return {}
 
-        now = datetime.now(UTC)
+        now = datetime.now(IST)
         metrics = {
             "total_pages": 0,
             "average_age_days": 0,

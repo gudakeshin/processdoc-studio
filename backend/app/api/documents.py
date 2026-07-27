@@ -1,21 +1,25 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
-import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_project_role
+from app.core.source_chunks import build_chunks_from_text
 from app.core.upload_validation import validate_document_upload
 from app.db.models import User
 from app.db.session import get_db
 from app.services.cache import cache_service
+from app.services.langfuse_tracing import langfuse_span
 from app.services.storage import ensure_workspace, workspace_path
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 _SAFE_PROJECT_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -39,107 +43,32 @@ def _normalize_upload_filename(name: str | None) -> str:
 
 
 async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: int = 30) -> tuple[str, str]:
-    """Extract text from various document formats with timeout protection."""
+    """Extract text via the canonical wiki_ingest parser (python-docx, sheet markers, etc.)."""
+    from app.services.wiki_ingest import _extract_text_from_file
+
     lower = (filename or "").lower()
-
-    if lower.endswith((".txt", ".md", ".csv", ".json")):
-        return content.decode("utf-8", errors="ignore"), "utf8_text"
-
-    if lower.endswith(".docx") or lower.endswith(".pptx"):
-        try:
-            def _extract_zip():
-                import io
-                zf = zipfile.ZipFile(io.BytesIO(content))
-                text_parts: list[str] = []
-                for name in zf.namelist():
-                    if lower.endswith(".docx") and not name.startswith("word/"):
-                        continue
-                    if lower.endswith(".pptx") and not name.startswith("ppt/"):
-                        continue
-                    if not name.endswith(".xml"):
-                        continue
-                    raw = zf.read(name).decode("utf-8", errors="ignore")
-                    cleaned = re.sub(r"<[^>]+>", " ", raw)
-                    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-                    if cleaned:
-                        text_parts.append(cleaned)
-                return "\n".join(text_parts)
-
-            text = await asyncio.wait_for(
-                asyncio.to_thread(_extract_zip),
-                timeout=timeout_sec
-            )
-            return text, "zip_xml"
-        except TimeoutError:
-            # Timeout during extraction, fallback to binary
-            return content.decode("utf-8", errors="ignore"), "zip_timeout_fallback"
-        except Exception:
-            return content.decode("utf-8", errors="ignore"), "zip_error_fallback"
-
+    parse_mode = "wiki_ingest"
     if lower.endswith(".pdf"):
-        try:
-            def _extract_pdf():
-                import io
+        parse_mode = "wiki_ingest_pdf"
+    elif lower.endswith((".xlsx", ".xls")):
+        parse_mode = "wiki_ingest_xlsx"
+    elif lower.endswith(".docx"):
+        parse_mode = "wiki_ingest_docx"
+    elif lower.endswith(".pptx"):
+        parse_mode = "wiki_ingest_pptx"
 
-                from pypdf import PdfReader
-
-                reader = PdfReader(io.BytesIO(content))
-                pages = []
-                # Limit pages to first 50 for very large PDFs
-                for idx, page in enumerate(reader.pages[:50]):
-                    if idx > 50:
-                        break
-                    try:
-                        text = page.extract_text() or ""
-                        if text.strip():
-                            pages.append(text)
-                    except Exception:  # noqa: S112 — best-effort, non-fatal
-                        # Skip pages that fail extraction
-                        continue
-                return "\n".join(pages)
-
-            text = await asyncio.wait_for(
-                asyncio.to_thread(_extract_pdf),
-                timeout=timeout_sec
-            )
-            return text, "pypdf"
-        except TimeoutError:
-            # PDF extraction timeout, return empty text
-            return f"[PDF extraction timeout for {filename}]", "pdf_timeout_fallback"
-        except Exception:
-            return f"[Unable to extract PDF for {filename}]", "pdf_error_fallback"
-
-    if lower.endswith(".xlsx"):
-        try:
-            def _extract_xlsx():
-                import io
-
-                from openpyxl import load_workbook
-
-                wb = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
-                text_parts: list[str] = []
-                for sheet_name in wb.sheetnames:
-                    ws = wb[sheet_name]
-                    sheet_text: list[str] = [sheet_name]
-                    for row in ws.iter_rows(values_only=True):
-                        row_text = " ".join(str(cell or "").strip() for cell in row if cell is not None)
-                        if row_text.strip():
-                            sheet_text.append(row_text)
-                    if len(sheet_text) > 1:
-                        text_parts.append("\n".join(sheet_text))
-                return "\n\n".join(text_parts)
-
-            text = await asyncio.wait_for(
-                asyncio.to_thread(_extract_xlsx),
-                timeout=timeout_sec
-            )
-            return text, "openpyxl"
-        except TimeoutError:
-            return f"[XLSX extraction timeout for {filename}]", "xlsx_timeout_fallback"
-        except Exception:
-            return f"[Unable to extract XLSX for {filename}]", "xlsx_error_fallback"
-
-    return content.decode("utf-8", errors="ignore"), "binary_fallback"
+    try:
+        text = await asyncio.wait_for(
+            asyncio.to_thread(_extract_text_from_file, filename, content),
+            timeout=timeout_sec,
+        )
+        return str(text or ""), parse_mode
+    except TimeoutError:
+        logger.warning("document text extraction timed out for %s", filename)
+        return f"[Extraction timeout for {filename}]", "timeout_fallback"
+    except Exception:
+        logger.warning("document text extraction failed for %s", filename, exc_info=True)
+        return f"[Unable to extract {filename}]", "error_fallback"
 
 
 @router.post("/upload")
@@ -171,18 +100,20 @@ async def upload_document(
     safe_name = _normalize_upload_filename(file.filename)
     validate_document_upload(safe_name, content)
     if safe_name.lower().endswith(".pdf"):
-        import io as _io
-
+        from app.core.config import settings
         from pypdf import PdfReader
+        import io as _io
 
         try:
             page_count = len(PdfReader(_io.BytesIO(content)).pages)
         except Exception:
+            logger.warning("could not read PDF page count for %s; skipping page-limit check", safe_name, exc_info=True)
             page_count = 0
-        if page_count > 50:
+        max_pages = int(getattr(settings, "pdf_max_pages", 200))
+        if page_count > max_pages:
             raise HTTPException(
                 status_code=400,
-                detail=f"PDF has {page_count} pages; maximum allowed is 50",
+                detail=f"PDF has {page_count} pages; maximum allowed is {max_pages}",
             )
     digest = hashlib.sha256(content).hexdigest()
 
@@ -192,7 +123,11 @@ async def upload_document(
     if cached and isinstance(cached.get("chunks"), list):
         text = cached.get("text", "")
         parse_mode = cached.get("parse_mode", "cached")
-        chunks = cached.get("chunks", [])
+        raw_chunks = cached.get("chunks", [])
+        if raw_chunks and isinstance(raw_chunks[0], str):
+            chunks = build_chunks_from_text(text or "", doc_id=digest, filename=safe_name)
+        else:
+            chunks = raw_chunks
     else:
         try:
             # Extract text with 30-second timeout
@@ -202,26 +137,23 @@ async def upload_document(
             )
         except TimeoutError:
             # Fall back to basic decode on timeout
+            logger.warning("document parse timed out for %s in project %s", safe_name, project_id)
             text = content.decode("utf-8", errors="ignore")
             parse_mode = "timeout_fallback"
 
-        def chunk_text(t: str, *, chunk_chars: int = 1200, overlap_chars: int = 120) -> list[str]:
-            t = t.strip()
-            if not t:
-                return []
-            out: list[str] = []
-            start = 0
-            while start < len(t):
-                end = min(len(t), start + chunk_chars)
-                chunk = t[start:end].strip()
-                if chunk:
-                    out.append(chunk)
-                if end >= len(t):
-                    break
-                start = max(0, end - overlap_chars)
-            return out
+        langfuse_span(
+            trace_id=project_id,
+            name="document.upload",
+            input_payload={"filename": safe_name, "bytes": len(content)},
+            output_payload={"parse_mode": parse_mode, "text_len": len(text or "")},
+            status_message=parse_mode if (parse_mode or "").endswith("fallback") else None,
+        )
 
-        chunks = chunk_text(text)
+        chunks = build_chunks_from_text(
+            text or "",
+            doc_id=digest,
+            filename=safe_name,
+        )
         cached = {
             "status": "chunked",
             "chars": len(text),

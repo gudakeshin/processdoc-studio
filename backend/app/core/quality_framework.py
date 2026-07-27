@@ -112,7 +112,7 @@ class VisualQualityRule(QualityRule):
 
         issues: list[str] = []
         allowed_stat_fills = {"dark", "mid_dark", "gray"}
-        allowed_column_accents = {"green", "dark", "gray"}
+        allowed_column_accents = {"green", "dark", "gray", "mid_dark", "mid", "dark_green"}
         allowed_layer_fills = {"green", "dark", "mid_dark", "gray", "mid", "dark_green"}
 
         for idx, raw_slide in enumerate(slides, start=1):
@@ -132,13 +132,13 @@ class VisualQualityRule(QualityRule):
 
             bullets = raw_slide.get("bullets")
             if isinstance(bullets, list):
-                if len(bullets) > 8:
-                    issues.append(f"Slide {idx}: too many bullets ({len(bullets)}).")
+                if len(bullets) > 5:
+                    issues.append(f"Slide {idx}: too many bullets ({len(bullets)}); cap at 5 for executive decks.")
                 for bullet in bullets:
                     word_count = len(str(bullet or "").split())
                     density_words += word_count
-                    if word_count > 18:
-                        issues.append(f"Slide {idx}: bullet too long; reduce line length.")
+                    if word_count > 15:
+                        issues.append(f"Slide {idx}: bullet too long ({word_count} words); keep to 15 words max.")
 
             stat_cards = raw_slide.get("stat_cards")
             if isinstance(stat_cards, list):
@@ -186,8 +186,16 @@ class VisualQualityRule(QualityRule):
                         if isinstance(row, list):
                             density_words += sum(len(str(cell or "").split()) for cell in row)
 
-            if density_words > 130:
-                issues.append(f"Slide {idx}: content density is high; likely cramped layout.")
+            if density_words > 100:
+                issues.append(f"Slide {idx}: content density is high ({density_words} words); target ≤100 for readable executive slides.")
+
+        if len(slides) >= 10:
+            has_section_divider = any(
+                isinstance(s, dict) and str(s.get("slide_type") or "").strip().lower() == "section_divider"
+                for s in slides
+            )
+            if not has_section_divider:
+                issues.append("Deck has 10+ slides but no section_divider slide to mark narrative act transitions.")
 
         if not issues:
             return QualityResult(score=1.0, issues=[], remediation_hint=None)
@@ -410,14 +418,86 @@ class BrandingComplianceRule(QualityRule):
     dimension = QualityDimension.BRANDING_COMPLIANCE
     applicable_output_types = {"pptx", "docx", "pdf", "xlsx"}
 
+    _APPROVED_FILLS = {"dark", "mid_dark", "green", "dark_green", "gray", "mid", "white", "accent_light"}
+    _FILLER_TITLE_WORDS = {
+        "overview", "introduction", "background", "summary", "appendix",
+        "agenda", "next steps", "takeaways", "context", "update",
+    }
+
     def evaluate(self, output_type: str, text: str, metadata: dict[str, Any], context: dict[str, Any]) -> QualityResult:
-        branding = context.get("branding") if isinstance(context, dict) else None
-        if branding is None:
+        if output_type != "pptx":
             return QualityResult(score=1.0, issues=[], remediation_hint=None)
-        primary = str(getattr(branding, "primary_color", "") or "").strip()
-        if not primary:
+
+        raw = (text or "").strip()
+        if not raw:
             return QualityResult(score=1.0, issues=[], remediation_hint=None)
-        return QualityResult(score=1.0, issues=[], remediation_hint=None)
+
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return QualityResult(score=1.0, issues=[], remediation_hint=None)
+
+        slides = payload.get("slides") if isinstance(payload, dict) else payload
+        if not isinstance(slides, list):
+            return QualityResult(score=1.0, issues=[], remediation_hint=None)
+
+        issues: list[str] = []
+        fill_fields = (
+            ("stat_cards", "fill"),
+            ("column_cards", "accent"),
+            ("stack_layers", "fill"),
+            ("process_flow", "fill"),
+        )
+
+        for idx, slide in enumerate(slides, start=1):
+            if not isinstance(slide, dict):
+                continue
+            slide_type = str(slide.get("slide_type") or "").lower()
+            if slide_type in ("title", "section_divider"):
+                continue
+
+            # Check fill tokens are from the approved palette
+            for list_field, token_field in fill_fields:
+                items = slide.get(list_field)
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    fill = str(item.get(token_field) or "").strip().lower()
+                    if fill and fill not in self._APPROVED_FILLS:
+                        issues.append(
+                            f"Slide {idx}: '{fill}' is not an approved brand fill token in {list_field}."
+                        )
+
+            # Flag topic-label titles (not insight assertions)
+            title = str(slide.get("title") or "").strip().lower()
+            if title and len(title.split()) <= 2 and title in self._FILLER_TITLE_WORDS:
+                issues.append(
+                    f"Slide {idx}: title '{slide.get('title')}' is a topic label, not an insight assertion."
+                )
+
+            # Flag missing eyebrow label on content slides with stat_cards or column_cards
+            has_visual = any(isinstance(slide.get(k), list) and slide.get(k) for k in ("stat_cards", "column_cards"))
+            subtitle = str(slide.get("subtitle") or "").strip()
+            if has_visual and not subtitle:
+                issues.append(
+                    f"Slide {idx}: visual card slide is missing an eyebrow label (subtitle field)."
+                )
+
+        if not issues:
+            return QualityResult(score=1.0, issues=[], remediation_hint=None)
+
+        score = max(0.5, 1.0 - (0.1 * len(issues)))
+        return QualityResult(
+            score=score,
+            issues=issues[:15],
+            remediation_hint=(
+                "Use only approved fill tokens (dark, mid_dark, green, dark_green, gray, mid). "
+                "Replace topic-label titles with insight assertions. "
+                "Add ALL-CAPS eyebrow labels to card slides."
+            ),
+        )
 
 
 class ContentQualityRule(QualityRule):

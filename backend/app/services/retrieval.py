@@ -4,8 +4,15 @@ import json
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
+from app.core.source_chunks import (
+    assign_source_ids,
+    chunk_text,
+    format_chunk_citation,
+    normalize_chunk,
+)
 from app.services.storage import workspace_path
 
 
@@ -16,6 +23,11 @@ class ContextBundle:
     metadata: dict[str, object] | None = None
 
 
+def _chunk_strings(chunks: list[dict[str, Any]]) -> list[str]:
+    """BM25/search text for provenance chunk records."""
+    return [chunk_text(c) for c in chunks if chunk_text(c)]
+
+
 _TOKEN_RE = re.compile(r"[^a-zA-Z0-9]+")
 
 
@@ -23,6 +35,28 @@ def _tokenize(s: str) -> list[str]:
     s = (s or "").lower()
     parts = [p for p in _TOKEN_RE.split(s) if p]
     return parts
+
+
+@dataclass
+class _BM25Index:
+    """Precomputed per-corpus BM25 state. Built once when chunks are loaded/cached."""
+
+    tokenized: list[list[str]] = field(default_factory=list)
+    dl: list[int] = field(default_factory=list)
+    avgdl: float = 0.0
+    df: dict[str, int] = field(default_factory=dict)
+
+
+def _build_bm25_index(chunks: list[str]) -> _BM25Index:
+    tokenized = [_tokenize(c) for c in chunks]
+    dl = [len(toks) for toks in tokenized]
+    n = len(chunks)
+    avgdl = sum(dl) / n if n else 0.0
+    df: dict[str, int] = {}
+    for toks in tokenized:
+        for t in set(toks):
+            df[t] = df.get(t, 0) + 1
+    return _BM25Index(tokenized=tokenized, dl=dl, avgdl=avgdl, df=df)
 
 
 class TieredContextEngine:
@@ -36,10 +70,11 @@ class TieredContextEngine:
     def __init__(self) -> None:
         self.k1 = 1.5
         self.b = 0.75
-        self._parsed_cache: dict[str, tuple[float, list[str]]] = {}
-        self._wiki_cache: dict[str, tuple[float, list[str]]] = {}
+        # Caches store (latest_mtime, chunk_records, precomputed_bm25_index).
+        self._parsed_cache: dict[str, tuple[float, list[dict[str, Any]], _BM25Index]] = {}
+        self._wiki_cache: dict[str, tuple[float, list[str], _BM25Index]] = {}
 
-    def _load_all_parsed_chunks(self, project_id: str | None) -> list[str]:
+    def _load_all_parsed_chunks(self, project_id: str | None) -> list[dict[str, Any]]:
         if not project_id:
             return []
         parsed_dir = workspace_path(project_id) / "parsed_docs"
@@ -56,18 +91,31 @@ class TieredContextEngine:
         cached = self._parsed_cache.get(cache_key)
         if cached and cached[0] == latest_mtime:
             return list(cached[1])
-        chunks: list[str] = []
+        chunks: list[dict[str, Any]] = []
         for p in parsed_files:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
+                doc_id = str(data.get("sha256") or p.stem)
+                filename = str(data.get("filename") or "")
                 doc_chunks = data.get("chunks") or []
                 for c in doc_chunks:
                     if isinstance(c, str) and c.strip():
-                        chunks.append(c)
+                        chunks.append(normalize_chunk(c, doc_id=doc_id, filename=filename))
+                    elif isinstance(c, dict) and chunk_text(c):
+                        chunks.append(normalize_chunk(c, doc_id=doc_id, filename=filename))
             except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
-        self._parsed_cache[cache_key] = (latest_mtime, list(chunks))
+        texts = _chunk_strings(chunks)
+        self._parsed_cache[cache_key] = (latest_mtime, list(chunks), _build_bm25_index(texts))
         return chunks
+
+    def _get_doc_index(self, project_id: str | None) -> _BM25Index | None:
+        """Return cached BM25 index for parsed_docs, or None if cache is cold."""
+        if not project_id:
+            return None
+        key = str(workspace_path(project_id) / "parsed_docs")
+        cached = self._parsed_cache.get(key)
+        return cached[2] if cached else None
 
     _WIKI_STALE_HOURS = 72
 
@@ -120,42 +168,44 @@ class TieredContextEngine:
                 chunks.append(f"[Wiki: {title}]\n{body}")
             except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
-        self._wiki_cache[cache_key] = (latest_mtime, list(chunks))
+        self._wiki_cache[cache_key] = (latest_mtime, list(chunks), _build_bm25_index(chunks))
         return chunks
 
-    def _bm25_scores(self, chunks: list[str], query: str) -> list[float]:
-        tokenized = [_tokenize(c) for c in chunks]
-        n_docs = len(chunks)
+    def _get_wiki_index(self, project_id: str | None) -> _BM25Index | None:
+        """Return cached BM25 index for wiki chunks, or None if cache is cold."""
+        if not project_id:
+            return None
+        key = str(workspace_path(project_id) / "wiki")
+        cached = self._wiki_cache.get(key)
+        return cached[2] if cached else None
+
+    def _bm25_scores(self, chunks_or_index: "list[str] | _BM25Index", query: str) -> list[float]:
+        """BM25 relevance scores.
+
+        Accepts a precomputed _BM25Index (fast path — no tokenization overhead) or a plain
+        list[str] for backward-compatibility with external callers that don't use the cache.
+        """
+        index = (
+            chunks_or_index
+            if isinstance(chunks_or_index, _BM25Index)
+            else _build_bm25_index(chunks_or_index)
+        )
+        n_docs = len(index.tokenized)
         if n_docs == 0:
             return []
-
-        df: dict[str, int] = {}
-        dl = [len(toks) for toks in tokenized]
-        avgdl = (sum(dl) / n_docs) if n_docs else 0.0
-        if avgdl <= 0:
-            return [0.0 for _ in chunks]
-
-        for toks in tokenized:
-            seen = set(toks)
-            for term in seen:
-                df[term] = df.get(term, 0) + 1
-
+        if index.avgdl <= 0:
+            return [0.0] * n_docs
         q_terms = _tokenize(query)
         if not q_terms:
-            return [0.0 for _ in chunks]
-
-        # Precompute IDF for query terms.
+            return [0.0] * n_docs
         idf: dict[str, float] = {}
         for term in set(q_terms):
-            dfi = df.get(term, 0)
+            dfi = index.df.get(term, 0)
             idf[term] = math.log((n_docs - dfi + 0.5) / (dfi + 0.5) + 1.0)
-
-        # Compute scores.
-        scores: list[float] = [0.0 for _ in chunks]
         k1 = self.k1
         b = self.b
-
-        for i, toks in enumerate(tokenized):
+        scores = [0.0] * n_docs
+        for i, toks in enumerate(index.tokenized):
             if not toks:
                 continue
             tf: dict[str, int] = {}
@@ -168,10 +218,59 @@ class TieredContextEngine:
                 term_tf = tf.get(term, 0)
                 if term_tf <= 0:
                     continue
-                denom = term_tf + k1 * (1 - b + b * (dl[i] / avgdl))
+                denom = term_tf + k1 * (1 - b + b * (index.dl[i] / index.avgdl))
                 score += idf[term] * ((term_tf * (k1 + 1)) / denom)
             scores[i] = score
         return scores
+
+    def _multi_query_max(
+        self, chunks_or_index: "list[str] | _BM25Index", queries: list[str]
+    ) -> list[float]:
+        """Per-chunk max BM25 score across all query variants (multi-query expansion)."""
+        index = (
+            chunks_or_index
+            if isinstance(chunks_or_index, _BM25Index)
+            else _build_bm25_index(chunks_or_index)
+        )
+        n = len(index.tokenized)
+        if not queries or n == 0:
+            return [0.0] * n
+        scores = self._bm25_scores(index, queries[0])
+        for q in queries[1:]:
+            for i, s in enumerate(self._bm25_scores(index, q)):
+                if s > scores[i]:
+                    scores[i] = s
+        return scores
+
+    def _semantic_rerank(
+        self,
+        query: str,
+        candidates: list[tuple[int, float]],
+        texts: list[str],
+        *,
+        top_k: int = 20,
+    ) -> list[tuple[int, float]]:
+        """Optional semantic rerank of BM25 candidates when sentence-transformers is available."""
+        if not candidates or not query.strip():
+            return candidates
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            return candidates
+        try:
+            model = SentenceTransformer("all-MiniLM-L6-v2")
+            q_emb = model.encode([query], normalize_embeddings=True)
+            idxs = [i for i, _ in candidates[:top_k]]
+            docs = [texts[i] for i in idxs if 0 <= i < len(texts)]
+            if not docs:
+                return candidates
+            d_emb = model.encode(docs, normalize_embeddings=True)
+            sims = (d_emb @ q_emb.T).reshape(-1)
+            reranked = sorted(zip(idxs, sims.tolist()), key=lambda x: x[1], reverse=True)
+            tail = [(i, s) for i, s in candidates if i not in idxs]
+            return reranked + tail
+        except Exception:
+            return candidates
 
     def _mmr_select(
         self,
@@ -238,6 +337,27 @@ class TieredContextEngine:
             f"{ins} best practices standards frameworks",
         ]
 
+    @staticmethod
+    def _format_selected_sources(
+        chunks: list[dict[str, Any]],
+        selected_idxs: list[int],
+        *,
+        prefix: str = "S",
+        start_at: int = 1,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """Build inline ``[S#]`` context lines and a provenance registry for selected chunks."""
+        formatted: list[str] = []
+        registry: list[dict[str, Any]] = []
+        for offset, idx in enumerate(selected_idxs):
+            if idx < 0 or idx >= len(chunks):
+                continue
+            chunk = normalize_chunk(chunks[idx])
+            sid = f"{prefix}{start_at + offset}"
+            chunk["source_id"] = sid
+            registry.append(chunk)
+            formatted.append(format_chunk_citation(chunk, sid))
+        return formatted, registry
+
     def assemble(
         self,
         project_id: str | None,
@@ -262,38 +382,37 @@ class TieredContextEngine:
         tier1 = "\n".join(lp_snippets)[:12000]
 
         chunks = self._load_all_parsed_chunks(project_id) if project_id else []
-        if not chunks:
+        texts = _chunk_strings(chunks)
+        if not texts:
             tier2 = instruction[:10000]
             combined = "\n\n".join([tier0, tier1, tier2])[:32000]
             return ContextBundle(text=combined)
 
-        # Multi-query expansion + BM25 candidate scoring.
+        # Multi-query expansion + BM25 candidate scoring using precomputed index.
         queries = self._expand_queries(instruction)
+        index = self._get_doc_index(project_id) or _build_bm25_index(texts)
         candidates: dict[int, float] = {}
         for q in queries:
-            scores = self._bm25_scores(chunks, q)
+            scores = self._bm25_scores(index, q)
             for idx, sc in enumerate(scores):
                 if sc <= 0:
                     continue
-                # Keep only the best relevance score seen for this chunk across queries.
                 prev = candidates.get(idx)
                 if prev is None or sc > prev:
                     candidates[idx] = float(sc)
 
             # Keep candidate set bounded.
             if len(candidates) > 60:
-                # Trim by highest relevance scores.
                 top = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
                 candidates = dict(top)
 
-        # Convert to list and MMR-select.
         candidate_list = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
         selected_idxs = self._mmr_select(
             candidate_list,
-            chunks,
+            texts,
             max_chars=10000,
         )
-        tier2 = "\n".join(chunks[i] for i in selected_idxs)[:10000]
+        tier2 = "\n".join(texts[i] for i in selected_idxs)[:10000]
 
         combined = "\n\n".join([tier0, tier1, tier2])[:32000]
         return ContextBundle(text=combined)
@@ -314,11 +433,13 @@ class TieredContextEngine:
         cap = max(500, int(char_cap))
         queries = self._expand_queries(qt)
 
-        # Wiki pages first (curated context, up to 40% of planner budget)
+        # Wiki pages first (curated context, up to 40% of planner budget).
+        # Uses the same multi-query expansion as parsed_docs for consistent ranking.
         wiki_chunks = self._load_wiki_chunks(project_id)
         wiki_text = ""
         if wiki_chunks:
-            wiki_scores = self._bm25_scores(wiki_chunks, qt)
+            wiki_index = self._get_wiki_index(project_id) or _build_bm25_index(wiki_chunks)
+            wiki_scores = self._multi_query_max(wiki_index, queries)
             wiki_candidates = sorted(enumerate(wiki_scores), key=lambda kv: kv[1], reverse=True)[:10]
             wiki_budget = min(4000, cap * 2 // 5)
             if not any(score > 0 for _, score in wiki_candidates):
@@ -328,24 +449,16 @@ class TieredContextEngine:
             wiki_text = "\n\n---\n\n".join(wiki_chunks[i] for i in wiki_sel)
 
         chunks = self._load_all_parsed_chunks(project_id)
+        texts = _chunk_strings(chunks)
         doc_text = ""
-        if chunks:
-            candidates: dict[int, float] = {}
-            for q in queries:
-                scores = self._bm25_scores(chunks, q)
-                for idx, sc in enumerate(scores):
-                    if sc <= 0:
-                        continue
-                    prev = candidates.get(idx)
-                    if prev is None or sc > prev:
-                        candidates[idx] = float(sc)
-                if len(candidates) > 60:
-                    top = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
-                    candidates = dict(top)
-            candidate_list = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
+        if texts:
+            doc_index = self._get_doc_index(project_id) or _build_bm25_index(texts)
+            doc_scores = self._multi_query_max(doc_index, queries)
+            candidate_list = sorted(enumerate(doc_scores), key=lambda kv: kv[1], reverse=True)[:60]
             doc_budget = max(400, cap - len(wiki_text) - len("## Planner retrieval excerpt\n\n"))
-            selected_idxs = self._mmr_select(candidate_list, chunks, max_chars=doc_budget)
-            doc_text = "\n\n---\n\n".join(chunks[i] for i in selected_idxs)
+            selected_idxs = self._mmr_select(candidate_list, texts, max_chars=doc_budget)
+            cited, _registry = self._format_selected_sources(chunks, selected_idxs, prefix="S")
+            doc_text = "\n\n---\n\n".join(cited)
 
         if not wiki_text and not doc_text:
             return ""
@@ -382,13 +495,20 @@ class TieredContextEngine:
 
     @staticmethod
     def _auto_summary(items: list[str], max_items: int = 8, max_chars: int = 1200) -> str:
-        """Tier 3 compaction: light-weight summary of the latest high-signal entries."""
+        """Tier 3 compaction: deduplicated summary of the latest high-signal entries."""
         if not items:
             return ""
-        tail = [str(x).strip() for x in items[-max_items:] if str(x).strip()]
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for item in reversed(items):
+            norm = (item or "").strip().lower()[:80]
+            if norm and norm not in seen:
+                seen.add(norm)
+                deduped.append(item.strip())
+        tail = deduped[:max_items]
         if not tail:
             return ""
-        lines = [f"- {t}" for t in tail]
+        lines = [f"- {t}" for t in reversed(tail)]
         summary = "Recent memory summary:\n" + "\n".join(lines)
         return summary[:max_chars]
 
@@ -408,17 +528,22 @@ class TieredContextEngine:
     ) -> tuple[dict[str, str], bool, dict[str, object]]:
         """
         Tier 4 compaction: keep only essential sections under strict budget.
-        Preserves objective/non-negotiables/failures and truncates evidence aggressively.
-        Returns the collapsed sections, a flag that collapse was applied, and a dict of
-        dropped source names (wiki pages / LP headings) for observability.
+        Section caps scale proportionally with char_cap so the collapse is not
+        over-aggressive at large char_cap values (the previous hardcoded values
+        discarded ~75% of the available budget at 32K).
         """
         hard_cap = max(2000, int(char_cap * 0.55))
+        sec_obj = max(400, int(hard_cap * 0.14))
+        sec_nonneg = max(600, int(hard_cap * 0.20))
+        sec_wc = max(400, int(hard_cap * 0.14))
+        sec_ev = max(800, int(hard_cap * 0.28))
+        sec_kf = max(400, int(hard_cap * 0.14))
         collapsed = {
-            "ObjectiveNow": str(sections.get("ObjectiveNow") or "")[:700],
-            "NonNegotiables": str(sections.get("NonNegotiables") or "")[:1100],
-            "WhatChanged": str(sections.get("WhatChanged") or "")[:700],
-            "Evidence": str(sections.get("Evidence") or "")[:1200],
-            "KnownFailures": str(sections.get("KnownFailures") or "")[:700],
+            "ObjectiveNow": str(sections.get("ObjectiveNow") or "")[:sec_obj],
+            "NonNegotiables": str(sections.get("NonNegotiables") or "")[:sec_nonneg],
+            "WhatChanged": str(sections.get("WhatChanged") or "")[:sec_wc],
+            "Evidence": str(sections.get("Evidence") or "")[:sec_ev],
+            "KnownFailures": str(sections.get("KnownFailures") or "")[:sec_kf],
         }
         dropped_sources: dict[str, object] = {}
         text = (
@@ -542,13 +667,20 @@ class TieredContextEngine:
             selected_lp_info.append({"heading": heading, "chars": len(snippet)})
 
         evidence_input = [s for s in [context_md, *lp_list] if isinstance(s, str) and s.strip()]
+        queries = self._expand_queries(instruction or "")
 
         # Wiki pages (curated, LLM-enriched) — injected before raw parsed_docs so they
-        # get priority when the Evidence budget is tight.
+        # get priority when the Evidence budget is tight. Use the same multi-query expansion
+        # as parsed_docs for consistent ranking quality.
         selected_wiki_info: list[dict[str, object]] = []
         wiki_chunks = self._load_wiki_chunks(project_id) if project_id else []
         if wiki_chunks:
-            wiki_scores = self._bm25_scores(wiki_chunks, instruction or "")
+            wiki_index = self._get_wiki_index(project_id) or _build_bm25_index(wiki_chunks)
+            wiki_scores = (
+                self._multi_query_max(wiki_index, queries)
+                if queries
+                else self._bm25_scores(wiki_index, instruction or "")
+            )
             wiki_candidates = sorted(enumerate(wiki_scores), key=lambda kv: kv[1], reverse=True)[:20]
             wiki_budget = min(8000, section_caps["Evidence"] // 2)
             if not any(score > 0 for _, score in wiki_candidates):
@@ -562,20 +694,40 @@ class TieredContextEngine:
             evidence_input.extend(wiki_chunks[i] for i in wiki_selected)
 
         chunks = self._load_all_parsed_chunks(project_id) if project_id else []
-        if chunks:
-            scores = self._bm25_scores(chunks, instruction or "")
-            candidate_list = sorted(enumerate(scores), key=lambda kv: kv[1], reverse=True)[:60]
+        texts = _chunk_strings(chunks)
+        source_registry: list[dict[str, Any]] = []
+        if texts:
+            doc_index = self._get_doc_index(project_id) or _build_bm25_index(texts)
+            doc_scores = (
+                self._multi_query_max(doc_index, queries)
+                if queries
+                else self._bm25_scores(doc_index, instruction or "")
+            )
+            candidate_list = sorted(enumerate(doc_scores), key=lambda kv: kv[1], reverse=True)[:60]
+            candidate_list = self._semantic_rerank(instruction or "", candidate_list, texts)
             if not any(score > 0 for _, score in candidate_list):
-                selected_idxs = list(range(min(12, len(chunks))))
+                selected_idxs = list(range(min(12, len(texts))))
             else:
-                selected_idxs = self._mmr_select(candidate_list, chunks, max_chars=section_caps["Evidence"])
-            evidence_input.extend(chunks[i] for i in selected_idxs)
+                selected_idxs = self._mmr_select(candidate_list, texts, max_chars=section_caps["Evidence"])
+            cited, source_registry = self._format_selected_sources(chunks, selected_idxs, prefix="S")
+            evidence_input.extend(cited)
 
         objective_out, obj_dropped = self._compact_items(objective_items, section_caps["ObjectiveNow"])
-        nonneg_out, nonneg_dropped = self._compact_items(
-            [*non_negotiables, *long_term_items, *user_preference_lines],
-            section_caps["NonNegotiables"],
+
+        # Non-negotiables are compacted first into their own budget slice to guarantee
+        # they always take priority. Remaining space goes to long_term_items then
+        # user_preference_lines, preventing verbose constraints from starving curated facts.
+        nonneg_only_out, nonneg_only_dropped = self._compact_items(
+            non_negotiables, section_caps["NonNegotiables"]
         )
+        nonneg_used = sum(len(x) + 1 for x in nonneg_only_out)
+        ltm_budget = max(0, section_caps["NonNegotiables"] - nonneg_used)
+        ltm_out, ltm_dropped = self._compact_items(
+            [*long_term_items, *user_preference_lines], ltm_budget
+        )
+        nonneg_out = nonneg_only_out + ltm_out
+        nonneg_dropped = nonneg_only_dropped + ltm_dropped
+
         changed_out, changed_dropped = self._compact_items(changes, section_caps["WhatChanged"])
         evidence_out, evidence_dropped = self._compact_items(evidence_input, section_caps["Evidence"])
         failures_out, fail_dropped = self._compact_items(failures, section_caps["KnownFailures"])
@@ -632,13 +784,32 @@ class TieredContextEngine:
             )[:char_cap]
         if tier4_applied:
             compaction_trace.append("tier4_context_collapse")
+        section_sizes = {k: len(v) for k, v in sections.items()}
+        section_utilization = {
+            k: round(section_sizes.get(k, 0) / max(1, section_caps.get(k, 1)), 3)
+            for k in section_caps
+        }
+        evidence_coverage = {
+            "parsed_chunk_count": len(chunks),
+            "selected_evidence_chunk_count": len(evidence_out),
+            "selected_wiki_page_count": len(selected_wiki_info),
+            "wiki_chunk_pool_count": len(wiki_chunks) if wiki_chunks else 0,
+            "evidence_budget_chars": section_caps.get("Evidence", 0),
+            "evidence_used_chars": section_sizes.get("Evidence", 0),
+            "evidence_utilization": section_utilization.get("Evidence", 0.0),
+            "source_registry_count": len(source_registry),
+        }
         metadata = {
             "char_cap": char_cap,
             "token_budget_estimate": token_budget,
             "token_count_estimate": int(len(assembled) / 4),
             "parsed_chunk_count": len(chunks),
             "selected_evidence_chunk_count": len(evidence_out),
-            "section_sizes": {k: len(v) for k, v in sections.items()},
+            "source_registry": source_registry,
+            "section_sizes": section_sizes,
+            "section_budgets": dict(section_caps),
+            "section_utilization": section_utilization,
+            "evidence_coverage": evidence_coverage,
             "compaction_tiers_applied": compaction_trace,
             "compaction_reason_codes": [
                 "overflow_detected" if tier4_applied else "quality_preserve",
@@ -661,6 +832,7 @@ class TieredContextEngine:
                 "selected_wiki_pages": selected_wiki_info,
                 "selected_lp_headings": selected_lp_info,
                 "parsed_doc_count": len(chunks),
+                "source_registry": source_registry,
             },
             "tier4_dropped_sources": tier4_dropped_sources,
         }

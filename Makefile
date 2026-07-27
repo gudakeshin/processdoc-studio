@@ -1,4 +1,16 @@
-.PHONY: dev.secret db.up db.down db.migrate db.reset pptx.canvas.parity
+.PHONY: dev.secret db.up db.down db.migrate db.reset redis.up redis.down pptx.canvas.parity lint test coverage
+
+# Enforced lint gate (mirrors CI): no new silent exception swallows.
+lint:
+	cd backend && ruff check app --select S110,S112
+
+# Full backend test suite — both suites, mirroring CI's two pytest steps.
+test:
+	cd backend && pytest app/tests -q && pytest tests -q
+
+# Backend coverage report (term-missing) — same invocation as CI.
+coverage:
+	cd backend && pytest app/tests -q --cov=app --cov-report=term-missing
 
 # Append a random JWT_SECRET to repo-root .env if not already set (local dev only).
 dev.secret:
@@ -30,6 +42,16 @@ db.reset:
 	@until docker compose exec postgres pg_isready -U processdoc -d processdoc -q 2>/dev/null; do sleep 1; done
 	cd backend && alembic upgrade head
 	@echo "Database reset and migrated."
+
+# Redis target (via docker-compose)
+redis.up:
+	docker compose up -d redis
+	@echo "Waiting for Redis to be ready..."
+	@until docker compose exec redis redis-cli ping 2>/dev/null | grep -q PONG; do sleep 1; done
+	@echo "Redis ready."
+
+redis.down:
+	docker compose stop redis
 
 pptx.canvas.parity:
 	python3 infra/scripts/pptx_canvas_parity_spike.py --strict

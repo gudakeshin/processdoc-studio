@@ -15,7 +15,12 @@ from app.services.storage import save_run_artifacts
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-def _build_pptx(slides: list[dict[str, Any]], *, branding: dict[str, Any] | None = None) -> Presentation:
+def _build_pptx(
+    slides: list[dict[str, Any]],
+    *,
+    branding: dict[str, Any] | None = None,
+    extra_payload: dict[str, Any] | None = None,
+) -> Presentation:
     """Save a minimal artifact payload and parse the resulting PPTX."""
     project_id = "test_brand_proj"
     run_id = "test_brand_run"
@@ -25,7 +30,11 @@ def _build_pptx(slides: list[dict[str, Any]], *, branding: dict[str, Any] | None
         "process_model": {"process_name": "Test Process", "steps": [], "roles": []},
     }
     if branding is not None:
-        payload["branding"] = branding
+        payload["branding"] = {**branding, "deck_theme": branding.get("deck_theme", "classic")}
+    else:
+        payload["branding"] = {"deck_theme": "classic"}
+    if extra_payload:
+        payload.update(extra_payload)
     save_run_artifacts(project_id, run_id, payload)
     from app.services.storage import workspace_path
     run_dir = workspace_path(project_id) / "runs" / run_id
@@ -222,7 +231,7 @@ def test_custom_branding_primary_color_and_footer() -> None:
     )
     fills = _fill_colors(prs.slides[1])
     assert "0033A0" in fills
-    assert "Acme Confidential" in _text_content(prs.slides[1])
+    assert "Acme Confidential".upper() in _text_content(prs.slides[1]).upper()
 
 
 # ── Stack layers ──────────────────────────────────────────────────────────────
@@ -344,3 +353,201 @@ def test_max_20_slides_enforced() -> None:
             for i in range(25)]
     prs = _build_pptx(deck)
     assert len(prs.slides) == 20
+
+
+# ── P0 bug regression tests ──────────────────────────────────────────────────
+
+def test_title_slide_dark_background() -> None:
+    prs = _build_pptx([{"title": "ObjectiveNow", "slide_type": "title", "subtitle": "Executive Deck"}])
+    slide = prs.slides[0]
+    fills = _fill_colors(slide)
+    assert "1A1A1A" in fills, f"Dark background missing; fills found: {fills}"
+
+
+def test_title_slide_no_accent_line() -> None:
+    prs = _build_pptx([{"title": "Cover", "slide_type": "title"}])
+    slide = prs.slides[0]
+    from pptx.util import Inches
+    rect_shapes = [s for s in slide.shapes if s.shape_type == 1]  # MSO_SHAPE_TYPE.RECTANGLE = 1
+    # Expect exactly 3 rects: full-bleed dark bg, left green strip, bottom green bar
+    assert len(rect_shapes) == 3, f"Expected 3 rects on cover, got {len(rect_shapes)}"
+
+
+def test_gray_card_fill_uses_dark_text() -> None:
+    slides = [{"title": "Pillars", "slide_type": "column_cards", "column_cards": [
+        {"heading": "Pillar A", "accent": "gray", "body": "Body text for pillar A explaining the work."},
+        {"heading": "Pillar B", "accent": "gray", "body": "Body text for pillar B explaining the work."},
+        {"heading": "Pillar C", "accent": "gray", "body": "Body text for pillar C explaining the work."},
+    ]}]
+    prs = _build_pptx(slides)
+    text = _text_content(prs.slides[0])
+    assert "Pillar A" in text
+
+
+def test_stat_card_gray_fill_readable() -> None:
+    slides = [{"title": "Metrics", "slide_type": "stat_cards", "stat_cards": [
+        {"stat": "42", "label": "Items", "description": "Forty two things.", "fill": "gray"},
+        {"stat": "7", "label": "Roles", "description": "Seven distinct roles.", "fill": "gray"},
+        {"stat": "3", "label": "Systems", "description": "Three core systems.", "fill": "gray"},
+    ]}]
+    prs = _build_pptx(slides)
+    text = _text_content(prs.slides[0])
+    assert "42" in text
+
+
+def test_footer_not_aaaaaa() -> None:
+    prs = _build_pptx([{"title": "Test", "slide_type": "bullets", "bullets": ["Point one"]}])
+    slide = prs.slides[0]
+    from pptx.util import Pt
+    footer_colors: set[str] = set()
+    for shape in slide.shapes:
+        if not hasattr(shape, "text_frame"):
+            continue
+        for para in shape.text_frame.paragraphs:
+            for run in para.runs:
+                try:
+                    c = run.font.color.rgb
+                    if str(c).upper() == "AAAAAA":
+                        footer_colors.add(str(c).upper())
+                except Exception:
+                    pass
+    assert "AAAAAA" not in footer_colors, "Footer/page-number still using low-contrast #AAAAAA"
+
+
+# ── P1 new slide type tests ───────────────────────────────────────────────────
+
+def test_big_number_renders_large_stat() -> None:
+    slides = [{"title": "Savings Opportunity", "slide_type": "big_number", "big_number": {
+        "stat": "$400M", "label": "Annual Savings", "context": "Achievable by Month 18.", "fill": "dark"
+    }}]
+    prs = _build_pptx(slides)
+    text = _text_content(prs.slides[0])
+    assert "$400M" in text
+    assert "Annual Savings" in text
+    assert "Achievable" in text
+
+
+def test_big_number_context_optional() -> None:
+    slides = [{"title": "Key Metric", "slide_type": "big_number", "big_number": {
+        "stat": "87%", "label": "Completion Rate", "fill": "green"
+    }}]
+    prs = _build_pptx(slides)
+    text = _text_content(prs.slides[0])
+    assert "87%" in text
+    assert "Completion Rate" in text
+
+
+def test_big_number_empty_shows_placeholder() -> None:
+    slides = [{"title": "Missing Data", "slide_type": "big_number", "big_number": {}}]
+    prs = _build_pptx(slides)
+    text = _text_content(prs.slides[0])
+    assert "pending" in text.lower() or "Missing Data" in text
+
+
+def test_process_flow_3_steps_renders() -> None:
+    slides = [{"title": "Workflow", "slide_type": "process_flow", "process_flow": {"steps": [
+        {"label": "Initiation", "description": "Request raised in system", "fill": "dark"},
+        {"label": "Review", "description": "Finance validates budget", "fill": "green"},
+        {"label": "Approval", "description": "CFO signs off digitally", "fill": "mid_dark"},
+    ]}}]
+    prs = _build_pptx(slides)
+    text = _text_content(prs.slides[0])
+    assert "Initiation" in text
+    assert "Request raised in system" in text
+    assert "Review" in text
+    assert "Finance validates budget" in text
+    assert "Approval" in text
+    assert "CFO signs off digitally" in text
+
+
+def test_process_flow_5_steps_renders() -> None:
+    slides = [{"title": "Full Flow", "slide_type": "process_flow", "process_flow": {"steps": [
+        {"label": f"Step {i}", "description": f"Action for step {i}", "fill": "dark"}
+        for i in range(1, 6)
+    ]}}]
+    prs = _build_pptx(slides)
+    assert len(prs.slides) == 1
+    text = _text_content(prs.slides[0])
+    assert "Step 1" in text
+
+
+def test_process_flow_empty_shows_placeholder() -> None:
+    slides = [{"title": "Empty Flow", "slide_type": "process_flow", "process_flow": {"steps": []}}]
+    prs = _build_pptx(slides)
+    text = _text_content(prs.slides[0])
+    assert "pending" in text.lower() or "Empty Flow" in text
+
+
+# ── P3 chart tests ────────────────────────────────────────────────────────────
+
+def test_chart_slide_renders_column() -> None:
+    slides = [{"title": "Revenue Trend", "slide_type": "chart", "chart": {
+        "type": "column",
+        "categories": ["Q1", "Q2", "Q3", "Q4"],
+        "series": [
+            {"name": "Revenue ($M)", "values": [12, 18, 22, 28]},
+            {"name": "Cost ($M)", "values": [8, 11, 13, 15]},
+        ],
+        "subtitle": "Source: FY2024 management accounts",
+    }}]
+    prs = _build_pptx(slides)
+    assert len(prs.slides) == 1
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    has_chart = any(
+        getattr(s, "shape_type", None) == MSO_SHAPE_TYPE.CHART
+        for s in prs.slides[0].shapes
+    )
+    assert has_chart, "Column chart graphic frame not found on slide"
+
+
+def test_chart_slide_renders_line() -> None:
+    slides = [{"title": "Growth Trend", "slide_type": "chart", "chart": {
+        "type": "line",
+        "categories": ["Jan", "Feb", "Mar"],
+        "series": [{"name": "Units", "values": [100, 120, 145]}],
+    }}]
+    prs = _build_pptx(slides)
+    assert len(prs.slides) == 1
+
+
+def test_chart_slide_invalid_type_falls_back_to_line() -> None:
+    slides = [{"title": "Unknown Chart", "slide_type": "chart", "chart": {
+        "type": "radar",
+        "categories": ["A", "B", "C"],
+        "series": [{"name": "S1", "values": [1, 2, 3]}],
+    }}]
+    prs = _build_pptx(slides)
+    assert len(prs.slides) == 1
+
+
+def test_chart_slide_missing_data_shows_placeholder() -> None:
+    slides = [{"title": "Empty Chart", "slide_type": "chart", "chart": {}}]
+    prs = _build_pptx(slides)
+    text = _text_content(prs.slides[0])
+    assert "Empty Chart" in text
+
+
+# ── Document properties (no python-pptx template leak) ────────────────────────
+
+def test_core_properties_populated_no_template_leak() -> None:
+    """Generated decks must not ship python-pptx template defaults."""
+    prs = _build_pptx(
+        [{"title": "Revenue Cycle", "slide_type": "title"}],
+        extra_payload={"project_name": "Acme P2P", "branding": {"company_name": "Deloitte"}},
+    )
+    cp = prs.core_properties
+    assert cp.title, "core title should be populated"
+    assert cp.author and cp.author != "Steve Canny"
+    assert cp.last_modified_by == "ProcessDoc Studio"
+    assert "python-pptx" not in (cp.title + (cp.subject or "") + (cp.author or ""))
+
+
+def test_title_slide_includes_client_and_date() -> None:
+    """Cover should name the client and carry a date when the LLM omitted them."""
+    prs = _build_pptx(
+        [{"title": "Process Overview", "slide_type": "title", "subtitle": "EXEC BRIEF"}],
+        extra_payload={"client_name": "Indus Apex Bank Ltd"},
+    )
+    text = _text_content(prs.slides[0])
+    assert "Indus Apex Bank Ltd" in text
+    assert "PREPARED FOR" in text

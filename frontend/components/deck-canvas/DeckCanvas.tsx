@@ -2,6 +2,8 @@
 
 import React from "react";
 
+import { activateOnKey } from "@/lib/a11y";
+
 type GenericRow = Record<string, unknown>;
 
 export type CanvasSlide = {
@@ -45,16 +47,22 @@ function SlideTypeBody({
     return (
       <div className="space-y-2">
         <h2
+          role="button"
+          tabIndex={0}
           className="cursor-pointer text-xl font-semibold"
           data-element-path="title"
           onClick={() => click("title")}
+          onKeyDown={activateOnKey(() => click("title"))}
         >
           {asText(slide.title || "Untitled")}
         </h2>
         <p
+          role="button"
+          tabIndex={0}
           className="cursor-pointer text-sm text-[var(--text-muted)]"
           data-element-path="subtitle"
           onClick={() => click("subtitle")}
+          onKeyDown={activateOnKey(() => click("subtitle"))}
         >
           {asText(slide.subtitle || "Executive overview")}
         </p>
@@ -158,10 +166,10 @@ function SlideTypeBody({
   if (t === "section_divider") {
     return (
       <div className="rounded bg-[var(--surface-muted)] p-4 text-center">
-        <h2 className="cursor-pointer text-xl font-semibold" onClick={() => click("title")}>
+        <h2 role="button" tabIndex={0} className="cursor-pointer text-xl font-semibold" onClick={() => click("title")} onKeyDown={activateOnKey(() => click("title"))}>
           {asText(slide.title || "Section")}
         </h2>
-        <p className="cursor-pointer text-sm text-[var(--text-muted)]" onClick={() => click("subtitle")}>
+        <p role="button" tabIndex={0} className="cursor-pointer text-sm text-[var(--text-muted)]" onClick={() => click("subtitle")} onKeyDown={activateOnKey(() => click("subtitle"))}>
           {asText(slide.subtitle || "")}
         </p>
       </div>
@@ -174,9 +182,12 @@ function SlideTypeBody({
       {bullets.map((b, i) => (
         <li
           key={`b-${i}`}
+          role="button"
+          tabIndex={0}
           className="cursor-pointer"
           data-element-path={`bullets[${i}]`}
           onClick={() => click(`bullets[${i}]`)}
+          onKeyDown={activateOnKey(() => click(`bullets[${i}]`))}
         >
           {b}
         </li>
@@ -204,9 +215,12 @@ export function DeckCanvas({ slides, className, onElementClick }: DeckCanvasProp
             </header>
             {slide.slide_type !== "title" ? (
               <h3
+                role="button"
+                tabIndex={0}
                 className="mb-2 cursor-pointer text-sm font-semibold"
                 data-element-path="title"
                 onClick={() => onElementClick?.({ slideIndex: index, elementPath: "title" })}
+                onKeyDown={activateOnKey(() => onElementClick?.({ slideIndex: index, elementPath: "title" }))}
               >
                 {title}
               </h3>

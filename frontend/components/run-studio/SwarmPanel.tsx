@@ -320,12 +320,14 @@ export function SwarmPanel({
           <span className="font-semibold">New task (Editors)</span>
           <input
             className="w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1"
+            aria-label="Task title"
             placeholder="Title"
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
           />
           <input
             className="w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1"
+            aria-label="Depends on task IDs (comma-separated)"
             placeholder="Depends on task ids (comma-separated)"
             value={newDepends}
             onChange={(e) => setNewDepends(e.target.value)}

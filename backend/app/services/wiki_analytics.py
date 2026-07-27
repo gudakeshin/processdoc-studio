@@ -11,7 +11,8 @@ Implements:
 
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class PageAnalytics:
             user_id: Optional user ID for behavior tracking
         """
         self.views[page_id] += 1
-        self.view_history[page_id].append(datetime.now(UTC).isoformat())
+        self.view_history[page_id].append(datetime.now(IST).isoformat())
 
         if user_id:
             self.user_pages[user_id].add(page_id)
@@ -326,15 +327,40 @@ class KnowledgeGapDetector:
         # Sort by mention count
         return sorted(missing, key=lambda x: x["mentions"], reverse=True)
 
-    def detect_orphaned_concepts(self) -> list[dict[str, Any]]:
+    def detect_orphaned_concepts(self, max_inbound: int = 0) -> list[dict[str, Any]]:
         """
-        Detect important concepts that are isolated or poorly connected.
+        Detect pages that are isolated in the knowledge graph.
+
+        A page is "orphaned" when its title appears in at most ``max_inbound``
+        other pages' content — nothing references it, so it sits as an island.
+
+        Args:
+            max_inbound: Maximum inbound references for a page to count as orphaned.
 
         Returns:
-            List of orphaned concept suggestions
+            List of {page_id, title, inbound_references, suggested_action} dicts,
+            most isolated first.
         """
-        # Placeholder for more sophisticated analysis
-        return []
+        orphaned = []
+        for page_id, page in self.pages.items():
+            title = (page.get("title") or "").strip()
+            if not title:
+                continue
+            title_lower = title.lower()
+            inbound = sum(
+                1
+                for other_id, other in self.pages.items()
+                if other_id != page_id and title_lower in (other.get("content") or "").lower()
+            )
+            if inbound <= max_inbound:
+                orphaned.append({
+                    "page_id": page_id,
+                    "title": title,
+                    "inbound_references": inbound,
+                    "suggested_action": f"Link '{title}' from related pages or merge if redundant",
+                })
+
+        return sorted(orphaned, key=lambda x: x["inbound_references"])
 
     def get_coverage_report(self) -> dict[str, Any]:
         """

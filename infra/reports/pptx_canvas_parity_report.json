@@ -2,13 +2,23 @@
   "spike": "pptx_canvas_parity",
   "sample_count": 3,
   "supported_slide_types": [
+    "big_number",
     "bullets",
+    "chart",
     "column_cards",
+    "flagship_cards",
+    "lanes",
+    "process_flow",
+    "roadmap_matrix",
     "section_divider",
+    "split_panel",
     "stack_layers",
     "stat_cards",
+    "swimlane_timeline",
     "table",
-    "title"
+    "title",
+    "tower_cards",
+    "workstream_cards"
   ],
   "results": [
     {

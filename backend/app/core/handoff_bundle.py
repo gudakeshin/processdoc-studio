@@ -34,7 +34,8 @@ import logging
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +93,7 @@ def _read_text_safe(path: Path) -> str | None:
 
 
 def _build_readme(metadata: dict[str, Any], included: Iterable[str]) -> str:
-    generated = metadata.get("generated_at") or datetime.now(UTC).isoformat()
+    generated = metadata.get("generated_at") or datetime.now(IST).isoformat()
     run_id = metadata.get("run_id") or "(unknown)"
     project_id = metadata.get("project_id") or "(unknown)"
     status = metadata.get("status") or "(unknown)"
@@ -134,7 +135,7 @@ def _build_readme(metadata: dict[str, Any], included: Iterable[str]) -> str:
 
 def _collect_run_metadata(run_dir: Path, overrides: dict[str, Any] | None) -> dict[str, Any]:
     meta: dict[str, Any] = {
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(IST).isoformat(),
         "project_id": "",
         "run_id": "",
         "status": "",

@@ -12,7 +12,8 @@ import json
 import logging
 import re
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -358,7 +359,7 @@ class RelationshipGraph:
                     "total": len(self.relationships),
                     "relationships": self.relationships,
                     "relationship_types": list(RELATIONSHIP_TYPES.keys()),
-                    "last_updated": datetime.now(UTC).isoformat(),
+                    "last_updated": datetime.now(IST).isoformat(),
                 }, indent=2),
                 encoding="utf-8"
             )

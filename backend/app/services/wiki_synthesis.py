@@ -14,7 +14,8 @@ import json
 import logging
 import re
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,19 @@ class SynthesisEngine:
         concepts.extend([h.strip() for h in headers if h.strip()])
 
         return list(set(concepts))[:10]
+
+    def _load_storyline_draft(self) -> dict[str, Any]:
+        """Load optional storyline draft for synthesis guidance."""
+        try:
+            draft_file = self.wiki_dir / ".meta" / "storyline_draft.json"
+            if not draft_file.exists():
+                return {}
+            payload = json.loads(draft_file.read_text(encoding="utf-8"))
+            if "data" in payload and isinstance(payload.get("data"), dict):
+                payload = payload["data"]
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
 
     def find_synthesis_clusters(self) -> list[dict[str, Any]]:
         """
@@ -277,7 +291,7 @@ class SynthesisEngine:
                     page_info.append({"id": page_id, "title": title, "body": body[:600]})
 
             synthesis_title = f"Synthesis: {', '.join(cluster_concepts[:2])}"
-            now = datetime.now(UTC).isoformat()
+            now = datetime.now(IST).isoformat()
             linked_entities = "\n".join(f"  - {pid}" for pid in cluster_pages[:5])
 
             frontmatter = (
@@ -290,6 +304,13 @@ class SynthesisEngine:
                 from app.services.claude import claude_generate, is_claude_enabled
                 if not is_claude_enabled():
                     raise RuntimeError("Claude disabled")
+                storyline = self._load_storyline_draft()
+                storyline_hint = ""
+                if storyline:
+                    storyline_hint = (
+                        "\n\nStoryline drafting hints (if relevant to this cluster):\n"
+                        f"{json.dumps(storyline.get('sections', []), indent=2)}\n"
+                    )
 
                 context_blocks = "\n\n".join(
                     f"### {p['title']} ([[{p['id']}]])\n{p['body']}"
@@ -309,7 +330,7 @@ class SynthesisEngine:
                     ),
                     user=(
                         f"Synthesise these {len(page_info)} related wiki pages:\n\n"
-                        f"{context_blocks}"
+                        f"{context_blocks}{storyline_hint}"
                     ),
                     max_tokens=900,
                 )
@@ -405,7 +426,7 @@ class SynthesisEngine:
         return {
             "status": "success",
             "wiki_type": self.wiki_type,
-            "analysis_date": datetime.now(UTC).isoformat(),
+            "analysis_date": datetime.now(IST).isoformat(),
             "synthesis_clusters": self.find_synthesis_clusters(),
             "contradictions": self.detect_contradictions(),
             "principles": self.find_pattern_principles(),

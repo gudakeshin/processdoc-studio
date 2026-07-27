@@ -14,7 +14,8 @@ that continuously refines and evolves the wiki without user intervention.
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from app.services.wiki_corrections import DataCorrector
 from app.services.wiki_relationships import classify_all_relationships
 from app.services.storage import workspace_path
 from app.services.wiki_operations import NonTransientError
+from app.core.config import settings
 
 _LOG = logging.getLogger(__name__)
 
@@ -94,7 +96,7 @@ class WikiMaintenanceManager:
         """Log maintenance action."""
         try:
             log_entry = {
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": datetime.now(IST).isoformat(),
                 "action": action,
                 "details": details,
             }
@@ -130,7 +132,7 @@ class WikiMaintenanceManager:
         _LOG.info(f"Starting maintenance for {self.wiki_type} wiki")
 
         results = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(IST).isoformat(),
             "wiki_type": self.wiki_type,
             "project_id": self.project_id,
             "checks": {},
@@ -301,7 +303,7 @@ class WikiMaintenanceManager:
         """Detect pages that haven't been updated in a while."""
         try:
             stale_pages = []
-            now = datetime.now(UTC)
+            now = datetime.now(IST)
             stale_threshold = now - timedelta(days=self.config["stale_days"])
 
             for md_file in self.wiki_dir.glob("*.md"):
@@ -343,14 +345,31 @@ class WikiMaintenanceManager:
             return {"error": str(e), "status": "failed"}
 
     def _generate_synthesis_pages(self, auto_fix: bool = True) -> dict[str, Any]:
-        """Generate synthesis pages for identified gaps."""
+        """Surface coverage gaps that warrant new synthesis pages.
+
+        Detects frequently-referenced concepts that lack a dedicated page.
+        LLM-authored page bodies are produced by the synthesis engine; here we
+        report the concrete candidates so they can be generated or reviewed.
+        """
         try:
-            # TODO: Implement once Phase 5 (synthesis engine) is done
+            from app.services.wiki_lint import _get_all_wiki_pages
+            from app.services.wiki_analytics import KnowledgeGapDetector
+
+            raw_pages = _get_all_wiki_pages(self.wiki_type, self.project_id)
+            detector = KnowledgeGapDetector()
+            detector.index_pages([
+                {"id": p["page_id"], "title": p["title"], "content": p["content"]}
+                for p in raw_pages
+            ])
+            gaps = detector.detect_missing_pages(
+                min_mentions=self.config.get("synthesis_min_mentions", 3)
+            )
+
             return {
-                "found": 0,
+                "found": len(gaps),
                 "generated": 0,
-                "status": "skipped",
-                "reason": "synthesis_not_yet_implemented",
+                "candidates": [g["concept"] for g in gaps[:10]],
+                "status": "detected" if gaps else "clean",
             }
         except Exception as e:
             _LOG.error(f"Error generating synthesis pages: {e}")
@@ -431,6 +450,12 @@ def run_weekly_librarian_tick(
         _LOG.warning("Weekly correction pass failed: %s", exc)
 
     classification = classify_all_relationships(wiki_type, project_id)
+    if bool(getattr(settings, "wiki_evented_graph_rebuild_enabled", False)):
+        try:
+            from app.services.wiki_graph import build_relationships_incremental
+            build_relationships_incremental(wiki_type, project_id)
+        except Exception as exc:
+            _LOG.warning("Evented graph refresh failed during librarian tick: %s", exc)
     return {
         "maintenance": maintenance,
         "corrections_applied": corrections_applied,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { useAuth } from "@/lib/auth-context";
 import { extractApiErrorMessage } from "@/lib/api-error";
@@ -21,6 +21,7 @@ export function ProjectPicker({ value, onChange, className }: ProjectPickerProps
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const selectId = useId();
 
   useEffect(() => {
     if (!token) return;
@@ -51,8 +52,9 @@ export function ProjectPicker({ value, onChange, className }: ProjectPickerProps
 
   return (
     <div className={className}>
-      <label className="mb-1 block text-xs font-medium text-[var(--text-caption)]">Project</label>
+      <label htmlFor={selectId} className="mb-1 block text-xs font-medium text-[var(--text-caption)]">Project</label>
       <Select
+        id={selectId}
         className="w-full max-w-xl"
         value={value}
         disabled={loading || !projects.length}

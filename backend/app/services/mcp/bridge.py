@@ -56,20 +56,24 @@ async def call_mcp_tool(
             request_id=request_id,
         )
 
-        # Write to stdin (synchronously for now)
-        # TODO: Upgrade to async stdio when StreamWriter is properly set up
+        # The underlying Popen pipes are blocking, so both directions run in the
+        # default executor and can never stall the event loop.
+        loop = asyncio.get_event_loop()
+
         if instance.process.stdin:
-            try:
-                instance.process.stdin.write(msg.encode("utf-8"))
-                instance.process.stdin.flush()
-            except BrokenPipeError:
+            def write_request() -> bool:
+                try:
+                    instance.process.stdin.write(msg.encode("utf-8"))
+                    instance.process.stdin.flush()
+                    return True
+                except BrokenPipeError:
+                    return False
+
+            if not await loop.run_in_executor(None, write_request):
                 logger.error(f"MCP server {server_id} stdin broken")
                 return None
 
-        # Read response from stdout with timeout
-        # TODO: Implement proper async stdin/stdout wrapping
-        # For now, attempt synchronous read with timeout handling
-        loop = asyncio.get_event_loop()
+        # Read response from stdout with timeout (also off the event loop).
 
         def read_response():
             try:

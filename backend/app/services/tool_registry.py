@@ -1629,6 +1629,17 @@ _DEFAULT_TOOLS_BY_OUTPUT: dict[str, list[str]] = {
 }
 
 
+# Named role-tool sets for swarm (documentation + validation reference).
+# Actual injection happens in subagents.py — these are not enforced at registration time.
+SWARM_LEAD_TOOL_NAMES: frozenset[str] = frozenset({
+    "swarm_list_tasks", "swarm_list_messages", "swarm_send_message",
+    "swarm_create_task", "swarm_update_task", "swarm_broadcast",
+})
+SWARM_WORKER_TOOL_NAMES: frozenset[str] = frozenset({
+    "swarm_list_tasks", "swarm_list_messages", "swarm_send_message",
+})
+
+
 def get_tool(name: str) -> ToolHandler:
     try:
         return TOOL_REGISTRY[name]
@@ -1666,6 +1677,29 @@ def anthropic_tool_definitions(names: list[str]) -> list[dict[str, Any]]:
         except ValueError:
             _LOG.warning("tool_registry: skipping unknown or unschemaed tool %r", n)
     return out
+
+
+def validate_skill_tools(skill_card: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+    """Return (valid_tool_names, unknown_tool_names) from a skill card's tools list.
+
+    Callers can surface unknown_tool_names as errors/warnings rather than silently dropping them.
+    """
+    if not isinstance(skill_card, dict):
+        return [], []
+    raw = skill_card.get("tools")
+    if not isinstance(raw, list):
+        return [], []
+    valid: list[str] = []
+    unknown: list[str] = []
+    for x in raw:
+        s = str(x).strip()
+        if not s:
+            continue
+        if s in TOOL_REGISTRY:
+            valid.append(s)
+        else:
+            unknown.append(s)
+    return valid, unknown
 
 
 def tool_names_for_skill(skill_card: dict[str, Any] | None) -> list[str]:
@@ -1716,6 +1750,25 @@ def _try_mcp_tool_call(name: str, tool_input: dict[str, Any]) -> Any | None:
         return None
 
 
+_TOOL_DEFAULT_TIMEOUT_S: float = 30.0
+
+
+def _call_with_timeout(fn: Callable[..., Any], kwargs: dict[str, Any], timeout_s: float) -> Any:
+    """Call fn(**kwargs) in a daemon thread; raise TimeoutError if it exceeds timeout_s.
+
+    Uses a thread rather than signal.alarm to work safely inside ThreadPoolExecutor workers.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        f = ex.submit(fn, **kwargs)
+        try:
+            return f.result(timeout=timeout_s)
+        except Exception:
+            f.cancel()
+            raise TimeoutError(f"Tool timed out after {timeout_s}s")
+
+
 def resolve_tool_call(name: str, tool_input: dict[str, Any], context: dict[str, Any]) -> Any:
     """
     Execute a registry tool with model-provided input merged with server context
@@ -1743,7 +1796,12 @@ def resolve_tool_call(name: str, tool_input: dict[str, Any], context: dict[str, 
             merged.setdefault("agent_id", context["agent_id"])
         if context.get("swarm_teammate_id") is not None:
             merged.setdefault("swarm_teammate_id", context["swarm_teammate_id"])
-        return handler(**merged)
+        timeout_s = float(getattr(settings, "tool_call_timeout_s", _TOOL_DEFAULT_TIMEOUT_S))
+        try:
+            return _call_with_timeout(handler, merged, timeout_s)
+        except TimeoutError as exc:
+            _LOG.warning("tool_registry: tool %r timed out: %s", name, exc)
+            return {"error": str(exc), "timed_out": True}
 
     # Fall back to MCP servers
     mcp_result = _try_mcp_tool_call(name, tool_input)

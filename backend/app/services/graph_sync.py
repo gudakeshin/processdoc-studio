@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -11,7 +12,7 @@ _GRAPH_HTTP_CLIENT = httpx.Client(timeout=3.0)
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:

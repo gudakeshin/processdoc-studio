@@ -50,20 +50,26 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
     if not slides:
         return False, ["pptx_slides has no slides"]
 
+    # slide_type → (list_field, min_count)
+    # Note: "table" is NOT here because slide["table"] is a dict, not a list.
+    # It is validated separately below.
     slide_type_requirements = {
-        "stat_cards": ("stat_cards", 3),
+        "stat_cards": ("stat_cards", 1),
         "column_cards": ("column_cards", 3),
         "stack_layers": ("stack_layers", 3),
-        "table": ("table", 1),
         "bullets": ("bullets", 1),
     }
 
+    type_counts: dict[str, int] = {}
     for idx, slide in enumerate(slides):
         if not isinstance(slide, dict):
             continue
 
         slide_type = slide.get("slide_type")
         title = slide.get("title", f"[Slide {idx + 1}]")
+
+        if isinstance(slide_type, str):
+            type_counts[slide_type] = type_counts.get(slide_type, 0) + 1
 
         if slide_type in slide_type_requirements:
             field, min_items = slide_type_requirements[slide_type]
@@ -75,7 +81,98 @@ def _validate_pptx_completeness(pptx_json: str) -> tuple[bool, list[str]]:
                     f"Slide {idx + 1} ({title}): "
                     f"slide_type='{slide_type}' requires {min_items} {field}, got {actual}"
                 )
+            else:
+                # For card-based types, also check that individual items have substantive content.
+                # An agent can pass the count gate while submitting empty dicts.
+                if slide_type == "column_cards":
+                    empty = sum(
+                        1 for card in items
+                        if isinstance(card, dict) and not str(card.get("heading") or "").strip()
+                    )
+                    if empty:
+                        issues.append(
+                            f"Slide {idx + 1} ({title}): {empty} column_card(s) have an empty 'heading' field"
+                        )
+                elif slide_type == "stack_layers":
+                    empty = sum(
+                        1 for layer in items
+                        if isinstance(layer, dict) and not str(layer.get("label") or "").strip()
+                    )
+                    if empty:
+                        issues.append(
+                            f"Slide {idx + 1} ({title}): {empty} stack_layer(s) have an empty 'label' field"
+                        )
 
+        elif slide_type == "table":
+            # slide["table"] is a dict {headers, rows}, not a list — check rows separately.
+            table_data = slide.get("table")
+            rows = table_data.get("rows", []) if isinstance(table_data, dict) else []
+            if not isinstance(rows, list) or len(rows) < 1:
+                issues.append(
+                    f"Slide {idx + 1} ({title}): table requires at least 1 row in table.rows"
+                )
+
+        elif slide_type == "big_number":
+            bn = slide.get("big_number")
+            if not isinstance(bn, dict) or not bn.get("stat"):
+                issues.append(
+                    f"Slide {idx + 1} ({title}): big_number requires a dict with 'stat' field"
+                )
+        elif slide_type == "process_flow":
+            pf = slide.get("process_flow")
+            steps = pf.get("steps", []) if isinstance(pf, dict) else []
+            if not isinstance(steps, list) or len(steps) < 2:
+                issues.append(
+                    f"Slide {idx + 1} ({title}): process_flow requires at least 2 steps"
+                )
+
+    # Slide-type diversity: a deck dominated by bullets reads as auto-generated.
+    # Title + section_divider don't count toward content variety.
+    content_total = sum(c for t, c in type_counts.items() if t not in ("title", "section_divider"))
+    if content_total >= 4:
+        bullets_count = type_counts.get("bullets", 0)
+        if bullets_count / content_total > 0.6:
+            issues.append(
+                f"Slide-type variety: {bullets_count} of {content_total} content slides are 'bullets' "
+                f"({int(bullets_count / content_total * 100)}%); diversify with stat_cards, column_cards, "
+                "stack_layers, table, big_number, process_flow, or chart to avoid a monotone deck."
+            )
+
+    return len(issues) == 0, issues
+
+
+def _validate_docx_completeness(docx_markdown: str) -> tuple[bool, list[str]]:
+    """Conservative completeness check for the DOCX intermediate (markdown body).
+
+    Mirrors ``_validate_pptx_completeness`` but for reflowable text: only fails on
+    degenerate content (effectively empty, or structureless) so healthy documents
+    pass untouched.
+    """
+    issues: list[str] = []
+    text = (docx_markdown or "").strip()
+    if len(text) < 40:
+        issues.append("docx_markdown is empty/minimal")
+        return False, issues
+    has_heading = any(line.lstrip().startswith("#") for line in text.splitlines())
+    if not has_heading and len(text) > 600:
+        issues.append("docx_markdown has substantial body but no headings (flat structure)")
+    return len(issues) == 0, issues
+
+
+def _validate_xlsx_completeness(raw: Any) -> tuple[bool, list[str]]:
+    """Conservative completeness check for the XLSX intermediate.
+
+    Accepts the markdown-table string or typed-cell list; fails only when there is
+    no usable tabular content.
+    """
+    issues: list[str] = []
+    if isinstance(raw, list):
+        if not raw:
+            issues.append("xlsx_cells is empty")
+        return len(issues) == 0, issues
+    text = str(raw or "").strip()
+    if "|" not in text or len(text) < 10:
+        issues.append("xlsx content has no usable table rows")
     return len(issues) == 0, issues
 
 
@@ -259,6 +356,82 @@ def _score_llm_critique(text: str, dim: dict[str, Any], *, project_id: str | Non
         return 0.7, {"error": True}
 
 
+def _parse_pptx_slides(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        return [s for s in raw if isinstance(s, dict)]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, dict) and isinstance(parsed.get("slides"), list):
+            return [s for s in parsed["slides"] if isinstance(s, dict)]
+        if isinstance(parsed, list):
+            return [s for s in parsed if isinstance(s, dict)]
+    return []
+
+
+def _score_pptx_storytelling(slides_raw: Any, dim: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+    slides = _parse_pptx_slides(slides_raw)
+    if not slides:
+        return 0.0, {"issues": ["No parseable slides for storytelling evaluation."]}
+    clutter: list[int] = []
+    weak: list[int] = []
+    transition_issues: list[int] = []
+    visual_rich = 0
+    for idx, slide in enumerate(slides, start=1):
+        title = str(slide.get("title") or "").strip()
+        bullets = slide.get("bullets", []) if isinstance(slide.get("bullets"), list) else []
+        has_visual = any(
+            isinstance(slide.get(k), list) and len(slide.get(k) or []) > 0
+            for k in ("stat_cards", "column_cards", "stack_layers", "process_flow")
+        ) or isinstance(slide.get("table"), dict) or isinstance(slide.get("chart"), dict) or isinstance(slide.get("big_number"), dict)
+        if has_visual:
+            visual_rich += 1
+        if len(bullets) >= int(dim.get("bullet_clutter_threshold") or 5):
+            clutter.append(idx)
+        _WEAK_TITLES = {
+            "overview", "summary", "insights", "introduction", "background",
+            "next steps", "agenda", "takeaways", "context",
+        }
+        title_is_filler = title.lower() in _WEAK_TITLES or len(title.split()) <= 2
+        if title_is_filler and not has_visual and len(bullets) <= 2:
+            weak.append(idx)
+        if idx > 1:
+            prior = slides[idx - 2]
+            prior_sub = str(prior.get("subtitle") or "").strip()
+            cur_sub = str(slide.get("subtitle") or "").strip()
+            if not prior_sub and not cur_sub and len(title.split()) <= 2:
+                transition_issues.append(idx)
+    visual_ratio = visual_rich / max(1, len(slides))
+    score = 1.0
+    score -= min(0.35, len(clutter) * 0.08)
+    score -= min(0.35, len(weak) * 0.1)
+    score -= min(0.2, len(transition_issues) * 0.05)
+    min_visual_ratio = float(dim.get("min_visual_ratio") or 0.50)
+    if visual_ratio < min_visual_ratio:
+        score -= min(0.25, (min_visual_ratio - visual_ratio) * 0.6)
+    score = max(0.0, min(1.0, score))
+    issues: list[str] = []
+    if clutter:
+        issues.append(f"Clutter risk on slides {clutter}.")
+    if weak:
+        issues.append(f"Weak storytelling on slides {weak}.")
+    if transition_issues:
+        issues.append(f"Narrative transitions weak near slides {transition_issues}.")
+    if visual_ratio < min_visual_ratio:
+        issues.append(
+            f"Visual storytelling density low ({visual_ratio:.2f}); target is >= {min_visual_ratio:.2f}."
+        )
+    return score, {
+        "clutter_slides": clutter,
+        "weak_slides": weak,
+        "transition_issues": transition_issues,
+        "visual_ratio": round(visual_ratio, 3),
+        "issues": issues,
+    }
+
+
 def _evaluate_one_output(
     output_key: str,
     raw_text: Any,
@@ -291,6 +464,8 @@ def _evaluate_one_output(
             score, meta = _score_citation_density(text, dim)
         elif kind == "llm_critique":
             score, meta = _score_llm_critique(text, dim, project_id=project_id)
+        elif kind == "pptx_storytelling":
+            score, meta = _score_pptx_storytelling(raw_text, dim)
         else:
             continue
         dimension_results.append({"id": did, "kind": kind, "weight": weight, "score": score, "meta": meta})
@@ -335,6 +510,15 @@ def _build_remediation(
             iss = meta.get("issues") if isinstance(meta.get("issues"), list) else []
             for i in iss[:5]:
                 actions.append(str(i))
+        elif kind == "pptx_storytelling":
+            for i in (meta.get("issues") if isinstance(meta.get("issues"), list) else [])[:5]:
+                actions.append(str(i))
+            clutter = meta.get("clutter_slides") if isinstance(meta.get("clutter_slides"), list) else []
+            if clutter:
+                actions.append(f"Reduce bullet density and split crowded content on slides {clutter[:8]}.")
+            weak = meta.get("weak_slides") if isinstance(meta.get("weak_slides"), list) else []
+            if weak:
+                actions.append(f"Rewrite slide titles/body on slides {weak[:8]} to make the key insight explicit.")
     if not actions:
         actions.append(f"Strengthen deliverable to exceed quality aggregate {threshold:.2f}.")
     return {
@@ -423,6 +607,38 @@ def run_deliverable_quality_loop(
                         "rewrite_prompt": (
                             f"Regenerate pptx_slides: {'; '.join(issues[:3])}. "
                             f"Ensure stat_cards/column_cards/stack_layers/table have required items."
+                        ),
+                    }
+                    continue
+
+            # DOCX completeness check (parity with PPTX): gate degenerate bodies.
+            if ok == "docx_markdown" and isinstance(raw, str):
+                is_complete, issues = _validate_docx_completeness(raw)
+                if not is_complete:
+                    increment("deliverable_quality_docx_incomplete")
+                    gated_failures[ok] = {
+                        "reason": f"DOCX completeness check failed: {'; '.join(issues[:3])}",
+                        "target_score": 0.85,
+                        "actions": issues,
+                        "rewrite_prompt": (
+                            f"Regenerate docx_markdown: {'; '.join(issues[:3])}. "
+                            "Provide structured headings and substantive body content."
+                        ),
+                    }
+                    continue
+
+            # XLSX completeness check (parity with PPTX): gate empty workbooks.
+            if ok in ("xlsx_markdown", "xlsx_cells"):
+                is_complete, issues = _validate_xlsx_completeness(raw)
+                if not is_complete:
+                    increment("deliverable_quality_xlsx_incomplete")
+                    gated_failures[ok] = {
+                        "reason": f"XLSX completeness check failed: {'; '.join(issues[:3])}",
+                        "target_score": 0.85,
+                        "actions": issues,
+                        "rewrite_prompt": (
+                            f"Regenerate {ok}: {'; '.join(issues[:3])}. "
+                            "Provide a populated table with header and data rows."
                         ),
                     }
                     continue

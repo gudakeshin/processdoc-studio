@@ -3,14 +3,15 @@
 import csv
 import json
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
 
 def _now_iso() -> str:
     """Get current timestamp in ISO format."""
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _read_json(path: Path, fallback: Any) -> Any:
@@ -218,7 +219,7 @@ def create_data_source_connector(
         raise ValueError(f"Column mapping validation failed: {validation['issues']}")
 
     connector = {
-        "id": f"connector_{datetime.now(UTC).timestamp()}",
+        "id": f"connector_{datetime.now(IST).timestamp()}",
         "model_id": model_id,
         "source_name": source_name,
         "file_path": file_path,

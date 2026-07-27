@@ -223,10 +223,11 @@ export function FinancialModelWizard({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-[#0F0B0B]">
+            <label htmlFor="fmw-name" className="block text-sm font-medium text-[#0F0B0B]">
               Model Name
             </label>
             <Input
+              id="fmw-name"
               type="text"
               placeholder="e.g., FY2024 Operating Plan"
               value={modelData.name}
@@ -237,10 +238,11 @@ export function FinancialModelWizard({
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-xs font-medium text-[#4C4C4C]">
+              <label htmlFor="fmw-revenue" className="block text-xs font-medium text-[#4C4C4C]">
                 Annual Revenue
               </label>
               <Input
+                id="fmw-revenue"
                 type="number"
                 value={modelData.assumptions.revenue}
                 onChange={(e) =>
@@ -251,10 +253,11 @@ export function FinancialModelWizard({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[#4C4C4C]">
+              <label htmlFor="fmw-revenue-growth" className="block text-xs font-medium text-[#4C4C4C]">
                 Revenue Growth Rate (%)
               </label>
               <Input
+                id="fmw-revenue-growth"
                 type="number"
                 step="0.01"
                 value={(modelData.assumptions.revenueGrowth * 100).toFixed(1)}
@@ -269,10 +272,11 @@ export function FinancialModelWizard({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[#4C4C4C]">
+              <label htmlFor="fmw-gross-margin" className="block text-xs font-medium text-[#4C4C4C]">
                 Gross Margin (%)
               </label>
               <Input
+                id="fmw-gross-margin"
                 type="number"
                 step="0.01"
                 value={(modelData.assumptions.grossMargin * 100).toFixed(1)}
@@ -287,10 +291,11 @@ export function FinancialModelWizard({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[#4C4C4C]">
+              <label htmlFor="fmw-operating-margin" className="block text-xs font-medium text-[#4C4C4C]">
                 Operating Margin (%)
               </label>
               <Input
+                id="fmw-operating-margin"
                 type="number"
                 step="0.01"
                 value={(modelData.assumptions.operatingMargin * 100).toFixed(1)}
@@ -305,10 +310,11 @@ export function FinancialModelWizard({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[#4C4C4C]">
+              <label htmlFor="fmw-tax-rate" className="block text-xs font-medium text-[#4C4C4C]">
                 Tax Rate (%)
               </label>
               <Input
+                id="fmw-tax-rate"
                 type="number"
                 step="0.01"
                 value={(modelData.assumptions.taxRate * 100).toFixed(1)}
@@ -323,10 +329,11 @@ export function FinancialModelWizard({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-[#4C4C4C]">
+              <label htmlFor="fmw-discount-rate" className="block text-xs font-medium text-[#4C4C4C]">
                 Discount Rate (%)
               </label>
               <Input
+                id="fmw-discount-rate"
                 type="number"
                 step="0.01"
                 value={(modelData.assumptions.discountRate * 100).toFixed(1)}

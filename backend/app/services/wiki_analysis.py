@@ -6,7 +6,6 @@ and performance metrics. All state files use the .meta/ subdirectory.
 """
 import json
 import logging
-from datetime import UTC
 
 _LOG = logging.getLogger(__name__)
 
@@ -377,6 +376,7 @@ def _save_god_nodes(
     try:
         from datetime import datetime
 
+        from app.core.tz import IST
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
@@ -393,7 +393,7 @@ def _save_god_nodes(
             "total_pages": god_nodes_data["total_pages"],
             "avg_importance": god_nodes_data["avg_importance"],
             "god_nodes": god_nodes_data["god_nodes"],
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         return True
@@ -639,6 +639,7 @@ def _save_communities(
     try:
         from datetime import datetime
 
+        from app.core.tz import IST
         from app.services.storage import workspace_path
 
         if wiki_type == "leading_practice":
@@ -655,7 +656,7 @@ def _save_communities(
             "total_communities": communities_data["total_communities"],
             "communities": communities_data["communities"],
             "page_community_map": communities_data["page_community_map"],
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         return True

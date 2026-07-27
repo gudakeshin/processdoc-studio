@@ -4,7 +4,16 @@ import os
 
 import pytest
 
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-min-16chars")
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-chars-long-ok!")
+os.environ["REDIS_URL"] = "redis://127.0.0.1:1/0"
+
+
+@pytest.fixture(autouse=True)
+def _auth_allow_self_signup_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "auth_allow_self_signup", True)
 
 
 @pytest.fixture(autouse=True)

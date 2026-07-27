@@ -11,6 +11,7 @@ from app.core.auth import get_current_user, require_project_role
 from app.core.handoff_bundle import build_handoff_bundle
 from app.db.models import MemoryEvent, Project, ProjectMemoryProfile, Run, RunEvent, User
 from app.db.session import get_db
+from app.services.artifact_integrity import pptx_base64_from_file, verify_pptx_on_disk
 from app.services.storage import workspace_path
 
 router = APIRouter()
@@ -115,6 +116,8 @@ def get_run_artifacts(
 
     run_dir = workspace_path(project_id) / "runs" / run_id
 
+    pptx_b64, pptx_integrity = pptx_base64_from_file(run_dir)
+
     process_model_payload = _read_json(run_dir / "process_model.json")
     source_trace = []
     if isinstance(process_model_payload, dict):
@@ -131,7 +134,8 @@ def get_run_artifacts(
         "xlsx_base64": _read_base64(run_dir / "output.xlsx"),
         "pdf_base64": _read_base64(run_dir / "output.pdf"),
         "docx_base64": _read_base64(run_dir / "output.docx"),
-        "pptx_base64": _read_base64(run_dir / "output.pptx"),
+        "pptx_base64": pptx_b64,
+        "pptx_integrity": pptx_integrity,
         "deck_html": _read_text(run_dir / "deck.html"),
         "deck_pdf_base64": _read_base64(run_dir / "deck.pdf"),
         "sop_markdown": _read_text(run_dir / "sop.md"),
@@ -147,7 +151,29 @@ def get_run_artifacts(
         "guardrail_report": _read_json(run_dir / "guardrail_report.json")
         or _latest_run_event_payload(db, run_id, "guardrail_report"),
         "evaluator_pipeline": _latest_run_event_payload(db, run_id, "evaluator_pipeline"),
+        "final_artifact_qa": _read_json(run_dir / "final_artifact_qa.json"),
+        "evidence_claims": _read_json(run_dir / "evidence_claims.json"),
     }
+    qa_report_obj = artifacts.get("qa_report") if isinstance(artifacts.get("qa_report"), dict) else {}
+    guardrail_obj = artifacts.get("guardrail_report") if isinstance(artifacts.get("guardrail_report"), dict) else {}
+    final_qa_obj = artifacts.get("final_artifact_qa") if isinstance(artifacts.get("final_artifact_qa"), dict) else {}
+    evaluator_obj = artifacts.get("evaluator_pipeline") if isinstance(artifacts.get("evaluator_pipeline"), dict) else {}
+    guardrail_failure_event = db.scalar(
+        select(RunEvent).where(
+            RunEvent.run_id == run_id,
+            RunEvent.event_type == "completed_with_guardrail_failures",
+        )
+    )
+    if guardrail_failure_event:
+        artifacts["quality_status"] = "completed_with_guardrail_failures"
+    elif evaluator_obj.get("status") == "fail":
+        artifacts["quality_status"] = "evaluator_failed"
+    elif final_qa_obj.get("status") == "fail":
+        artifacts["quality_status"] = "final_artifact_qa_failed"
+    elif qa_report_obj.get("passed") and str(guardrail_obj.get("status") or "").lower() == "pass":
+        artifacts["quality_status"] = "passed"
+    else:
+        artifacts["quality_status"] = "review_recommended"
     try:
         plan_payload_obj = json.loads(run.plan_payload) if run.plan_payload else {}
     except json.JSONDecodeError:
@@ -253,6 +279,252 @@ def get_run_artifacts(
         custom_output_types=custom_output_types,
         output_type_representations=output_type_representations,
         artifacts=artifacts,
+    )
+
+
+CANVAS_ARTIFACT_FILES: dict[str, str] = {
+    "narrative_md": "narrative.md",
+    "sop_markdown": "sop.md",
+    "raci_markdown": "raci.md",
+    "process_map_mermaid": "process_map.mmd",
+}
+
+
+class CanvasSaveRequest(BaseModel):
+    artifact_key: str
+    content: str
+
+
+class EvidenceClaimDecision(BaseModel):
+    id: str
+    decision: str  # accept | reject | pending
+    note: str | None = None
+
+
+class EvidenceClaimsUpdateRequest(BaseModel):
+    decisions: list[EvidenceClaimDecision]
+
+
+def _regenerate_office_from_canvas(
+    *,
+    project_id: str,
+    run_id: str,
+    run_dir,
+    artifact_key: str,
+    content: str,
+    db: Session,
+) -> dict[str, object]:
+    """Re-render DOCX (and XLSX when relevant) so downloads stay in sync with canvas edits."""
+    from app.core.deliverable import DeliverableRegistry, _init_default_deliverables
+    from app.services.branding_service import BrandingService
+
+    _init_default_deliverables()
+    regenerated: list[str] = []
+    errors: list[str] = []
+
+    branding = None
+    try:
+        branding = BrandingService(db).get_branding_for_run(project_id)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"branding: {exc}")
+
+    process_model = _read_json(run_dir / "process_model.json")
+    payload: dict = {
+        "process_model": process_model if isinstance(process_model, dict) else {},
+        "narrative_md": (run_dir / "narrative.md").read_text(encoding="utf-8")
+        if (run_dir / "narrative.md").is_file()
+        else "",
+        "docx_markdown": (run_dir / "narrative.md").read_text(encoding="utf-8")
+        if (run_dir / "narrative.md").is_file()
+        else "",
+        "raci_markdown": (run_dir / "raci.md").read_text(encoding="utf-8")
+        if (run_dir / "raci.md").is_file()
+        else "",
+        "sop_markdown": (run_dir / "sop.md").read_text(encoding="utf-8")
+        if (run_dir / "sop.md").is_file()
+        else "",
+        "requested_outputs": ["docx", "xlsx"],
+    }
+    # Ensure the just-saved artifact is reflected even if disk write raced.
+    if artifact_key == "narrative_md":
+        payload["narrative_md"] = content
+        payload["docx_markdown"] = content
+    elif artifact_key == "raci_markdown":
+        payload["raci_markdown"] = content
+    elif artifact_key == "sop_markdown":
+        payload["sop_markdown"] = content
+
+    if artifact_key in {"narrative_md", "sop_markdown"}:
+        try:
+            out = DeliverableRegistry.get("docx").render(payload, run_dir, branding=branding)
+            if out is not None:
+                regenerated.append("docx")
+            else:
+                errors.append("docx render returned None")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"docx: {exc}")
+
+    if artifact_key in {"narrative_md", "raci_markdown"}:
+        try:
+            out = DeliverableRegistry.get("xlsx").render(payload, run_dir, branding=branding)
+            if out is not None:
+                regenerated.append("xlsx")
+            else:
+                errors.append("xlsx render returned None")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"xlsx: {exc}")
+
+    if artifact_key == "process_map_mermaid":
+        payload["process_map_mermaid"] = content
+        try:
+            out = DeliverableRegistry.get("process_map").render(payload, run_dir, branding=branding)
+            if out is not None:
+                regenerated.append("process_map")
+            else:
+                errors.append("process_map render returned None")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"process_map: {exc}")
+
+    return {"regenerated": regenerated, "errors": errors, "run_id": run_id}
+
+
+@router.patch("/{project_id}/{run_id}/canvas")
+def save_canvas_artifact(
+    project_id: str,
+    run_id: str,
+    body: CanvasSaveRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    if body.artifact_key not in CANVAS_ARTIFACT_FILES:
+        raise HTTPException(status_code=400, detail=f"Unknown artifact key: {body.artifact_key}")
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    (run_dir / CANVAS_ARTIFACT_FILES[body.artifact_key]).write_text(body.content, encoding="utf-8")
+
+    regen: dict[str, object] = {"regenerated": [], "errors": []}
+    if body.artifact_key in {"narrative_md", "sop_markdown", "raci_markdown", "process_map_mermaid"}:
+        try:
+            regen = _regenerate_office_from_canvas(
+                project_id=project_id,
+                run_id=run_id,
+                run_dir=run_dir,
+                artifact_key=body.artifact_key,
+                content=body.content,
+                db=db,
+            )
+        except Exception as exc:  # noqa: BLE001 — save still succeeded
+            regen = {"regenerated": [], "errors": [str(exc)]}
+
+    try:
+        from app.services.run_events import append_run_event
+
+        append_run_event(
+            db,
+            run_id,
+            "canvas_artifact_saved",
+            {
+                "artifact_key": body.artifact_key,
+                "regenerated": regen.get("regenerated") or [],
+                "regen_errors": regen.get("errors") or [],
+            },
+        )
+        db.commit()
+    except Exception:  # noqa: S110 — event append is best-effort after patch
+        pass
+
+    return {
+        "ok": True,
+        "artifact_key": body.artifact_key,
+        "regenerated": regen.get("regenerated") or [],
+        "regen_errors": regen.get("errors") or [],
+    }
+
+
+@router.get("/{project_id}/{run_id}/evidence-claims")
+def get_evidence_claims(
+    project_id: str,
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    from app.services.evidence_claims import load_claims_dossier, write_claims_dossier
+
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    dossier = load_claims_dossier(run_dir)
+    # Bootstrap from the last PPTX QA report when the dossier was never written
+    # (runs that finished before Phase 3, or soft-fail renders).
+    if not dossier.get("claims"):
+        qa = _read_json(run_dir / "pptx_render_quality.json")
+        if isinstance(qa, dict) and isinstance(qa.get("evidence"), dict):
+            dossier = write_claims_dossier(run_dir, qa["evidence"], source="pptx")
+    return {"run_id": run_id, "project_id": project_id, **dossier}
+
+
+@router.post("/{project_id}/{run_id}/evidence-claims")
+def update_evidence_claims(
+    project_id: str,
+    run_id: str,
+    body: EvidenceClaimsUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    from app.services.evidence_claims import apply_claim_decisions
+
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    decisions = [d.model_dump() for d in body.decisions]
+    dossier = apply_claim_decisions(run_dir, decisions, actor=str(user.email or user.id))
+    return {"run_id": run_id, "project_id": project_id, **dossier}
+
+
+@router.get("/{project_id}/{run_id}/artifacts/pptx/download")
+def download_run_pptx(
+    project_id: str,
+    run_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stream output.pptx directly from the run workspace (canonical on-disk artifact)."""
+    require_project_role(project_id, {"Owner", "Editor", "Viewer"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    pptx_path = run_dir / "output.pptx"
+    if not pptx_path.is_file():
+        raise HTTPException(status_code=404, detail="PPTX output not found for this run")
+
+    check = verify_pptx_on_disk(run_dir)
+    if not check.get("ok"):
+        raise HTTPException(status_code=404, detail="PPTX output not available")
+
+    process_meta = {}
+    pm = _read_json(run_dir / "process_model.json")
+    if isinstance(pm, dict) and isinstance(pm.get("metadata"), dict):
+        process_meta = pm["metadata"]
+    project = db.scalar(select(Project).where(Project.id == project_id))
+    project_name = str(project.name or "").strip() if project else ""
+    client_hint = str(process_meta.get("client_name") or "").strip()
+    client_name = _tokenize_filename(client_hint or project_name or "Client")
+    run_date = run.created_at.date().strftime("%Y%m%d") if run.created_at else "UnknownDate"
+    filename = f"{client_name}_ExecutiveDeck_{run_date}.pptx"
+
+    return FileResponse(
+        path=str(pptx_path),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        filename=filename,
     )
 
 

@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,28 @@ SWARM_WORKER_PREAMBLE = (
     "You are a WORKER teammate in a swarm: pick up assigned tasks, use tools, report completion. "
     "Do not spawn sub-agents or delegate to other orchestrators. If blocked, report a clear blocker."
 )
+
+# Lead preamble — coordination-focused, can create/modify tasks and broadcast to workers.
+SWARM_LEAD_PREAMBLE = (
+    "You are the LEAD teammate in a swarm. Decompose the run goal into tasks "
+    "(swarm_create_task), assign them to workers via swarm_broadcast, monitor status "
+    "(swarm_list_tasks), escalate blockers, and synthesize final output. "
+    "Delegate hands-on generation — do not perform it yourself."
+)
+
+
+def get_teammate_role(*, run_id: str, teammate_id: str) -> str:
+    """Return 'lead' or 'worker' for a teammate; falls back to 'worker' on any error."""
+    from app.db.session import SessionLocal
+
+    try:
+        with SessionLocal() as session:
+            for m in list_teammates(session, run_id=run_id):
+                if m.teammate_id == teammate_id:
+                    return str(m.role or "worker").strip().lower()
+    except Exception as exc:
+        _LOG.warning("%s: suppressed error: %s", 'get_teammate_role', exc)
+    return "worker"
 
 
 def enrich_run_todos_with_dependencies(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -173,7 +196,7 @@ def ensure_swarm_team(session: Session, *, project_id: str, run_id: str) -> Swar
         project_id=project_id,
         name="default",
         status="active",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(IST).replace(tzinfo=None),
     )
     session.add(team)
     session.flush()
@@ -185,7 +208,7 @@ def ensure_swarm_team(session: Session, *, project_id: str, run_id: str) -> Swar
                 teammate_id=slug,
                 role="worker" if i else "lead",
                 status="idle",
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(IST).replace(tzinfo=None),
             )
         )
     session.flush()
@@ -223,7 +246,7 @@ def send_swarm_message(
         to_teammate=to_teammate,
         body=body[:16000],
         correlation_id=correlation_id,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(IST).replace(tzinfo=None),
         read_at=None,
     )
     session.add(msg)

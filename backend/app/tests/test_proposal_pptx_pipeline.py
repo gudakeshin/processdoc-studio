@@ -698,9 +698,13 @@ class TestImprovements:
             coordinator._apply_qa_remediation(state, ["pptx"], remediation_instructions)
 
         ac = state["assembled_context"]
-        # Remediation should be at the START, not truncated at the end
-        # Check for personality-formatted remediation header ("⚠️ **Quick optimization round:**")
-        assert (ac.startswith("[Quality Remediation") or ac.startswith("⚠️ **Quick optimization round:**")), (
+        # Remediation should be at the START, not truncated at the end.
+        # wrap_qa_feedback() wraps the personality block in [[QA_FEEDBACK_START]] sentinels.
+        assert (
+            ac.startswith("[Quality Remediation")
+            or ac.startswith("⚠️ **Quick optimization round:**")
+            or ac.startswith("[[QA_FEEDBACK_START]]")
+        ), (
             f"Remediation should be prepended. Got: {ac[:100]}..."
         )
         assert "Risks and Mitigations" in ac[:500], (

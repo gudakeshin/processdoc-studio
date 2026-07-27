@@ -13,7 +13,8 @@ Automatically fixes common wiki data issues:
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -67,7 +68,7 @@ class DataCorrector:
 
         # Fix missing last_updated
         if "last_updated" not in frontmatter:
-            now_iso = datetime.now(UTC).isoformat()
+            now_iso = datetime.now(IST).isoformat()
             frontmatter["last_updated"] = now_iso
             corrections.append("Set last_updated to now")
 

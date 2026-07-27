@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
+from app.core.tz import IST
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -30,6 +32,8 @@ from app.services.swarm import (
 from app.services.swarm_scheduler import SwarmScheduler
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _swarm_enabled() -> None:
@@ -162,7 +166,7 @@ def swarm_create_task(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     row = RunTask(
         id=tid,
         run_id=run_id,
@@ -217,7 +221,7 @@ def swarm_patch_task(
         task.assigned_teammate_id = body.assigned_teammate_id or None
     if body.priority is not None:
         task.priority = int(body.priority)
-    task.updated_at = datetime.utcnow()
+    task.updated_at = datetime.now(IST).replace(tzinfo=None)
     db.flush()
     increment("swarm_task_patch_total")
     append_run_event(db, run_id, "swarm.task_updated", {"task_id": task_id, "status": task.status})
@@ -321,6 +325,7 @@ def swarm_lead_plan_preview(
     try:
         wanted = json.loads(run.output_types or "[]")
     except json.JSONDecodeError:
+        logger.warning("run %s has malformed output_types; defaulting to empty plan", run_id)
         wanted = []
     if not isinstance(wanted, list):
         wanted = []

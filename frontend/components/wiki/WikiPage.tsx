@@ -10,6 +10,7 @@ import dynamic from 'next/dynamic';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { WikiTabNav } from './WikiTabNav';
+import { WikiPagePreview } from './WikiPagePreview';
 import { confidenceClass } from '@/utils/wikiColors';
 
 const WikiRelationships = dynamic(
@@ -48,32 +49,61 @@ interface WikiPageProps {
 export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId, onBack, onSelectPage }) => {
   const { api } = useAuth();
   const webEditEnabled = process.env.NEXT_PUBLIC_WIKI_WEB_EDIT_ENABLED === 'true';
+  const storylineEnabled = process.env.NEXT_PUBLIC_WIKI_STORYLINE_CANVAS_ENABLED === 'true';
   const [page, setPage]       = useState<PageMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'content' | 'links' | 'relationships' | 'metadata'>('content');
+  const [activeTab, setActiveTab] = useState<'content' | 'links' | 'relationships' | 'related' | 'metadata'>('content');
+  const [relatedPages, setRelatedPages] = useState<Array<{page_id: string; relation_type: string; confidence: number; source: string}> | null>(null);
+  const [relatedLoading, setRelatedLoading] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    const ac = new AbortController();
     const fetchPage = async () => {
       try {
         setLoading(true);
         setError(null);
         const params = new URLSearchParams();
         if (projectId) params.append('project_id', projectId);
-        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}?${params}`);
+        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}?${params}`, { signal: ac.signal });
         if (!res.ok) throw new Error(res.status === 404 ? 'Page not found' : `Failed to load page (${res.status})`);
         const data = await res.json();
-        if (!cancelled) setPage(data.page);
+        setPage(data.page);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Unknown error');
+        if (e instanceof Error && e.name === 'AbortError') return;
+        setError(e instanceof Error ? e.message : 'Unknown error');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!ac.signal.aborted) setLoading(false);
       }
     };
     fetchPage();
-    return () => { cancelled = true; };
+    return () => { ac.abort(); };
   }, [wikiType, pageId, projectId, api]);
+
+  // Fetch related pages when the "related" tab is opened
+  useEffect(() => {
+    if (activeTab !== 'related' || !pageId || relatedPages !== null) return;
+
+    const ac = new AbortController();
+    const fetchRelated = async () => {
+      try {
+        setRelatedLoading(true);
+        const params = new URLSearchParams();
+        if (projectId) params.append('project_id', projectId);
+        const res = await api(`/api/wiki/${wikiType}/pages/${pageId}/related?${params}`, { signal: ac.signal });
+        if (!res.ok) throw new Error(`Failed to load related pages (${res.status})`);
+        const data = await res.json();
+        setRelatedPages(data.related_pages || []);
+      } catch (e) {
+        if (e instanceof Error && e.name === 'AbortError') return;
+        console.warn('Failed to load related pages:', e);
+      } finally {
+        if (!ac.signal.aborted) setRelatedLoading(false);
+      }
+    };
+    fetchRelated();
+    return () => { ac.abort(); };
+  }, [activeTab, pageId, projectId, api, relatedPages, wikiType]);
 
   if (loading) return (
     <div className="space-y-3">
@@ -100,15 +130,16 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
     return (
       <div className="space-y-1">
         {links.map((link) => (
-          <button
-            key={`${link.type}-${link.id}`}
-            type="button"
-            onClick={() => onSelectPage?.(link.id)}
-            disabled={!onSelectPage}
-            className="w-full text-left text-xs text-[var(--accent-blue)] py-1 border-b border-[var(--surface-border)] hover:underline disabled:text-[var(--text-muted)] disabled:no-underline"
-          >
-            {link.title}
-          </button>
+          <WikiPagePreview key={`${link.type}-${link.id}`} pageId={link.id} wikiType={wikiType} projectId={projectId} trigger="hover">
+            <button
+              type="button"
+              onClick={() => onSelectPage?.(link.id)}
+              disabled={!onSelectPage}
+              className="w-full text-left text-xs text-[var(--accent-blue)] py-1 border-b border-[var(--surface-border)] hover:underline disabled:text-[var(--text-muted)] disabled:no-underline"
+            >
+              {link.title}
+            </button>
+          </WikiPagePreview>
         ))}
       </div>
     );
@@ -124,15 +155,16 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
           const targetId = m[1];
           const label = m[2] ?? m[1];
           return (
-            <button
-              key={`${idx}-${targetId}`}
-              type="button"
-              className="text-[var(--accent-blue)] hover:underline"
-              onClick={() => onSelectPage?.(targetId)}
-              disabled={!onSelectPage}
-            >
-              {label}
-            </button>
+            <WikiPagePreview key={`${idx}-${targetId}`} pageId={targetId} wikiType={wikiType} projectId={projectId} trigger="hover">
+              <button
+                type="button"
+                className="text-[var(--accent-blue)] hover:underline"
+                onClick={() => onSelectPage?.(targetId)}
+                disabled={!onSelectPage}
+              >
+                {label}
+              </button>
+            </WikiPagePreview>
           );
         })}
       </div>
@@ -166,6 +198,9 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
           {wikiType === 'project' && (
             <Button variant="secondary" className="text-xs px-3 py-1.5">Promote to LP</Button>
           )}
+          {storylineEnabled && (
+            <Button variant="ghost" className="text-xs px-3 py-1.5">Edit Storyline</Button>
+          )}
         </div>
       </div>
 
@@ -175,6 +210,7 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
           { key: 'content',       label: 'Content' },
           { key: 'links',         label: `Links (${page.inbound_links.length + page.outbound_links.length})` },
           { key: 'relationships', label: 'Relationships' },
+          { key: 'related',       label: 'Related Pages' },
           { key: 'metadata',      label: 'Metadata' },
         ]}
         activeTab={activeTab}
@@ -208,6 +244,53 @@ export const WikiPage: React.FC<WikiPageProps> = ({ wikiType, pageId, projectId,
       {activeTab === 'relationships' && (
         <div className="pt-2 border-t border-[var(--surface-border)]">
           <WikiRelationships wikiType={wikiType} pageId={page.id} projectId={projectId} />
+        </div>
+      )}
+
+      {/* Related Pages (graph-discovered connections: neighbors + community + synthesis) */}
+      {activeTab === 'related' && (
+        <div className="pt-2 space-y-4">
+          {relatedLoading ? (
+            <p className="text-xs text-[var(--text-muted)]">Loading connected pages…</p>
+          ) : relatedPages && relatedPages.length > 0 ? (
+            <>
+              {/* Group by source */}
+              {['relationship', 'community', 'synthesis'].map((source) => {
+                const items = relatedPages.filter(p => p.source === source);
+                if (items.length === 0) return null;
+
+                const sourceEmoji = { relationship: '🔗', community: '🏘️', synthesis: '✨' }[source as 'relationship' | 'community' | 'synthesis'] ?? '';
+                const sourceText = { relationship: 'Typed Relationships', community: 'Community Peers', synthesis: 'Synthesis Pages' }[source as 'relationship' | 'community' | 'synthesis'] ?? source;
+                const sourceLabel = sourceText;
+
+                return (
+                  <div key={source}>
+                    <p className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wide mb-2">
+                      <span aria-hidden="true">{sourceEmoji} </span>{sourceLabel}
+                    </p>
+                    <div className="space-y-1">
+                      {items.map((rel) => (
+                        <button
+                          key={`${rel.page_id}-${source}`}
+                          type="button"
+                          onClick={() => onSelectPage?.(rel.page_id)}
+                          disabled={!onSelectPage}
+                          className="w-full text-left text-xs text-[var(--accent-blue)] py-1 px-2 border-b border-[var(--surface-border)] hover:underline disabled:text-[var(--text-muted)] disabled:no-underline bg-[var(--surface-muted)] rounded"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span>{rel.page_id}</span>
+                            <span className="text-[10px] text-[var(--text-muted)] capitalize">{rel.relation_type}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            <p className="text-xs text-[var(--text-muted)]">No related pages discovered</p>
+          )}
         </div>
       )}
 

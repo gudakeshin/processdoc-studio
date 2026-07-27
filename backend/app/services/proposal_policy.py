@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import logging
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 PROPOSAL_SKILL_ID = "proposal_finance_transformation_v1"
 PROPOSAL_OUTPUT_TYPES: tuple[str, ...] = ("docx", "pptx", "pdf")
@@ -106,12 +112,68 @@ def derive_proposal_skill_targets(
     return targets
 
 
+def _discovery_brief(discovery: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalise discovery into a compact brief the outline generators can use."""
+    discovery = discovery if isinstance(discovery, dict) else {}
+    length_budget = discovery.get("length_budget") if isinstance(discovery.get("length_budget"), dict) else {}
+    client = discovery.get("client") if isinstance(discovery.get("client"), dict) else {}
+    outcome = discovery.get("outcome") if isinstance(discovery.get("outcome"), dict) else {}
+    win_themes = discovery.get("win_themes") if isinstance(discovery.get("win_themes"), list) else []
+    win_themes_text = ", ".join(str(x).strip() for x in win_themes if str(x).strip())[:300]
+    return {
+        "audience": str(discovery.get("audience") or "mixed").strip(),
+        "narrative_arc": str(discovery.get("narrative_arc") or "pyramid").strip(),
+        "tone": str(discovery.get("tone") or "consultative").strip(),
+        "win_themes_text": win_themes_text or "N/A",
+        "client_name": str(client.get("name") or "").strip() or "Unnamed client",
+        "client_industry": str(client.get("industry") or "").strip() or "unspecified industry",
+        "outcome_primary": str(outcome.get("primary") or "").strip(),
+        "outcome_decision": str(outcome.get("decision") or "").strip(),
+        "length_budget": length_budget,
+    }
+
+
+def _storyline_arc_from_memory(
+    *,
+    db: "Session | None",
+    project_id: str | None,
+) -> str:
+    if db is None or not project_id:
+        return ""
+    try:
+        import json
+        from app.db.models import MemoryItem
+
+        row = (
+            db.query(MemoryItem)
+            .filter(
+                MemoryItem.project_id == project_id,
+                MemoryItem.memory_type == "decision",
+                MemoryItem.key == "storyline_arc",
+                MemoryItem.is_archived.is_(False),
+            )
+            .order_by(MemoryItem.updated_at.desc())
+            .first()
+        )
+        if not row:
+            return ""
+        payload = json.loads(row.value or "{}")
+        if isinstance(payload, dict):
+            return str(payload.get("arc") or "").strip().lower()
+    except Exception:
+        return ""
+    return ""
+
+
 def generate_deck_outline_preview(
     *,
     instruction: str,
     output_type: str = "pptx",
     skill_id: str | None = None,
     discovery: dict[str, Any] | None = None,
+    project_context: str | None = None,
+    db: "Session | None" = None,
+    project_id: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Generate a lightweight slide outline preview during plan creation.
@@ -119,7 +181,32 @@ def generate_deck_outline_preview(
     Returns a dict with 'slides' (list of {title, slide_type, purpose}) and
     'rationale' explaining the structure. Returns None if Claude is unavailable
     or the call fails — callers should treat this as optional enrichment.
+
+    When ``project_context`` is provided (typically a planner excerpt built from
+    wiki pages + project memory) the outline is grounded in that content.
     """
+    # When the user has collaboratively agreed on a deck structure, use those
+    # decisions directly rather than re-generating the outline from scratch.
+    if db is not None and project_id:
+        try:
+            from app.services.slide_negotiator import assemble_outline_from_decisions
+            agreed_slides = assemble_outline_from_decisions(db, project_id=project_id)
+            if agreed_slides:
+                return {
+                    "slides": agreed_slides,
+                    "rationale": "Assembled from collaboratively agreed slide decisions.",
+                    "output_type": output_type,
+                    "skill_id": skill_id or PROPOSAL_SKILL_ID,
+                    "source": "collaborative_decisions",
+                    "narrative_arc": str(
+                        (discovery or {}).get("narrative_arc")
+                        or _storyline_arc_from_memory(db=db, project_id=project_id)
+                        or ""
+                    ).strip().lower(),
+                }
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", 'generate_deck_outline_preview', exc)
+
     try:
         from app.services.claude import claude_generate_json, is_claude_enabled
     except ImportError:
@@ -130,42 +217,53 @@ def generate_deck_outline_preview(
     contract = proposal_prompt_contract(output_type, skill_id=skill_id)
     sections = contract.get("sections") or []
 
-    discovery = discovery if isinstance(discovery, dict) else {}
-    length_budget = discovery.get("length_budget") if isinstance(discovery.get("length_budget"), dict) else {}
+    brief = _discovery_brief(discovery)
+    discovery_arc = ""
+    if isinstance(discovery, dict):
+        discovery_arc = str(discovery.get("narrative_arc") or "").strip().lower()
+    if not discovery_arc:
+        mem_arc = _storyline_arc_from_memory(db=db, project_id=project_id)
+        if mem_arc:
+            brief["narrative_arc"] = mem_arc
+    length_budget = brief["length_budget"]
     target_slides = int(length_budget.get("pptx")) if str(length_budget.get("pptx") or "").isdigit() else 10
     target_slides = max(6, min(target_slides, 20))
-    audience = str(discovery.get("audience") or "mixed").strip()
-    narrative_arc = str(discovery.get("narrative_arc") or "pyramid").strip()
-    tone = str(discovery.get("tone") or "consultative").strip()
-    win_themes = discovery.get("win_themes") if isinstance(discovery.get("win_themes"), list) else []
-    win_themes_text = ", ".join(str(x).strip() for x in win_themes if str(x).strip())[:300]
 
     system = (
-        "You are a presentation strategist. Given a user instruction and required sections, "
-        "produce a slide outline for a PowerPoint deck. Return JSON with keys:\n"
+        "You are a presentation strategist. Given a user instruction, required sections, "
+        "and any project context (wiki excerpts, memory), produce a slide outline "
+        "for a PowerPoint deck. Return JSON with keys:\n"
         "  slides: [{title: string, slide_type: string, purpose: string}]\n"
         "  rationale: string (1 sentence explaining the deck structure)\n"
-        "slide_type must be one of: title, bullets, stat_cards, column_cards, stack_layers, table, chart, section_divider.\n"
+        "slide_type must be one of: title, bullets, stat_cards, column_cards, stack_layers, table, chart, big_number, process_flow, section_divider.\n"
         "purpose: 1 sentence (≤20 words) describing what the slide communicates.\n"
+        "Titles must be specific and reference the client or their context when available — "
+        "avoid generic headers like 'Introduction' or 'Our Approach'.\n"
         f"Produce exactly {target_slides} slides. Always start with a title slide and end with a next-steps slide."
     )
+    ctx_block = ""
+    if project_context:
+        ctx_block = f"\n\nProject context (wiki + memory):\n{project_context[:4000]}\n"
     user = (
         f"Instruction: {instruction}\n\n"
         f"Required sections to cover: {', '.join(sections)}\n\n"
-        f"Audience: {audience}\n"
-        f"Narrative arc: {narrative_arc}\n"
-        f"Tone: {tone}\n"
-        f"Win themes: {win_themes_text or 'N/A'}\n\n"
+        f"Client: {brief['client_name']} ({brief['client_industry']})\n"
+        f"Audience: {brief['audience']}\n"
+        f"Narrative arc: {brief['narrative_arc']}\n"
+        f"Tone: {brief['tone']}\n"
+        f"Desired outcome: {brief['outcome_primary'] or 'N/A'}\n"
+        f"Decision to drive: {brief['outcome_decision'] or 'N/A'}\n"
+        f"Win themes: {brief['win_themes_text']}"
+        f"{ctx_block}\n"
         "Generate the slide outline."
     )
     try:
-        payload = claude_generate_json(system=system, user=user, temperature=0.3, max_tokens=1200)
+        payload = claude_generate_json(system=system, user=user, temperature=0.3, max_tokens=1400)
         if not isinstance(payload, dict):
             return None
         slides = payload.get("slides")
         if not isinstance(slides, list) or not slides:
             return None
-        # Validate and normalize each slide entry
         outline_slides = []
         for s in slides:
             if not isinstance(s, dict):
@@ -182,8 +280,125 @@ def generate_deck_outline_preview(
             "rationale": str(payload.get("rationale") or ""),
             "output_type": output_type,
             "skill_id": skill_id or PROPOSAL_SKILL_ID,
+            "narrative_arc": str(brief.get("narrative_arc") or "").strip().lower(),
         }
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'generate_deck_outline_preview', exc)
+        return None
+
+
+def generate_document_outline_preview(
+    *,
+    instruction: str,
+    skill_id: str | None = None,
+    discovery: dict[str, Any] | None = None,
+    project_context: str | None = None,
+) -> dict[str, Any] | None:
+    """
+    Generate a lightweight document (DOCX) outline preview during plan creation.
+
+    Returns a dict with ``sections`` (list of
+    ``{heading, purpose, key_points, evidence_pointer}``), a ``rationale`` string
+    and a suggested ``target_pages``. Returns ``None`` if Claude is unavailable or
+    the call fails — callers should treat this as optional enrichment.
+    """
+    try:
+        from app.services.claude import claude_generate_json, is_claude_enabled
+    except ImportError:
+        return None
+    if not is_claude_enabled():
+        return None
+
+    contract = proposal_prompt_contract("docx", skill_id=skill_id)
+    sections_hint = contract.get("sections") or []
+
+    brief = _discovery_brief(discovery)
+    length_budget = brief["length_budget"]
+    target_pages = int(length_budget.get("docx_pages")) if str(length_budget.get("docx_pages") or "").isdigit() else 8
+    target_pages = max(4, min(target_pages, 20))
+
+    system = (
+        "You are a consulting-grade document strategist. Given a user instruction, the required "
+        "section scaffold, and any project context (wiki + memory excerpts), produce a DOCX "
+        "storyline outline. Return JSON with keys:\n"
+        "  sections: [{heading: string, purpose: string, key_points: [string], evidence_pointer: string}]\n"
+        "  rationale: string (1 sentence explaining how the arc lands the decision)\n"
+        "  target_pages: number (integer, your recommended page count)\n"
+        "Guidelines:\n"
+        "- Headings must be specific to the client and their context — no generic 'Introduction'.\n"
+        "- purpose: 1 sentence describing what this section persuades or informs.\n"
+        "- key_points: 2–4 short phrases (≤12 words each) capturing the concrete substance.\n"
+        "- evidence_pointer: short reference to what grounds this section "
+        "(e.g. 'Wiki: Finance Ops Baseline', 'Client interview notes', 'Benchmark data').\n"
+        "- Start with an executive summary section and end with recommended next steps.\n"
+        f"- Aim for roughly {target_pages} pages overall, with 5–9 sections."
+    )
+    ctx_block = ""
+    if project_context:
+        ctx_block = f"\n\nProject context (wiki + memory):\n{project_context[:4000]}\n"
+    user = (
+        f"Instruction: {instruction}\n\n"
+        f"Required section scaffold: {', '.join(sections_hint) if sections_hint else 'N/A'}\n\n"
+        f"Client: {brief['client_name']} ({brief['client_industry']})\n"
+        f"Audience: {brief['audience']}\n"
+        f"Narrative arc: {brief['narrative_arc']}\n"
+        f"Tone: {brief['tone']}\n"
+        f"Desired outcome: {brief['outcome_primary'] or 'N/A'}\n"
+        f"Decision to drive: {brief['outcome_decision'] or 'N/A'}\n"
+        f"Win themes: {brief['win_themes_text']}"
+        f"{ctx_block}\n"
+        "Generate the document outline."
+    )
+    try:
+        payload = claude_generate_json(system=system, user=user, temperature=0.3, max_tokens=1500)
+        if not isinstance(payload, dict):
+            return None
+        raw_sections = payload.get("sections")
+        if not isinstance(raw_sections, list) or not raw_sections:
+            return None
+        sections_out: list[dict[str, Any]] = []
+        for section in raw_sections:
+            if not isinstance(section, dict):
+                continue
+            heading = str(section.get("heading") or "").strip()
+            if not heading:
+                continue
+            purpose = str(section.get("purpose") or "").strip()
+            raw_points = section.get("key_points")
+            key_points: list[str] = []
+            if isinstance(raw_points, list):
+                for kp in raw_points:
+                    text = str(kp or "").strip()
+                    if text:
+                        key_points.append(text[:200])
+                    if len(key_points) >= 6:
+                        break
+            evidence_pointer = str(section.get("evidence_pointer") or "").strip()
+            sections_out.append(
+                {
+                    "heading": heading[:240],
+                    "purpose": purpose[:280],
+                    "key_points": key_points,
+                    "evidence_pointer": evidence_pointer[:240],
+                }
+            )
+        if not sections_out:
+            return None
+        resolved_pages = payload.get("target_pages")
+        try:
+            resolved_pages_int = int(resolved_pages)
+        except (TypeError, ValueError):
+            resolved_pages_int = target_pages
+        resolved_pages_int = max(3, min(resolved_pages_int, 30))
+        return {
+            "sections": sections_out,
+            "rationale": str(payload.get("rationale") or ""),
+            "target_pages": resolved_pages_int,
+            "output_type": "docx",
+            "skill_id": skill_id or PROPOSAL_SKILL_ID,
+        }
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", 'generate_document_outline_preview', exc)
         return None
 
 

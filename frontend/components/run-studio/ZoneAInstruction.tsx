@@ -9,12 +9,16 @@ import { CoordinatorWikiContext } from "@/components/wiki/CoordinatorWikiContext
 type DecisionPrompt = {
   id: string;
   label: string;
+  description?: string;
   mode: "single_select" | "multi_select";
   required?: boolean;
   min_select?: number;
-  options: Array<{ value: string; label: string }>;
+  allow_custom?: boolean;
+  custom_placeholder?: string;
+  options: Array<{ value: string; label: string; description?: string }>;
   selected_values?: string[];
 };
+type DecisionAnswerValue = { selected_values?: string[]; free_text?: string };
 type ThinkingTraceItem = {
   id: string;
   text: string;
@@ -45,6 +49,156 @@ function UserAvatarBubble() {
       <span className="text-2xs font-bold text-white" aria-hidden>
         You
       </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Collaborative building: arc proposal, slide proposal, structure summary
+// ---------------------------------------------------------------------------
+type ArcItem = {
+  arc_key: string;
+  name: string;
+  structure: string;
+  reasoning: string;
+  lp_evidence?: string;
+  is_recommended?: boolean;
+};
+
+function ArcProposalCard({
+  arcs,
+  onSelect,
+}: {
+  arcs: ArcItem[];
+  onSelect: (arcKey: string) => void;
+}) {
+  return (
+    <div className="mt-2 space-y-2">
+      {arcs.map((arc) => (
+        <div
+          key={arc.arc_key}
+          className={`rounded-lg border p-3 ${
+            arc.is_recommended
+              ? "border-[var(--primary-600)] bg-[var(--primary-50)]"
+              : "border-[var(--surface-border)] bg-white"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-xs font-semibold text-[var(--text-default)]">
+                {arc.name}
+                {arc.is_recommended && (
+                  <span className="ml-1.5 rounded bg-[var(--primary-600)] px-1.5 py-0.5 text-2xs font-medium text-white">
+                    Recommended
+                  </span>
+                )}
+              </p>
+              <p className="mt-0.5 text-2xs text-[var(--text-muted)]">{arc.reasoning}</p>
+              {arc.lp_evidence && (
+                <p className="mt-1 text-2xs italic text-[var(--text-subtle)]">
+                  LP: {arc.lp_evidence.slice(0, 100)}…
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => onSelect(arc.arc_key)}
+              className="shrink-0 rounded bg-[var(--primary-800)] px-2.5 py-1 text-2xs font-medium text-white hover:bg-[var(--primary-700)]"
+            >
+              Use this
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type SlideItem = {
+  slide_num: number;
+  title: string;
+  slide_type: string;
+  slide_type_label?: string;
+  key_message: string;
+  evidence_source?: string;
+  sheldon_view?: string;
+};
+
+function SlideProposalCard({
+  slide,
+  onAgree,
+  onModify,
+}: {
+  slide: SlideItem;
+  onAgree: () => void;
+  onModify: () => void;
+}) {
+  return (
+    <div className="mt-2 rounded-lg border border-[var(--surface-border)] bg-white p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="rounded bg-[var(--primary-100)] px-2 py-0.5 text-2xs font-semibold text-[var(--primary-800)]">
+          Slide {slide.slide_num}
+        </span>
+        <span className="text-2xs text-[var(--text-muted)]">{slide.slide_type_label || slide.slide_type}</span>
+      </div>
+      <p className="text-xs font-semibold text-[var(--text-default)]">{slide.title}</p>
+      <p className="mt-0.5 text-2xs text-[var(--text-muted)]">
+        <span className="font-medium">Key message:</span> {slide.key_message}
+      </p>
+      {slide.evidence_source && (
+        <p className="mt-0.5 text-2xs text-[var(--text-muted)]">
+          <span className="font-medium">Evidence:</span> {slide.evidence_source}
+        </p>
+      )}
+      {slide.sheldon_view && (
+        <p className="mt-0.5 text-2xs italic text-[var(--text-subtle)]">{slide.sheldon_view}</p>
+      )}
+      <div className="mt-2 flex gap-2">
+        <button
+          onClick={onAgree}
+          className="rounded bg-[var(--primary-800)] px-3 py-1 text-2xs font-medium text-white hover:bg-[var(--primary-700)]"
+        >
+          ✓ Agree
+        </button>
+        <button
+          onClick={onModify}
+          className="rounded border border-[var(--surface-border)] px-3 py-1 text-2xs font-medium text-[var(--text-default)] hover:bg-[var(--surface-muted)]"
+        >
+          ✏ Modify
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StructureSummaryCard({
+  slides,
+  onBuild,
+}: {
+  slides: Array<{ slide_num: number; title: string; key_message?: string }>;
+  onBuild: () => void;
+}) {
+  return (
+    <div className="mt-2 rounded-lg border border-[var(--primary-300)] bg-[var(--primary-50)] p-3">
+      <p className="mb-2 text-xs font-semibold text-[var(--primary-900)]">Agreed deck structure</p>
+      <ol className="space-y-0.5">
+        {slides.map((s, idx) => (
+          <li key={`${s.slide_num}-${idx}`} className="flex items-start gap-1.5 text-2xs text-[var(--text-muted)]">
+            <span className="mt-0.5 h-4 w-4 shrink-0 rounded-full bg-[var(--primary-600)] text-center text-2xs font-bold leading-4 text-white">
+              {s.slide_num}
+            </span>
+            <span>
+              <span className="font-medium text-[var(--text-default)]">{s.title}</span>
+              {s.key_message ? ` — ${s.key_message}` : ""}
+            </span>
+          </li>
+        ))}
+      </ol>
+      <button
+        onClick={onBuild}
+        className="mt-3 w-full rounded bg-[var(--primary-800)] py-1.5 text-xs font-semibold text-white hover:bg-[var(--primary-700)]"
+      >
+        Build the deck
+      </button>
     </div>
   );
 }
@@ -191,7 +345,9 @@ export function ZoneAInstruction({
   openQuestions: string[];
   decisionPrompts: DecisionPrompt[];
   unresolvedPromptIds: string[];
-  onSubmitDecisions: (answers: Record<string, string[]>) => Promise<void>;
+  onSubmitDecisions: (
+    answers: Record<string, string[] | DecisionAnswerValue>
+  ) => Promise<void>;
   onUpdateOutline?: (slides: Array<{ title: string; slide_type: string; purpose?: string }>) => Promise<void>;
   decisionBusy: boolean;
   thinkingStatements?: string[];
@@ -222,7 +378,13 @@ export function ZoneAInstruction({
   const outlineSlides = Array.isArray(latestAssistantMeta?.deck_outline_preview?.slides)
     ? latestAssistantMeta?.deck_outline_preview?.slides
     : [];
+  const documentOutline = latestAssistantMeta?.document_outline_preview;
+  const documentSections = Array.isArray(documentOutline?.sections) ? documentOutline?.sections : [];
+  const wikiContextRefs = Array.isArray(latestAssistantMeta?.wiki_context_refs)
+    ? latestAssistantMeta?.wiki_context_refs?.filter((x) => typeof x === "string" && x.trim())
+    : [];
   const [decisionDraft, setDecisionDraft] = useState<Record<string, string[]>>({});
+  const [decisionCustom, setDecisionCustom] = useState<Record<string, string>>({});
   const [outlineDraft, setOutlineDraft] = useState<Array<{ title: string; slide_type: string; purpose?: string }>>([]);
   const [outlineDirty, setOutlineDirty] = useState(false);
 
@@ -235,6 +397,7 @@ export function ZoneAInstruction({
     }));
     setOutlineDraft(normalized);
     setOutlineDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed to plan_hash only; outlineSlides excluded to avoid feedback loops
   }, [latestAssistantMeta?.plan_hash]);
 
   // Auto-scroll to bottom when messages change or thinking indicator appears
@@ -294,7 +457,42 @@ export function ZoneAInstruction({
                 }`}
               >
                 {m.role === "assistant" ? (
-                  <div className="space-y-0.5">{renderMarkdown(m.content)}</div>
+                  <div className="space-y-0.5">
+                    {renderMarkdown(m.content)}
+                    {/* Arc proposal card */}
+                    {m.metadata?.kind === "arc_proposal" && Array.isArray(m.metadata.arcs) && (
+                      <ArcProposalCard
+                        arcs={m.metadata.arcs as ArcItem[]}
+                        onSelect={(arcKey) => {
+                          setChatInput(`I'd like to go with ${arcKey}`);
+                          void onSendChat();
+                        }}
+                      />
+                    )}
+                    {/* Slide proposal card */}
+                    {m.metadata?.kind === "slide_proposal" && m.metadata.slide && (
+                      <SlideProposalCard
+                        slide={m.metadata.slide as SlideItem}
+                        onAgree={() => {
+                          setChatInput("Agree");
+                          void onSendChat();
+                        }}
+                        onModify={() => {
+                          setChatInput(`Modify slide ${m.metadata?.slide?.slide_num}: `);
+                        }}
+                      />
+                    )}
+                    {/* Structure summary / build card */}
+                    {m.metadata?.kind === "structure_summary" && Array.isArray(m.metadata.slides) && (
+                      <StructureSummaryCard
+                        slides={m.metadata.slides as Array<{ slide_num: number; title: string; key_message?: string }>}
+                        onBuild={() => {
+                          setChatInput("Build it");
+                          void onSendChat();
+                        }}
+                      />
+                    )}
+                  </div>
                 ) : (
                   <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-white [overflow-wrap:anywhere]">
                     {m.content}
@@ -324,7 +522,9 @@ export function ZoneAInstruction({
           </div>
         ) : null}
 
-        {openQuestions.length > 0 ? (
+        {openQuestions.length > 0 && !showGuidedDecisions ? (
+          // Only show this inline bubble when the structured Plan Decisions panel
+          // is hidden — otherwise the panel is the single source of truth.
           <div className="flex items-end justify-start gap-2">
             <AssistantAvatar />
             <div className="max-w-[82%] rounded-lg rounded-bl-sm border border-[var(--surface-border)] bg-[var(--surface-muted)] px-3 py-2">
@@ -413,8 +613,31 @@ export function ZoneAInstruction({
         </div>
       )}
 
-      {showGuidedDecisions && (decisionPrompts.length > 0 || discovery || outlineDraft.length > 0) ? (
+      {showGuidedDecisions &&
+      (decisionPrompts.length > 0 ||
+        discovery ||
+        outlineDraft.length > 0 ||
+        (documentSections && documentSections.length > 0) ||
+        (wikiContextRefs && wikiContextRefs.length > 0)) ? (
         <div className="border-t border-[var(--surface-border)] px-4 py-3 space-y-3">
+          {wikiContextRefs && wikiContextRefs.length > 0 ? (
+            <div className="rounded border border-[var(--surface-border)] bg-[var(--info-light)] px-2 py-1.5">
+              <p className="text-2xs font-semibold text-[var(--text-default)]">
+                Grounded in your wiki
+              </p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {wikiContextRefs.map((ref, idx) => (
+                  <span
+                    key={`wiki-ref-${idx}`}
+                    className="rounded-full border border-[var(--surface-border)] bg-white px-2 py-0.5 text-2xs text-[var(--text-muted)]"
+                  >
+                    {ref}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {discovery ? (
             <div className="rounded border border-[var(--surface-border)] bg-[var(--surface-muted)] p-2">
               <p className="text-2xs font-semibold text-[var(--text-default)]">Discovery</p>
@@ -430,23 +653,84 @@ export function ZoneAInstruction({
           {decisionPrompts.length > 0 ? (
             <div className="rounded border border-[var(--surface-border)] p-2">
               <p className="text-2xs font-semibold text-[var(--text-default)]">Plan Decisions</p>
-              <div className="mt-2 space-y-2">
+              <p className="mt-0.5 text-2xs text-[var(--text-muted)]">
+                Pick the option that fits — or, where shown, type your own answer in the text field.
+              </p>
+              <div className="mt-2 space-y-3">
                 {decisionPrompts.map((prompt) => {
                   const selected = decisionDraft[prompt.id] ?? prompt.selected_values ?? [];
+                  const selectedValue = selected[0] ?? "";
+                  const selectedOption = prompt.options.find((opt) => opt.value === selectedValue);
+                  const customValue = decisionCustom[prompt.id] ?? "";
+                  const isUnresolved = unresolvedPromptIds.includes(prompt.id);
                   return (
-                    <label key={prompt.id} className="block text-2xs text-[var(--text-muted)]">
-                      <span className="mb-1 block">{prompt.label}</span>
+                    <div
+                      key={prompt.id}
+                      className={`rounded border px-2 py-2 ${
+                        isUnresolved
+                          ? "border-[var(--accent-blue)] bg-[var(--info-light)]"
+                          : "border-[var(--surface-border)] bg-white"
+                      }`}
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p
+                          id={`decision-prompt-${prompt.id}-label`}
+                          className="text-2xs font-semibold text-[var(--text-default)]"
+                        >
+                          {prompt.label}
+                          {prompt.required ? (
+                            <span className="ml-1 text-[var(--accent-blue)]">*</span>
+                          ) : null}
+                        </p>
+                        {isUnresolved ? (
+                          <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--accent-blue)]">
+                            Needs your input
+                          </span>
+                        ) : null}
+                      </div>
+                      {prompt.description ? (
+                        <p className="mt-0.5 text-2xs text-[var(--text-muted)]">{prompt.description}</p>
+                      ) : null}
                       <select
-                        className="w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-xs text-[var(--text-default)]"
-                        value={selected[0] ?? ""}
-                        onChange={(e) => setDecisionDraft((prev) => ({ ...prev, [prompt.id]: [e.target.value] }))}
+                        aria-labelledby={`decision-prompt-${prompt.id}-label`}
+                        className="mt-1.5 w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-xs text-[var(--text-default)]"
+                        value={selectedValue}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setDecisionDraft((prev) => ({ ...prev, [prompt.id]: next ? [next] : [] }));
+                          if (next) {
+                            setDecisionCustom((prev) => ({ ...prev, [prompt.id]: "" }));
+                          }
+                        }}
                       >
-                        <option value="">Select...</option>
+                        <option value="">Select…</option>
                         {prompt.options.map((opt) => (
                           <option key={opt.value} value={opt.value}>{opt.label}</option>
                         ))}
                       </select>
-                    </label>
+                      {selectedOption?.description ? (
+                        <p className="mt-1 text-2xs italic text-[var(--text-muted)]">
+                          {selectedOption.description}
+                        </p>
+                      ) : null}
+                      {prompt.allow_custom ? (
+                        <div className="mt-1.5">
+                          <input
+                            type="text"
+                            value={customValue}
+                            aria-labelledby={`decision-prompt-${prompt.id}-label`}
+                            placeholder={prompt.custom_placeholder || "Or type your own answer…"}
+                            className="w-full rounded border border-[var(--surface-border)] bg-white px-2 py-1 text-2xs text-[var(--text-default)]"
+                            onChange={(e) => {
+                              setDecisionCustom((prev) => ({ ...prev, [prompt.id]: e.target.value }));
+                              if (e.target.value.trim()) {
+                                setDecisionDraft((prev) => ({ ...prev, [prompt.id]: [] }));
+                              }
+                            }}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
                   );
                 })}
               </div>
@@ -457,12 +741,64 @@ export function ZoneAInstruction({
                 <Button
                   type="button"
                   disabled={decisionBusy}
-                  onClick={() => void onSubmitDecisions(decisionDraft)}
+                  onClick={() => {
+                    const payload: Record<string, DecisionAnswerValue> = {};
+                    for (const prompt of decisionPrompts) {
+                      const values = decisionDraft[prompt.id] ?? prompt.selected_values ?? [];
+                      const custom = (decisionCustom[prompt.id] || "").trim();
+                      if (values.length === 0 && !custom) continue;
+                      payload[prompt.id] = {
+                        selected_values: values,
+                        free_text: custom || undefined,
+                      };
+                    }
+                    void onSubmitDecisions(payload);
+                  }}
                   className="px-2 py-1 text-2xs"
                 >
                   {decisionBusy ? "Saving..." : "Save decisions"}
                 </Button>
               </div>
+            </div>
+          ) : null}
+
+          {documentSections && documentSections.length > 0 ? (
+            <div className="rounded border border-[var(--surface-border)] bg-white p-2">
+              <p className="text-2xs font-semibold text-[var(--text-default)]">
+                Proposed document storyline
+                {documentOutline?.target_pages ? (
+                  <span className="ml-1 text-2xs font-normal text-[var(--text-muted)]">
+                    (~{documentOutline.target_pages} pages)
+                  </span>
+                ) : null}
+              </p>
+              {documentOutline?.rationale ? (
+                <p className="mt-0.5 text-2xs italic text-[var(--text-muted)]">{documentOutline.rationale}</p>
+              ) : null}
+              <ol className="mt-1.5 list-decimal space-y-1.5 pl-4 text-2xs text-[var(--text-muted)]">
+                {documentSections.map((section, idx) => (
+                  <li key={`doc-section-${idx}`}>
+                    <span className="font-semibold text-[var(--text-default)]">
+                      {section?.heading || `Section ${idx + 1}`}
+                    </span>
+                    {section?.purpose ? (
+                      <span className="block italic">{section.purpose}</span>
+                    ) : null}
+                    {Array.isArray(section?.key_points) && section.key_points.length > 0 ? (
+                      <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                        {section.key_points.map((kp, kpi) => (
+                          <li key={`doc-section-${idx}-kp-${kpi}`}>{kp}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {section?.evidence_pointer ? (
+                      <span className="mt-0.5 block text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                        Evidence: {section.evidence_pointer}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
             </div>
           ) : null}
 
@@ -565,6 +901,7 @@ export function ZoneAInstruction({
             value={chatInput}
             onChange={(e) => setChatInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            aria-label="Chat message — Enter to send, Shift+Enter for newline"
             placeholder="Chat with Sheldon… (Enter to send · Shift+Enter for newline)"
             disabled={chatBusy}
             className="flex-1 resize-none text-xs"

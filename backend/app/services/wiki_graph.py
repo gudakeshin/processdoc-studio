@@ -8,9 +8,52 @@ import hashlib
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
+
+from app.core.config import settings
+from app.services.wiki_io import resolve_relationships_file
 
 _LOG = logging.getLogger(__name__)
+
+WIKI_META_SCHEMA_VERSION = 2
+
+
+def _schema_versioning_enabled() -> bool:
+    return bool(getattr(settings, "wiki_meta_schema_versioning_enabled", True))
+
+
+def _envelope(payload: dict) -> dict:
+    if not _schema_versioning_enabled():
+        return payload
+    return {
+        "schema_version": WIKI_META_SCHEMA_VERSION,
+        "data": payload,
+    }
+
+
+def _normalize_relationships_payload(raw: dict | None) -> dict:
+    payload = raw or {}
+    if "schema_version" in payload and isinstance(payload.get("data"), dict):
+        payload = payload["data"]
+    return {
+        "total": int(payload.get("total", len(payload.get("relationships", [])))),
+        "relationships": payload.get("relationships", []) if isinstance(payload.get("relationships"), list) else [],
+        "last_updated": payload.get("last_updated"),
+        "incremental_update": bool(payload.get("incremental_update", False)),
+        "changed_pages_count": int(payload.get("changed_pages_count", 0) or 0),
+    }
+
+
+def _normalize_graph_payload(raw: dict | None) -> dict:
+    payload = raw or {}
+    if "schema_version" in payload and isinstance(payload.get("data"), dict):
+        payload = payload["data"]
+    return {
+        "graph": payload.get("graph", {}),
+        "page_titles": payload.get("page_titles", {}),
+        "metadata": payload.get("metadata", {}),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +123,7 @@ def _extract_relationships(
                     "confidence": "EXPLICIT",
                     "confidence_score": 1.0,
                     "source_location": f"L{content[:match.start()].count(chr(10)) + 1}",
-                    "created_at": datetime.now(UTC).isoformat(),
+                    "created_at": datetime.now(IST).isoformat(),
                 })
 
         # Extract inferred links: page title mentions
@@ -105,7 +148,7 @@ def _extract_relationships(
                         "confidence": "INFERRED",
                         "confidence_score": confidence_score,
                         "source_location": f"L{content[:matches[0].start()].count(chr(10)) + 1}",
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(IST).isoformat(),
                     })
     except Exception as e:
         _LOG.warning(f"Error extracting relationships from {source_page_id}: {e}")
@@ -166,7 +209,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
             })
 
         # Pattern for cross-project wiki links
@@ -186,7 +229,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
             })
 
     except Exception as e:
@@ -265,7 +308,7 @@ def _build_cross_wiki_relationships(
             "lp_to_projects": lp_to_projects,
             "projects_to_lp": projects_to_lp,
             "total_links": len(lp_to_projects) + len(projects_to_lp),
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         _LOG.info(f"Built cross-wiki relationships: {len(lp_to_projects)} LP refs, {len(projects_to_lp)} Project refs")
@@ -385,15 +428,15 @@ def _save_persistent_graph(
 
         # Save graph
         graph_file = meta_dir / "graph.json"
-        graph_file.write_text(json.dumps({
+        graph_file.write_text(json.dumps(_envelope({
             "graph": graph_json,
             "page_titles": page_titles,
             "metadata": {
                 "node_count": G.number_of_nodes(),
                 "edge_count": G.number_of_edges(),
-                "last_updated": datetime.now(UTC).isoformat(),
+                "last_updated": datetime.now(IST).isoformat(),
             }
-        }, indent=2))
+        }), indent=2))
 
         _LOG.info(f"Saved persistent graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         return True
@@ -430,8 +473,12 @@ def _load_persistent_graph(
         if not graph_file.exists():
             return None, {}, None
 
-        graph_data = json.loads(graph_file.read_text())
-        G = json_graph.node_link_graph(graph_data["graph"])
+        graph_data = _normalize_graph_payload(json.loads(graph_file.read_text()))
+        # Payloads saved before networkx 3.6 use "links" for the edge list; newer
+        # saves use "edges" (the changed node_link default). Accept both.
+        graph_payload = graph_data["graph"]
+        edges_key = "links" if "links" in graph_payload else "edges"
+        G = json_graph.node_link_graph(graph_payload, edges=edges_key)
         page_titles = graph_data.get("page_titles", {})
         metadata = graph_data.get("metadata", {})
 
@@ -513,11 +560,11 @@ def _build_and_persist_relationships(
         meta_dir = wiki_dir / ".meta"
         meta_dir.mkdir(exist_ok=True)
         relationships_file = meta_dir / "relationships.json"
-        relationships_file.write_text(json.dumps({
+        relationships_file.write_text(json.dumps(_envelope({
             "total": len(all_relationships),
             "relationships": all_relationships,
-            "last_updated": datetime.now(UTC).isoformat(),
-        }, indent=2))
+            "last_updated": datetime.now(IST).isoformat(),
+        }), indent=2))
 
         # Detect communities from the relationship graph
         from app.services.wiki_analysis import (
@@ -608,7 +655,10 @@ def _load_page_manifest(wiki_type: str, project_id: str | None) -> dict:
         if not manifest_file.exists():
             return {"pages": {}, "last_full_rebuild": None, "relationships_version": 0}
 
-        return json.loads(manifest_file.read_text())
+        payload = json.loads(manifest_file.read_text())
+        if "schema_version" in payload and isinstance(payload.get("data"), dict):
+            payload = payload["data"]
+        return payload
 
     except Exception as e:
         _LOG.warning(f"Error loading page manifest: {e}")
@@ -638,7 +688,13 @@ def _save_page_manifest(wiki_type: str, project_id: str | None, manifest: dict) 
         meta_dir = wiki_dir / ".meta"
         meta_dir.mkdir(exist_ok=True)
         manifest_file = meta_dir / "page_manifest.json"
-        manifest_file.write_text(json.dumps(manifest, indent=2))
+        manifest_payload = manifest
+        if _schema_versioning_enabled():
+            manifest_payload = {
+                "schema_version": WIKI_META_SCHEMA_VERSION,
+                "data": manifest,
+            }
+        manifest_file.write_text(json.dumps(manifest_payload, indent=2))
         return True
 
     except Exception as e:
@@ -770,7 +826,7 @@ def _build_relationships_incremental(
             if old_rels.exists():
                 relationships_file = old_rels
         if relationships_file.exists():
-            existing_data = json.loads(relationships_file.read_text())
+            existing_data = _normalize_relationships_payload(json.loads(relationships_file.read_text()))
             all_relationships = existing_data.get("relationships", [])
         else:
             all_relationships = []
@@ -802,13 +858,13 @@ def _build_relationships_incremental(
                 pages_with_links += 1
 
         # Persist updated relationships to .meta/
-        (meta_dir / "relationships.json").write_text(json.dumps({
+        (meta_dir / "relationships.json").write_text(json.dumps(_envelope({
             "total": len(all_relationships),
             "relationships": all_relationships,
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
             "incremental_update": True,
             "changed_pages_count": len(changed_pages),
-        }, indent=2))
+        }), indent=2))
 
         # Only re-detect communities if significant changes
         from app.services.wiki_analysis import (
@@ -843,13 +899,13 @@ def _build_relationships_incremental(
             manifest["pages"][page_id] = {
                 "hash": page_data["hash"],
                 "title": page_data["title"],
-                "updated_at": datetime.now(UTC).isoformat(),
+                "updated_at": datetime.now(IST).isoformat(),
             }
         # Remove deleted pages from manifest
         for page_id in deleted_pages:
             manifest["pages"].pop(page_id, None)
 
-        manifest["last_full_rebuild"] = datetime.now(UTC).isoformat()
+        manifest["last_full_rebuild"] = datetime.now(IST).isoformat()
         manifest["relationships_version"] = manifest.get("relationships_version", 0) + 1
         _save_page_manifest(wiki_type, project_id, manifest)
 
@@ -912,14 +968,11 @@ def load_wiki_graph(wiki_type: str, project_id: str | None) -> tuple:
         else:
             wiki_dir = workspace_path(project_id) / "wiki"
 
-        # Check .meta/ first, fall back to old location
-        relationships_file = wiki_dir / ".meta" / "relationships.json"
-        if not relationships_file.exists():
-            relationships_file = wiki_dir / "relationships.json"
-        if not relationships_file.exists():
+        relationships_file = resolve_relationships_file(wiki_dir)
+        if relationships_file is None:
             return nx.Graph(), {}
 
-        rels_data = json.loads(relationships_file.read_text())
+        rels_data = _normalize_relationships_payload(json.loads(relationships_file.read_text()))
         relationships = rels_data.get("relationships", [])
 
         # Build graph
@@ -948,3 +1001,23 @@ def load_wiki_graph(wiki_type: str, project_id: str | None) -> tuple:
     except Exception as e:
         _LOG.error(f"Error loading wiki graph: {e}")
         return __import__("networkx").Graph(), {}
+
+
+def build_relationships(wiki_type: str, project_id: str | None) -> dict:
+    """Public entrypoint: full relationship rebuild + persistence."""
+    return _build_and_persist_relationships(wiki_type, project_id)
+
+
+def build_relationships_incremental(wiki_type: str, project_id: str | None) -> dict:
+    """Public entrypoint: incremental relationship rebuild + persistence."""
+    return _build_relationships_incremental(wiki_type, project_id)
+
+
+def load_persistent_graph(wiki_type: str, project_id: str | None) -> tuple:
+    """Public entrypoint: persistent graph load."""
+    return _load_persistent_graph(wiki_type, project_id)
+
+
+def detect_changed_pages(wiki_type: str, project_id: str | None) -> tuple:
+    """Public entrypoint: changed page detection used by orchestration/api."""
+    return _detect_changed_pages(wiki_type, project_id)

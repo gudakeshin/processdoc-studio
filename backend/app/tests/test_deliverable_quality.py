@@ -64,3 +64,21 @@ def test_deliverable_quality_loop_skips_without_binding() -> None:
     )
     assert report is None
     assert out == {"docx_markdown": "# x"}
+
+
+def test_pptx_storytelling_dimension_scores_when_configured() -> None:
+    contract = {
+        "_contract_id": "pptx_contract_test",
+        "pass_threshold": 0.75,
+        "dimensions": [
+            {"id": "story", "kind": "pptx_storytelling", "weight": 1.0, "min_visual_ratio": 0.5}
+        ],
+    }
+    slides = [
+        {"slide_type": "title", "title": "T"},
+        {"slide_type": "bullets", "title": "Overview", "bullets": ["a", "b", "c", "d", "e", "f", "g", "h"]},
+    ]
+    ev = _evaluate_one_output("pptx_slides", slides, contract, project_id=None)
+    storytelling = next(d for d in ev["dimensions"] if d["kind"] == "pptx_storytelling")
+    assert storytelling["score"] < 0.9
+    assert "issues" in storytelling["meta"]

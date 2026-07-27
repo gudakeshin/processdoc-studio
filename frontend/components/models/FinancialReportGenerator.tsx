@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/Input";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 
-type ReportFormat = "xlsx" | "pdf" | "png";
+type ReportFormat = "xlsx";
 type ReportType =
   | "variance"
   | "financial_statements"
@@ -33,7 +33,7 @@ export function FinancialReportGenerator({
 }) {
   const [state, setState] = useState<ReportGeneratorState>({
     reportType: "comprehensive",
-    format: "pdf",
+    format: "xlsx",
     title: "Financial Report",
     includeCharts: true,
     includeTables: true,
@@ -55,14 +55,6 @@ export function FinancialReportGenerator({
       xlsx: {
         label: "Excel",
         description: "Multi-sheet workbook with formulas",
-      },
-      pdf: {
-        label: "PDF",
-        description: "Formatted report with charts",
-      },
-      png: {
-        label: "Image",
-        description: "Charts as PNG files",
       },
     };
 
@@ -87,10 +79,11 @@ export function FinancialReportGenerator({
           <Card className="bg-white">
             <div className="space-y-4 p-4">
               <div>
-                <label className="block text-sm font-medium text-[#0F0B0B]">
+                <label htmlFor="frg-report-type" className="block text-sm font-medium text-[#0F0B0B]">
                   Report Type
                 </label>
                 <Select
+                  id="frg-report-type"
                   value={state.reportType}
                   onChange={(e) =>
                     setState({ ...state, reportType: e.target.value as ReportType })
@@ -114,10 +107,11 @@ export function FinancialReportGenerator({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-[#0F0B0B]">
+                <label htmlFor="frg-title" className="block text-sm font-medium text-[#0F0B0B]">
                   Report Title
                 </label>
                 <Input
+                  id="frg-title"
                   type="text"
                   value={state.title}
                   onChange={(e) => setState({ ...state, title: e.target.value })}
@@ -127,10 +121,10 @@ export function FinancialReportGenerator({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-[#0F0B0B]">
+                <span id="frg-export-format-label" className="block text-sm font-medium text-[#0F0B0B]">
                   Export Format
-                </label>
-                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                </span>
+                <div role="group" aria-labelledby="frg-export-format-label" className="mt-2 grid gap-2 sm:grid-cols-3">
                   {(Object.entries(formatInfo) as [ReportFormat, typeof formatInfo.xlsx][]).map(
                     ([format, info]) => (
                       <button
@@ -184,10 +178,11 @@ export function FinancialReportGenerator({
               </div>
 
               <div className="border-t border-[#f0f0f0] pt-4">
-                <label className="block text-sm font-medium text-[#0F0B0B]">
+                <label htmlFor="frg-recipients" className="block text-sm font-medium text-[#0F0B0B]">
                   Email Recipients (Optional)
                 </label>
                 <Input
+                  id="frg-recipients"
                   type="text"
                   value={state.recipients}
                   onChange={(e) =>
@@ -263,11 +258,11 @@ export function FinancialReportGenerator({
                 Quick Templates
               </p>
               {[
-                { label: "Monthly Review", type: "variance", format: "pdf" as const },
+                { label: "Monthly Review", type: "variance", format: "xlsx" as const },
                 {
                   label: "Board Presentation",
                   type: "comprehensive",
-                  format: "pdf" as const,
+                  format: "xlsx" as const,
                 },
                 { label: "Data Export", type: "financial_statements", format: "xlsx" as const },
               ].map((template) => (
@@ -331,9 +326,12 @@ export function FinancialReportGenerator({
               )}
 
               {state.recipients && (
-                <div className="rounded-lg bg-[#f0f8f0] px-3 py-2">
-                  <p className="font-semibold text-[#86BC24]">
-                    ✓ Will be sent to: {state.recipients}
+                <div className="rounded-lg bg-[#fff8e6] px-3 py-2">
+                  <p className="font-semibold text-[#8a6d00]">
+                    Delivery will be attempted to: {state.recipients}
+                  </p>
+                  <p className="text-[#8a6d00]">
+                    Requires email to be configured; you’ll get a confirmation after generating.
                   </p>
                 </div>
               )}

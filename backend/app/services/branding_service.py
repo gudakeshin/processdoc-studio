@@ -12,6 +12,9 @@ from sqlalchemy.orm import Session
 from app.db.models import ProjectBrand
 from app.services.storage import workspace_path
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class BrandingLevel(StrEnum):
     DELOITTE_DEFAULT = "deloitte_default"
@@ -43,6 +46,9 @@ class BrandingContext:
     logo_url: str | None
     company_name: str
     custom_footer_text: str | None
+    # Deck design language: "" = unset (resolved at render time from the
+    # pptx_editorial_theme_enabled flag), "classic" or "editorial" to force one.
+    deck_theme: str = ""
 
 
 class BrandingService:
@@ -92,7 +98,8 @@ class BrandingService:
             return None
         try:
             return max(9, min(18, int(round(float(m.group(1)) * 16))))
-        except Exception:
+        except Exception as exc:
+            logger.warning("%s: suppressed error: %s", '_extract_tailwind_font_size_base', exc)
             return None
 
     def _extract_json_token_hex(self, payload: Any, keys: set[str]) -> str | None:
@@ -303,6 +310,7 @@ class BrandingService:
             logo_url=(str(override.get("logo_url")).strip() or None) if override.get("logo_url") else None,
             company_name=str(override.get("company_name") or "Company"),
             custom_footer_text=(str(override.get("footer_text")).strip() or None) if override.get("footer_text") else None,
+            deck_theme=str(override.get("deck_theme") or ""),
         )
 
     def get_branding_for_run(self, project_id: str | int | None, skill_card: dict | None = None, run_config: dict | None = None) -> BrandingContext:

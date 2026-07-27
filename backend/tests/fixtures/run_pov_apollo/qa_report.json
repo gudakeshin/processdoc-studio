@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "scores": {
+    "docx_markdown": 0.85,
+    "pptx_slides": 0.88
+  },
+  "iterations": 2,
+  "verifications": {
+    "retrieve_context": {
+      "docx_markdown": {
+        "chunks": [],
+        "context_text": "",
+        "retrieval_method": "lexical"
+      },
+      "pptx_slides": {
+        "chunks": [],
+        "context_text": "",
+        "retrieval_method": "lexical"
+      }
+    },
+    "web_search": {
+      "docx_markdown": "No Web search results found.",
+      "pptx_slides": "No Web search results found."
+    }
+  },
+  "remediation_instructions": {},
+  "pre_remediation_scores": {
+    "docx_markdown": 0.62,
+    "pptx_slides": 0.58
+  },
+  "remediation_applied": true,
+  "remediation_converged": true
+}

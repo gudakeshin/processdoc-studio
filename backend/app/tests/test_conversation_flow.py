@@ -11,6 +11,9 @@ Verifies that the agent behaves like a colleague, not a plan-generating machine:
 import pytest
 
 from app.api.projects import (
+    _extract_discovery_answers_fast,
+    _merge_discovery,
+    _required_discovery_missing_slots,
     _has_sufficient_discovery,
     _is_acknowledgment,
     _is_commit_intent,
@@ -289,3 +292,58 @@ class TestProposalDiscoveryHelpers:
             "win_themes": ["Control uplift"],
         }
         assert _has_sufficient_discovery(payload) is False
+
+    def test_has_sufficient_discovery_true_with_decision_only(self) -> None:
+        payload = {
+            "client": {"name": "Varroc", "industry": "Manufacturing"},
+            "outcome": {"primary": "", "decision": "Choose the right scope for Deloitte"},
+            "win_themes": ["Control uplift"],
+        }
+        assert _has_sufficient_discovery(payload) is True
+
+    def test_merge_discovery_does_not_overwrite_non_empty_with_empty(self) -> None:
+        base = {
+            "client": {"name": "Varroc", "industry": "Auto"},
+            "outcome": {"primary": "Transform PTP", "decision": ""},
+        }
+        incoming = {
+            "client": {"name": "", "industry": "Manufacturing"},
+            "outcome": {"primary": "", "decision": "Approve phase 1"},
+        }
+        merged = _merge_discovery(base, incoming)
+        assert merged["client"]["name"] == "Varroc"
+        assert merged["client"]["industry"] == "Manufacturing"
+        assert merged["outcome"]["primary"] == "Transform PTP"
+        assert merged["outcome"]["decision"] == "Approve phase 1"
+
+    def test_required_missing_slots_uses_canonical_discovery(self) -> None:
+        payload = {
+            "client": {"name": "Varroc"},
+            "win_themes": ["CFO transformation"],
+            "outcome": {"primary": ""},
+        }
+        assert _required_discovery_missing_slots(payload) == ["outcome"]
+
+    def test_required_missing_slots_not_missing_when_decision_present(self) -> None:
+        payload = {
+            "client": {"name": "Varroc"},
+            "win_themes": ["CFO transformation"],
+            "outcome": {"primary": "", "decision": "Choose right ESG scope"},
+        }
+        assert _required_discovery_missing_slots(payload) == []
+
+    def test_fast_extractor_maps_should_help_decide_phrase_to_outcome(self) -> None:
+        payload = _extract_discovery_answers_fast(
+            "The proposal should help them decide the agentic interventions required in PTP process."
+        )
+        outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+        assert "agentic interventions required in PTP process" in str(outcome.get("decision") or "")
+        assert str(outcome.get("primary") or "").startswith("Support decision-making on")
+
+    def test_fast_extractor_maps_decision_is_phrase_to_outcome(self) -> None:
+        payload = _extract_discovery_answers_fast(
+            "The proposal is meant for the CFO. Decision is to choose the right scope for Deloitte to deliver."
+        )
+        outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+        assert "choose the right scope for Deloitte to deliver" in str(outcome.get("decision") or "")
+        assert str(outcome.get("primary") or "").startswith("Support decision-making on")

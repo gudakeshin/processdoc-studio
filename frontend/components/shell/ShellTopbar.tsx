@@ -17,13 +17,13 @@ export function ShellTopbar({ onMenuClick }: ShellTopbarProps) {
       <div className="flex min-w-0 items-center gap-3 text-sm text-[var(--text-muted)]">
         <button
           type="button"
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-[var(--surface-border)] bg-[var(--surface-muted)] text-[var(--text-default)] lg:hidden"
+          className="flex h-11 w-11 shrink-0 items-center justify-center border border-[var(--surface-border)] bg-[var(--surface-muted)] text-[var(--text-default)] lg:hidden"
           onClick={onMenuClick}
           aria-label="Open navigation menu"
         >
           <Menu size={22} strokeWidth={2} aria-hidden />
         </button>
-        <span className="mono truncate rounded bg-[var(--surface-muted)] px-2 py-0.5 text-xs tracking-wide text-[var(--text-muted)]">
+        <span className="truncate bg-[var(--surface-muted)] px-2 py-0.5 text-xs tracking-wide text-[var(--text-muted)]">
           /{crumb}
         </span>
         <span className="status-pill status-pill--success hidden sm:inline-flex">

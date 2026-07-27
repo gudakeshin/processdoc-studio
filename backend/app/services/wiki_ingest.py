@@ -7,9 +7,13 @@ import json
 import logging
 import re
 import time as _time
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
+
+from app.core.config import settings
+from app.services.storage import workspace_path
 
 _LOG = logging.getLogger(__name__)
 _schema_cache: dict = {}
@@ -213,6 +217,7 @@ def _parse_source(source_type: str, source_data: dict, project_id: str | None = 
                                     "title": filename,
                                     "content": parsed_data.get("text", ""),
                                     "source_url": f"document://{project_id}/{filename}",
+                                    "content_digest": digest,
                                     "chunk_count": parsed_data.get("chunk_count", 0),
                                     "entities": [],
                                     "concepts": [],
@@ -228,6 +233,7 @@ def _parse_source(source_type: str, source_data: dict, project_id: str | None = 
                         "title": filename,
                         "content": text,
                         "source_url": f"document://{project_id}/{filename}",
+                        "content_digest": digest,
                         "chunk_count": max(1, len(text) // 1200),  # Estimate chunks
                         "entities": [],
                         "concepts": [],
@@ -299,24 +305,17 @@ def _extract_text_from_file(filename: str, content: bytes) -> str:
         # PDF files
         if lower.endswith(".pdf"):
             try:
-                from pypdf import PdfReader
+                from app.core.config import settings
+                from app.core.pdf_extract import extract_pdf_text
 
-                reader = PdfReader(io.BytesIO(content))
-                max_pages = 50
-                if len(reader.pages) > max_pages:
-                    _LOG.warning(
-                        "PDF %s has %s pages; max %s",
-                        filename,
-                        len(reader.pages),
-                        max_pages,
-                    )
-                    return f"[PDF rejected: exceeds {max_pages} page limit]"
-                text_parts = []
-                for page_num, page in enumerate(reader.pages[:max_pages]):
-                    page_text = page.extract_text().strip()
-                    if page_text:
-                        text_parts.append(f"[Page {page_num + 1}]\n{page_text}")
-                return "\n".join(text_parts) if text_parts else "[No text content in PDF]"
+                text, mode = extract_pdf_text(
+                    content,
+                    filename=filename,
+                    max_pages=int(getattr(settings, "pdf_max_pages", 200)),
+                    ocr_enabled=bool(getattr(settings, "pdf_ocr_enabled", True)),
+                    ocr_min_chars=int(getattr(settings, "pdf_ocr_min_chars_per_page", 50)),
+                )
+                return text
             except Exception as pdf_err:
                 _LOG.warning(f"Failed to parse PDF {filename}: {pdf_err}")
                 return "[Unable to extract text from PDF file]"
@@ -331,27 +330,27 @@ def _extract_text_from_file(filename: str, content: bytes) -> str:
                 from app.core.config import settings
                 from app.core.office.zip_safety import UnsafeZipError, validate_zip_for_read
 
-                zf = zipfile.ZipFile(io.BytesIO(content))
                 try:
-                    validate_zip_for_read(
-                        zf,
-                        max_uncompressed_bytes=int(
-                            getattr(settings, "zip_max_uncompressed_bytes", 100 * 1024 * 1024)
-                        ),
-                    )
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        validate_zip_for_read(
+                            zf,
+                            max_uncompressed_bytes=int(
+                                getattr(settings, "zip_max_uncompressed_bytes", 100 * 1024 * 1024)
+                            ),
+                        )
+                        text_parts = []
+                        for name in sorted(zf.namelist()):
+                            if not name.startswith("ppt/") or not name.endswith(".xml"):
+                                continue
+                            raw = zf.read(name).decode("utf-8", errors="ignore")
+                            cleaned = _re.sub(r"<[^>]+>", " ", raw)
+                            cleaned = _re.sub(r"\s+", " ", cleaned).strip()
+                            if cleaned:
+                                text_parts.append(cleaned)
+                    return "\n".join(text_parts) if text_parts else "[No text content in PPTX]"
                 except UnsafeZipError as zerr:
                     _LOG.warning("Unsafe PPTX zip %s: %s", filename, zerr)
                     return "[Rejected PPTX archive: failed safety checks]"
-                text_parts = []
-                for name in sorted(zf.namelist()):
-                    if not name.startswith("ppt/") or not name.endswith(".xml"):
-                        continue
-                    raw = zf.read(name).decode("utf-8", errors="ignore")
-                    cleaned = _re.sub(r"<[^>]+>", " ", raw)
-                    cleaned = _re.sub(r"\s+", " ", cleaned).strip()
-                    if cleaned:
-                        text_parts.append(cleaned)
-                return "\n".join(text_parts) if text_parts else "[No text content in PPTX]"
             except Exception as pptx_err:
                 _LOG.warning(f"Failed to parse PPTX {filename}: {pptx_err}")
                 return "[Unable to extract text from PPTX file]"
@@ -578,6 +577,38 @@ def _migrate_meta_directory(wiki_dir):
             old.rename(new)
 
 
+def emit_wiki_change_event(
+    wiki_type: str,
+    project_id: str | None,
+    change_type: str,
+    changed_page_ids: list[str],
+) -> None:
+    """Persist wiki change event for optional async graph rebuild workers."""
+    try:
+        if not bool(getattr(settings, "wiki_evented_graph_rebuild_enabled", False)):
+            return
+        if wiki_type == "leading_practice":
+            wiki_dir = workspace_path("leading_practices") / "wiki"
+        else:
+            wiki_dir = workspace_path(project_id) / "wiki"
+        meta_dir = wiki_dir / ".meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        events_file = meta_dir / "wiki_rebuild_events.jsonl"
+        event = {
+            "schema_version": 1,
+            "event_type": "wiki_pages_changed",
+            "change_type": change_type,
+            "wiki_type": wiki_type,
+            "project_id": project_id,
+            "changed_page_ids": sorted(set(changed_page_ids or [])),
+            "created_at": datetime.now(IST).isoformat(),
+        }
+        with events_file.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(event) + "\n")
+    except Exception as exc:
+        _LOG.warning("Failed to emit wiki change event: %s", exc)
+
+
 def _ensure_wiki_schema(wiki_dir: Any) -> None:
     """Write WIKI_SCHEMA.md on first use of a wiki directory."""
     _migrate_meta_directory(wiki_dir)
@@ -596,6 +627,26 @@ def _make_frontmatter(fields: dict) -> str:
             lines.append(f"{key}: {value}")
     lines.append("---\n")
     return "\n".join(lines)
+
+
+def _read_frontmatter_field(page_file: Path, field: str) -> str | None:
+    """Read a single string field from a page's YAML frontmatter."""
+    try:
+        if not page_file.exists():
+            return None
+        text = page_file.read_text(encoding="utf-8")
+        fm = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+        if not fm:
+            return None
+        for line in fm.group(1).splitlines():
+            stripped = line.strip()
+            if stripped.startswith(f"{field}:"):
+                value = stripped.split(":", 1)[1].strip()
+                return value.strip('"').strip("'")
+    except Exception as exc:
+        _LOG.warning("%s: suppressed error: %s", '_read_frontmatter_field', exc)
+        return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +691,72 @@ def _weave_backlinks(wiki_dir: Any, new_page_ids: list, new_page_titles: dict) -
     return woven
 
 
+def _weave_entity_backlinks(wiki_dir: Any, entities: list) -> int:
+    """
+    Scan wiki pages for mentions of extracted entities and link them.
+
+    Entities are turned into hub nodes: all mentions across the wiki get linked
+    to their entity pages, creating a knowledge graph where entities connect related pages.
+
+    Args:
+        wiki_dir: Path to wiki directory
+        entities: List of dicts with keys: name (entity name), page_id (entity page id)
+
+    Returns:
+        Number of pages modified
+    """
+    if not entities:
+        return 0
+
+    # Build map of entity names → page_ids, filter out short/common terms
+    entity_map = {}
+    for entity in entities:
+        name = (entity.get("name") or "").strip()
+        page_id = entity.get("page_id", "").strip()
+        if name and page_id and len(name) > 2:  # Skip very short terms
+            entity_map[name] = page_id
+
+    if not entity_map:
+        return 0
+
+    woven = 0
+    try:
+        for md_file in sorted(Path(wiki_dir).glob("*.md")):
+            if md_file.name in ("index.md", "log.md", "WIKI_SCHEMA.md"):
+                continue
+            try:
+                text = md_file.read_text(encoding="utf-8")
+                changed = False
+
+                for entity_name, page_id in entity_map.items():
+                    if md_file.stem == page_id:
+                        continue  # skip self-links
+
+                    wiki_link = f"[[{page_id}|{entity_name}]]"
+                    if wiki_link in text:
+                        continue  # already linked
+
+                    # Match bare entity name (case-insensitive) not already inside [[ ]]
+                    # For multi-word entities, use looser word boundaries
+                    pattern = rf"(?<!\[\[)(?<!\|)(?<!\w){re.escape(entity_name)}(?!\w)(?!\]\])"
+                    if re.search(pattern, text, re.IGNORECASE):
+                        # Replace only first occurrence per entity per page
+                        text = re.sub(pattern, wiki_link, text, count=1, flags=re.IGNORECASE)
+                        changed = True
+
+                if changed:
+                    md_file.write_text(text, encoding="utf-8")
+                    woven += 1
+
+            except Exception:  # noqa: S112 — best-effort, non-fatal
+                continue
+
+    except Exception as e:
+        _LOG.warning(f"Entity backlink weaving failed: {e}")
+
+    return woven
+
+
 # ---------------------------------------------------------------------------
 # Compounding entity page update
 # ---------------------------------------------------------------------------
@@ -664,7 +781,7 @@ def _compound_update_entity_page(
         existing_body = fm_match.group(2).strip() if fm_match else existing_text.strip()
 
         # Update last_updated timestamp in frontmatter
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(IST).isoformat()
         frontmatter = re.sub(r'last_updated:\s*"[^"]*"', f'last_updated: "{now}"', frontmatter)
         if "last_updated" not in frontmatter and frontmatter:
             frontmatter = frontmatter.removesuffix("---\n") + f'\nlast_updated: "{now}"\n---\n'
@@ -745,7 +862,27 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
 
         source_title = extracted.get("title", "Document")
         source_url = extracted.get("source_url", "")
+        content_digest = extracted.get("content_digest", "")
         content_preview = extracted.get("content", "")[:3000]
+
+        # Short-circuit: if a main page for this source_url already exists with the
+        # same content_digest, the document is unchanged. Skip LLM and entity work.
+        candidate_main_id = re.sub(r"[^a-z0-9_]", "", source_title.lower().replace(" ", "_"))[:50]
+        candidate_main_file = wiki_dir / f"{candidate_main_id}.md"
+        if (
+            content_digest
+            and candidate_main_file.exists()
+            and _read_frontmatter_field(candidate_main_file, "content_digest") == content_digest
+            and _read_frontmatter_field(candidate_main_file, "source_url") == source_url
+        ):
+            _LOG.info(f"[INGEST] Skipping unchanged source: {source_title} (digest match)")
+            return {
+                "created": 0,
+                "updated": 0,
+                "page_ids": [candidate_main_id],
+                "corrections": [],
+                "skipped_unchanged": True,
+            }
 
         existing_pages = [f.stem for f in wiki_dir.glob("*.md")
                           if f.name not in ("index.md", "log.md")]
@@ -815,7 +952,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                         f"Source title: {source_title}\n"
                         f"Source URL/path: {source_url}\n\n"
                         f"Content:\n{content_preview}\n\n"
-                        f"Existing wiki pages: {all_titles}"
+                        f"Existing wiki pages: {existing_titles}"
                     ),
                     max_tokens=1500,
                 )
@@ -825,12 +962,12 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
             except Exception as llm_err:
                 _LOG.warning(f"LLM synthesis failed, falling back to excerpt: {llm_err}")
 
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(IST).isoformat()
         created = 0
         updated = 0
         page_ids = []
 
-        # --- Main source page ---
+        # --- Main source page (frontmatter prepared now, body written after entity resolution) ---
         page_id = re.sub(r"[^a-z0-9_]", "", source_title.lower().replace(" ", "_"))[:50]
         page_file = wiki_dir / f"{page_id}.md"
         is_update = page_file.exists()
@@ -838,30 +975,10 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
         source_category = _infer_category(extracted)
         semantic_type = _infer_semantic_type(source_category, source_title, extracted.get("content", ""))
 
-        fm = _make_frontmatter({
-            "title": source_title,
-            "category": source_category,
-            "semantic_type": semantic_type,
-            "confidence": "medium",
-            "source_count": 1,
-            "source_url": source_url,
-            "last_updated": now,
-            **({"created_at": now} if not is_update else {}),
-        })
-        page_text = f"{fm}\n# {source_title}\n\n{page_summary}\n"
-        if is_update and _is_user_edited_page(page_file):
-            _compound_update_entity_page(page_file, source_title, page_summary, source_title, page_id)
-        else:
-            page_file.write_text(page_text)
-        _annotate_contradictions(page_file, source_title, related_pages)
-        page_ids.append(page_id)
-
-        if is_update:
-            updated += 1
-        else:
-            created += 1
-
         # --- Entity pages (up to 3) ---
+        # Track every (entity_name, real_page_id) we touched, so we can build a
+        # "## Related concepts" section on the parent and rewrite LLM slug guesses.
+        related_entity_links: list[tuple[str, str]] = []  # (page_id, display_name)
         for entity in entities[:3]:
             ename = (entity.get("name") or "").strip()
             esummary = (entity.get("summary") or "").strip()
@@ -887,6 +1004,7 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                         _compound_update_entity_page(efile, ename, esummary, source_title, page_id)
                         updated += 1
                         page_ids.append(best_match)
+                        related_entity_links.append((best_match, ename))
                 continue
 
             eid = re.sub(r"[^a-z0-9_]", "", ename.lower().replace(" ", "_"))[:50]
@@ -898,20 +1016,77 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
                 updated += 1
             else:
                 entity_semantic_type = entity.get("semantic_type", "concept")
-                # In Karpathy's Second Brain, don't hardcode category — let the graph reveal it
-                # Category will be inferred post-hoc from connectivity patterns
+                # Inherit category from the parent source so new entity pages aren't orphaned
+                # under "unclassified". They also persist a source_url back to the parent doc.
                 efm = _make_frontmatter({
                     "title": ename,
-                    "category": "unclassified",  # Will be determined by graph analysis
+                    "category": source_category,
                     "semantic_type": entity_semantic_type,
                     "confidence": "medium",
                     "source_count": 1,
+                    "source_url": source_url,
+                    "source_pages": f"[{page_id}]",
                     "last_updated": now,
                     "created_at": now,
                 })
                 efile.write_text(f"{efm}\n# {ename}\n\n{esummary}\n")
                 created += 1
             page_ids.append(eid)
+            related_entity_links.append((eid, ename))
+
+        # --- Rewrite LLM-invented slugs in page_summary to real page_ids ---
+        # The LLM emits [[guessed_slug|Display]] but its slug rarely matches our slugger.
+        # Map by display title (case-insensitive) onto: created entities, then existing pages.
+        title_to_id: dict[str, str] = {}
+        for eid, ename in related_entity_links:
+            title_to_id[ename.lower()] = eid
+        for pid in existing_pages:
+            pfile = wiki_dir / f"{pid}.md"
+            t = _read_frontmatter_field(pfile, "title") if pfile.exists() else None
+            if t:
+                title_to_id.setdefault(t.lower(), pid)
+            title_to_id.setdefault(pid.lower(), pid)
+
+        def _fix_link(m: re.Match) -> str:
+            display = m.group(2).strip()
+            real = title_to_id.get(display.lower())
+            if real:
+                return f"[[{real}|{display}]]"
+            # Drop unresolved links to plain text so the page doesn't render dead [[…]] chips
+            return display
+
+        page_summary = re.sub(r"\[\[([^\[\]\|]+)\|([^\[\]]+)\]\]", _fix_link, page_summary)
+
+        # --- Build the source page body, including a Related concepts section ---
+        related_section = ""
+        if related_entity_links:
+            bullets = "\n".join(f"- [[{eid}|{name}]]" for eid, name in related_entity_links)
+            related_section = f"\n\n## Related concepts\n\n{bullets}\n"
+
+        fm = _make_frontmatter({
+            "title": source_title,
+            "category": source_category,
+            "semantic_type": semantic_type,
+            "confidence": "medium",
+            "source_count": 1,
+            "source_url": source_url,
+            "content_digest": content_digest,
+            "last_updated": now,
+            **({"created_at": now} if not is_update else {}),
+        })
+        page_body = f"# {source_title}\n\n{page_summary}{related_section}"
+        page_text = f"{fm}\n{page_body}\n"
+        if is_update and _is_user_edited_page(page_file):
+            _compound_update_entity_page(page_file, source_title, page_summary, source_title, page_id)
+        else:
+            page_file.write_text(page_text)
+        _annotate_contradictions(page_file, source_title, related_pages)
+        page_ids.insert(0, page_id)
+
+        if is_update:
+            updated += 1
+        else:
+            created += 1
 
         # Weave backlinks: replace bare title mentions with [[page_id|Title]] links
         new_titles = {}
@@ -929,6 +1104,19 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
         woven = _weave_backlinks(wiki_dir, page_ids, new_titles)
         _LOG.info(f"Backlinks woven into {woven} pages")
 
+        # Weave entity backlinks: link all mentions of extracted entities
+        # This turns entities into hub nodes connecting related pages
+        entity_links = []
+        for entity in entities[:3]:
+            ename = (entity.get("name") or "").strip()
+            if ename:
+                eid = re.sub(r"[^a-z0-9_]", "", ename.lower().replace(" ", "_"))[:50]
+                entity_links.append({"name": ename, "page_id": eid})
+
+        if entity_links:
+            entity_woven = _weave_entity_backlinks(wiki_dir, entity_links)
+            _LOG.info(f"Entity backlinks woven into {entity_woven} pages")
+
         from app.services.wiki_graph import _build_and_persist_relationships
         _build_and_persist_relationships(wiki_type, project_id)
         if related_pages:
@@ -939,6 +1127,12 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
         anomalies = _detect_anomalous_pages(wiki_type, project_id, page_ids)
 
         _LOG.info(f"Wiki updated: {created} created, {updated} updated, pages={page_ids}, anomalies={len(anomalies)}")
+        emit_wiki_change_event(
+            wiki_type=wiki_type,
+            project_id=project_id,
+            change_type="page_set_changed",
+            changed_page_ids=page_ids,
+        )
         return {"created": created, "updated": updated, "page_ids": page_ids, "corrections": anomalies}
 
     except Exception as e:
@@ -962,14 +1156,18 @@ def _persist_related_page_suggestions(
         meta_dir = wiki_dir / ".meta"
         meta_dir.mkdir(exist_ok=True)
         rel_file = meta_dir / "relationships.json"
+        schema_version = 2
         if rel_file.exists():
             data = json.loads(rel_file.read_text(encoding="utf-8"))
+            if "data" in data and isinstance(data.get("data"), dict):
+                schema_version = int(data.get("schema_version", schema_version) or schema_version)
+                data = data["data"]
         else:
             data = {"relationships": [], "total": 0}
 
         relationships = data.get("relationships", [])
         existing_pairs = {(r.get("source_id"), r.get("target_id")) for r in relationships}
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(IST).isoformat()
         for rel in related_pages:
             target_id = str(rel.get("page_id") or "").strip()
             if not target_id or target_id == source_page_id:
@@ -992,7 +1190,11 @@ def _persist_related_page_suggestions(
         data["relationships"] = relationships
         data["total"] = len(relationships)
         data["last_updated"] = now
-        rel_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        if bool(getattr(settings, "wiki_meta_schema_versioning_enabled", True)):
+            payload = {"schema_version": schema_version, "data": data}
+        else:
+            payload = data
+        rel_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except Exception as exc:
         _LOG.warning("Persisting related page suggestions failed: %s", exc)
 
@@ -1215,7 +1417,7 @@ def _update_wiki_index(wiki_type: str, project_id: str | None) -> dict:
                 continue
 
         total = sum(len(v) for v in by_category.values())
-        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        date_str = datetime.now(IST).strftime("%Y-%m-%d")
 
         lines = [
             "# Wiki Index",
@@ -1297,7 +1499,7 @@ def _append_wiki_log(
         log_file = wiki_dir / "log.md"
 
         # Karpathy-compatible format: ## [date] operation | title
-        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        date_str = datetime.now(IST).strftime("%Y-%m-%d")
         heading = f"## [{date_str}] {operation}"
         if source_name:
             heading += f" | {source_name}"
@@ -1312,8 +1514,8 @@ def _append_wiki_log(
         else:
             log_file.write_text("# Wiki Log\n" + entry)
 
-        log_entry_id = f"log_{int(datetime.now(UTC).timestamp() * 1000)}"
+        log_entry_id = f"log_{int(datetime.now(IST).timestamp() * 1000)}"
         return log_entry_id
     except Exception as e:
         _LOG.error(f"Error appending to wiki log: {e}")
-        return f"log_{int(datetime.now(UTC).timestamp())}"
+        return f"log_{int(datetime.now(IST).timestamp())}"

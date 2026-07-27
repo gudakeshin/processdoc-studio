@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
+from app.core.tz import IST
 
 from sqlalchemy import select
 
@@ -23,12 +24,12 @@ def _compute_next(task: ScheduledTask) -> datetime | None:
     if task.trigger_type == "once":
         return None
     minutes = max(1, int(task.cadence_minutes or 60))
-    return datetime.utcnow() + timedelta(minutes=minutes)
+    return datetime.now(IST).replace(tzinfo=None) + timedelta(minutes=minutes)
 
 
 def _tick() -> None:
     session = SessionLocal()
-    now = datetime.utcnow()
+    now = datetime.now(IST).replace(tzinfo=None)
     try:
         due_tasks = session.scalars(
             select(ScheduledTask).where(
@@ -97,7 +98,7 @@ def _tick() -> None:
                     message="Scheduled run created and awaiting approval (attempt 1)",
                 )
             )
-            task.last_run_at = datetime.utcnow()
+            task.last_run_at = datetime.now(IST).replace(tzinfo=None)
             task.last_run_status = "queued"
             task.next_run_at = _compute_next(task)
             increment("scheduled_task_dispatch_total")

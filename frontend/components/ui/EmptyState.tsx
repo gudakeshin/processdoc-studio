@@ -9,7 +9,7 @@ type Props = {
 
 export function EmptyState({ title, description, children }: Props) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-[var(--surface-border-strong)] bg-[var(--surface-muted)] px-6 py-10 text-center">
+    <div className="flex flex-col items-center justify-center gap-3 border border-[var(--surface-border-strong)] bg-[var(--surface-muted)] px-6 py-10 text-center">
       <Inbox className="h-10 w-10 text-[var(--text-caption)]" aria-hidden />
       <div>
         <p className="text-sm font-semibold text-[var(--text-default)]">{title}</p>

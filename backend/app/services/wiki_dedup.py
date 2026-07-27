@@ -8,7 +8,8 @@ Proposes merges with confidence scores and auto-merges high-confidence duplicate
 import hashlib
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -174,7 +175,7 @@ class DuplicateDetector:
                         "content_similarity": round(content_sim, 3),
                         "title_similarity": round(title_sim, 3),
                         "combined_score": round(combined_score, 3),
-                        "timestamp": datetime.now(UTC).isoformat(),
+                        "timestamp": datetime.now(IST).isoformat(),
                     })
 
         # Sort by combined score (highest first)
@@ -228,7 +229,7 @@ title: {secondary["title"]}
 redirect_to: {primary_id}
 status: archived
 reason: merged_duplicate
-merged_date: {datetime.now(UTC).isoformat()}
+merged_date: {datetime.now(IST).isoformat()}
 ---
 
 This page has been merged into [[{primary_id}]].

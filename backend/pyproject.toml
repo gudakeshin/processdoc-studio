@@ -13,29 +13,42 @@ dependencies = [
   "pydantic>=2.0",
   "pydantic-settings>=2.0",
   "python-multipart",
-  "python-jose[cryptography]",
+  "python-jose[cryptography]>=3.5,<4",
   "passlib[bcrypt]",
   "bcrypt>=4.0,<4.1",
-  "redis",
+  "redis>=7.4,<8",
   "httpx",
   "python-dotenv",
   "orjson",
   "openpyxl",
+  "python-pptx>=1.0,<2.0",
   "reportlab",
+  "python-docx>=1.0,<2.0",
   "sqlalchemy",
   "alembic",
   "psycopg[binary]",
   "anthropic",
   "pillow",
+  "cairosvg",
   "pypdfium2",
   "pypdf",
+  "xlrd>=2.0,<3",
   "pyyaml",
   "langfuse",
   "slowapi",
+  "sentence-transformers>=5.4,<6",
+  "faiss-cpu>=1.13,<2",
+  "networkx",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "pytest-asyncio"]
+dev = ["pytest", "pytest-cov", "pytest-asyncio", "fakeredis>=2.0", "lupa>=2.0", "ruff>=0.8"]
+ocr = ["pdf2image>=1.17", "pytesseract>=0.3.10", "Pillow>=10.0"]
+otel = [
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
+  "opentelemetry-api>=1.27",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -44,6 +57,7 @@ asyncio_mode = "auto"
 markers = [
     "slow: longer integration-style tests (minutes / heavy I/O); exclude with -m \"not slow\"",
     "live_llm: requires real Anthropic API; opt-in only",
+    "redis: exercises real Redis-backed code paths via fakeredis; opt-in only",
     "asyncio: marks tests as async (deselect with '-m \"not asyncio\"')",
 ]
 
@@ -84,7 +98,7 @@ known-first-party = ["app"]
 "app/main.py" = ["E402"]
 # Tests frequently use assert statements, hardcoded creds, and deliberate bare
 # `raise` patterns that are harmless in a test context.
-"app/tests/*" = ["S101", "S105", "S106", "S107", "S108", "S311", "S324", "B017", "F841", "E741", "SIM105", "SIM117"]
+"app/tests/*" = ["S101", "S105", "S106", "S107", "S108", "S110", "S112", "S311", "S324", "B017", "F841", "E741", "SIM105", "SIM117"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -40,11 +40,12 @@ sample_instruction: Build a 10-slide executive deck summarizing current-state pr
 custom: false
 ---
 
-# PPTX Blueprint Generation — Deloitte Visual Standard
+# PPTX Deck Generation — Deloitte Visual Standard
 
-This skill generates a **JSON slide blueprint** — a structured `{"slides": [...]}` object that is
-rendered into a fully-branded python-pptx deck by the platform renderer. You do NOT write python
-code or call shell tools. Your entire output is valid JSON.
+This skill generates the content specifications for a **fully-branded, production-ready PPTX presentation deck**. 
+Your output is a structured `{"slides": [...]}` JSON object that the platform immediately renders into an actual 
+.pptx file that users can download and open in PowerPoint. Your output IS the deck — no further manual steps needed.
+You do NOT write python code or call shell tools. Your entire output is valid JSON.
 
 ---
 
@@ -69,7 +70,7 @@ keys whose values would be null.
 ```json
 {
   "title": "string — ≤10 words (required)",
-  "slide_type": "title|bullets|stat_cards|column_cards|stack_layers|table|chart|section_divider",
+  "slide_type": "title|bullets|stat_cards|column_cards|stack_layers|table|chart|section_divider|big_number|process_flow",
   "subtitle": "string | omit",
   "bullets": ["string — each ≤15 words"] ,
   "badges": ["string — short pill labels, title slide only"],
@@ -90,9 +91,22 @@ keys whose values would be null.
     "x": 0.28, "y": 1.0, "w": 9.44, "h": 4.3
   },
   "chart": {
-    "type": "bar|line|pie",
+    "type": "bar|line|pie|column|area|doughnut|column_stacked",
     "categories": ["string"],
-    "series": [{"name": "string", "values": [0.0]}]
+    "series": [{"name": "string", "values": [0.0]}],
+    "subtitle": "string — data source citation ≤15 words"
+  },
+  "big_number": {
+    "stat": "string — headline metric (e.g. '$400M', '87%', '14')",
+    "label": "string — 2–5 word descriptor",
+    "context": "string — 1 sentence of context (optional)",
+    "fill": "dark|green|mid_dark"
+  },
+  "process_flow": {
+    "steps": [
+      {"label": "string ≤4 words", "description": "string ≤12 words",
+       "fill": "green|dark|mid_dark|dark_green|mid", "icon": "string (optional)"}
+    ]
   },
   "footer_note": "string — single-line band at slide bottom (use sparingly)"
 }
@@ -136,8 +150,64 @@ Use for structured data: step-by-step workflows, input/output matrices, ownershi
 - Keep cells concise (≤8 words per cell)
 - Use default table coordinates unless content demands adjustment
 
+### `chart`
+Use for trends, rankings, or composition data where the **shape** of the data is the message.
+
+**Supported types:** `"column"` (compare items across periods), `"bar"` (rankings), `"line"` (trends over time), `"pie"` (part-of-whole, ≤5 segments), `"area"` (cumulative volume), `"doughnut"` (single ratio), `"column_stacked"` (stacked comparison).
+
+**Rules:**
+- `categories`: 3–8 labels; each `series` needs `name` and `values` (numbers only, same length as categories)
+- Use ≤3 series; add `subtitle` to cite the data source
+- Prefer `chart` over a second `stat_cards` when time-series or benchmark data is available
+
+Minimum valid chart: `{"type": "column", "categories": ["Q1","Q2","Q3","Q4"], "series": [{"name": "Savings ($M)", "values": [12,24,45,67]}], "subtitle": "Source: FY2024 actuals"}`
+
+### `big_number`
+Use when **one KPI is the entire story** of a slide. The stat renders at 80pt — choose a number with genuine impact. Derive from ProcessModel or enrichment analytics; do not invent. Use at most once per deck.
+- `fill`: use `"dark"`, `"green"`, or `"mid_dark"` only (light fills break contrast with the large stat)
+
+### `process_flow`
+Horizontal arrow chain for **sequential ordered steps** — use instead of `stack_layers` when the order is the story. Use 3–5 steps.
+- `label`: ≤4 words (step name)
+- `description`: ≤12 words (what happens)
+- Rotate `fill` across steps: `"green"`, `"dark"`, `"mid_dark"`, `"dark_green"`, `"mid"`
+- `icon` is optional per step. If omitted, the renderer auto-selects a deterministic icon from the step label semantics (e.g., Assess, Design, Implement).
+
 ### `section_divider`
 Full-bleed dark slide for major section breaks. Include only `title` and optionally `subtitle`.
+
+---
+
+## Executive Story Guidance (Boardroom Standard)
+
+When building executive-grade decks (PPTX_ARTIFACT_RENDERER_ENABLED), elevate your narrative:
+
+**Pre-Composition Planning (Internal):**
+1. **Thesis Statement** — Distill the deck's argument to one sentence (e.g., "This process transformation unlocks $2.3M in annual savings and improves customer response time by 40%.")
+2. **Audience Decision** — What decision/action will this deck unlock? (Approval, budget allocation, resource commitment, strategic pivot.)
+3. **Slide-by-Slide Story Arc** — Map each slide's role in the narrative:
+   - Slide 1–2: Establish the problem/opportunity (current state pain, market context)
+   - Slide 3–4: Present the business case (opportunity size, ROI, stakeholder benefit)
+   - Slide 5–7: Describe the solution/approach (design, phasing, dependencies)
+   - Slide 8–10: Seal the ask (recommended actions, next steps, owner accountability)
+4. **Evidence Plan** — Before writing each metric:
+   - Is this from ProcessModel? (✓ use it)
+   - Is this from uploaded/source data? (✓ cite it; add source_refs to slide notes)
+   - Is this an inference/estimate? (⚠️ label explicitly: "estimated", "projected", ~, ±)
+   - Is this made up? (✗ stop; derive from data or reframe the claim)
+
+**Deck Composition Rules (Executive Standard):**
+- **One dominant object per slide** — choose ONE narrative anchor (a stat, a chart trend, a workflow) per slide; support with bullets/labels only
+- **Shorter copy** — stat_cards descriptions should be ≤2 sentences; column_card bodies ≤40 words; no padding
+- **Evidence visibility** — Include data sources (citations, ranges) directly in slides; use speaker_notes for assumptions
+- **No generic headers** — Replace context headings like "Process Context" with specifics (e.g., "Why This Matters: 3-Month Manual Effort Vs. Automated SLA")
+- **Consistent branding** — Use the branding palette throughout; avoid gray as a default (use dark/green/mid_dark for intentional contrast)
+
+**Claim Substantiation Checklist:**
+- ✓ Financial claims ($M, ROI, savings) → ProcessModel.financials or explicit user instruction
+- ✓ Volume/scale claims (N steps, N roles, N systems) → ProcessModel.steps/.roles/.systems counts
+- ✓ Improvement claims (X% faster, Y% cheaper) → source data, benchmarks, or labeled assumption
+- ✗ Avoid: vague metrics without source, percentages without baselines, "significant" / "major" without numbers
 
 ---
 
@@ -145,11 +215,11 @@ Full-bleed dark slide for major section breaks. Include only `title` and optiona
 
 1. `slide_type: "title"` — process name as title, `subtitle: "Process Overview"`, badges
 2. `slide_type: "stat_cards"` — 3 KPI cards from ProcessModel metrics
-3. `slide_type: "column_cards"` — 3-pillar framework relevant to this process
+3. `slide_type: "column_cards"` OR `"process_flow"` — use `column_cards` for three-pillar frameworks; use `process_flow` when 3–5 steps are strictly ordered
 4. `slide_type: "stack_layers"` — architecture / workflow layers (one row per phase)
 5. `slide_type: "bullets"` — Process Overview, one bullet per role mandate
 6. `slide_type: "table"` — Workflow Walkthrough: Step | Owner | Input → Output
-7. `slide_type: "stat_cards"` — Key Metrics and Controls (strongly preferred over bullets)
+7. `slide_type: "chart"` (if time-series or benchmark data exists), `"big_number"` (if one metric dominates), or `"stat_cards"` (for three parallel KPIs). **Never use `"bullets"` here.**
 8+ Additional content slides as needed
 Final: `slide_type: "bullets"`, title "Recommended Next Actions", exactly 3 numbered actions
 
@@ -158,16 +228,19 @@ Final: `slide_type: "bullets"`, title "Recommended Next Actions", exactly 3 numb
 ## Layout Variety Mandate
 
 **Never produce a deck that is 80%+ bullets slides.** A well-designed deck uses the full range
-of layout types. Aim for at most 40% bullets slides; use stat_cards, column_cards, stack_layers,
-and table to convey structured information more effectively.
+of layout types. Aim for at most 40% bullets slides; use `stat_cards`, `column_cards`, `process_flow`,
+`stack_layers`, `table`, `chart`, and `big_number` to convey structured information more effectively.
 
 ---
 
 ## Quality Rules
 
 - `title` and `slide_type` required on every slide — missing either fails validation
-- `stat_cards`: exactly 3 items; include `description` in every card
-- `column_cards`: exactly 3 items
+- `stat_cards`: exactly 3 items; include `description` in every card (≤25 words)
+- `column_cards`: exactly 3 items; `body` ≤40 words
+- `stack_layers`: `description` ≤20 words per row
+- `big_number`: `fill` must be `dark`, `green`, or `mid_dark` — light fills break contrast
+- `process_flow`: 2–5 steps required; each step needs `label` and `fill`
 - Do not mix `bullets` and `table` on the same slide
 - `footer_note` is a single line — do not use it for multi-sentence explanations
 - Derive metrics from ProcessModel; do not invent numbers not in the source data

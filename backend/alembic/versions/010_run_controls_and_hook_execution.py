@@ -1,6 +1,6 @@
 """add run control flags and hook executions
 
-Revision ID: 010_run_controls_and_hook_execution
+Revision ID: 010_run_controls_hooks
 Revises: 009_memory_item_principal_id
 Create Date: 2026-04-01
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "010_run_controls_and_hook_execution"
+revision = "010_run_controls_hooks"
 down_revision = "009_memory_item_principal_id"
 branch_labels = None
 depends_on = None

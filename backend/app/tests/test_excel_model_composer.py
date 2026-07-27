@@ -152,6 +152,8 @@ class TestAssumptionsSheet:
     def test_all_cells_on_correct_sheet(self):
         cells, _ = _compose_assumptions_sheet(FULL_ASSUMPTIONS)
         for c in cells:
+            if c.get("_type") in {"named_range", "chart", "table", "data_validation"}:
+                continue
             assert c["sheet"] == SH_ASSUMPTIONS
 
 
@@ -420,7 +422,7 @@ class TestOptionalSheets:
 class TestComposeFinancialModel:
     def test_full_model_all_core_sheets(self):
         cells = compose_financial_model(FULL_ASSUMPTIONS)
-        sheets = {c["sheet"] for c in cells}
+        sheets = {c["sheet"] for c in cells if "sheet" in c}
         assert SH_ASSUMPTIONS in sheets
         assert SH_INCOME in sheets
         assert SH_BALANCE in sheets
@@ -442,14 +444,14 @@ class TestComposeFinancialModel:
             actuals_by_period=actuals,
             historical_data=historical,
         )
-        sheets = {c["sheet"] for c in cells}
+        sheets = {c["sheet"] for c in cells if "sheet" in c}
         assert SH_SCENARIOS in sheets
         assert SH_FORECAST in sheets
         assert SH_BUDGET in sheets
 
     def test_minimal_model_core_sheets(self):
         cells = compose_financial_model(MINIMAL_ASSUMPTIONS)
-        sheets = {c["sheet"] for c in cells}
+        sheets = {c["sheet"] for c in cells if "sheet" in c}
         assert SH_ASSUMPTIONS in sheets
         assert SH_INCOME in sheets
         # Dashboard present because revenue exists
@@ -457,7 +459,7 @@ class TestComposeFinancialModel:
 
     def test_empty_assumptions_only_produces_assumptions_sheet(self):
         cells = compose_financial_model({})
-        sheets = {c["sheet"] for c in cells}
+        sheets = {c["sheet"] for c in cells if "sheet" in c}
         assert SH_ASSUMPTIONS in sheets
         assert SH_INCOME not in sheets
 
@@ -465,6 +467,8 @@ class TestComposeFinancialModel:
         cells = compose_financial_model(FULL_ASSUMPTIONS)
         seen = set()
         for c in cells:
+            if c.get("_type") in {"named_range", "chart", "table", "data_validation"}:
+                continue
             key = (c["sheet"], c["row"], c["col"])
             assert key not in seen, f"Duplicate cell at {key}"
             seen.add(key)
@@ -476,7 +480,7 @@ class TestComposeFinancialModel:
 
     def test_all_sheet_names_within_limit(self):
         cells = compose_financial_model(FULL_ASSUMPTIONS)
-        sheets = {c["sheet"] for c in cells}
+        sheets = {c["sheet"] for c in cells if "sheet" in c}
         for name in sheets:
             assert len(name) <= 31, f"Sheet name too long: {name} ({len(name)} chars)"
 

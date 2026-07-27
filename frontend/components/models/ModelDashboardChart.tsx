@@ -20,16 +20,17 @@ export default function ModelDashboardChart({
   datasets: Array<{ label: string; data: number[] }>;
 }) {
   return (
-    <Bar
-      data={{
-        labels,
-        datasets: datasets.map((d) => ({
-          label: d.label,
-          data: d.data,
-        })),
-      }}
-      options={{ responsive: true, maintainAspectRatio: false }}
-      height={240}
-    />
+    <div className="relative h-60">
+      <Bar
+        data={{
+          labels,
+          datasets: datasets.map((d) => ({
+            label: d.label,
+            data: d.data,
+          })),
+        }}
+        options={{ responsive: true, maintainAspectRatio: false }}
+      />
+    </div>
   );
 }

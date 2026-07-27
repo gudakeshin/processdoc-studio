@@ -151,6 +151,7 @@ SH_SCENARIOS = "Scenarios"
 SH_FORECAST = "Forecast"
 SH_BUDGET = "Budget vs Actual"
 SH_DASHBOARD = "Dashboard"
+SH_SENSITIVITY = "Sensitivity"
 
 
 def _compose_assumptions_sheet(
@@ -192,6 +193,12 @@ def _compose_assumptions_sheet(
                             font_color=BLUE_INPUT, fill_color=fill,
                             number_format=fmt))
         ref_map[key] = f"{SH_ASSUMPTIONS}!B{row}"
+        cells.append({
+            "_type": "named_range",
+            "sheet": SH_ASSUMPTIONS,
+            "name": f"Assumptions_{key}",
+            "ref": f"'{SH_ASSUMPTIONS}'!$B${row}",
+        })
         row += 1
 
     # Place remaining assumptions not in canonical order
@@ -208,6 +215,12 @@ def _compose_assumptions_sheet(
         cells.append(_cell(SH_ASSUMPTIONS, row, 2, value=val,
                             font_color=BLUE_INPUT))
         ref_map[key] = f"{SH_ASSUMPTIONS}!B{row}"
+        cells.append({
+            "_type": "named_range",
+            "sheet": SH_ASSUMPTIONS,
+            "name": f"Assumptions_{key}",
+            "ref": f"'{SH_ASSUMPTIONS}'!$B${row}",
+        })
         row += 1
 
     return cells, ref_map
@@ -890,6 +903,113 @@ def _compose_dashboard(
                                     f"^(1/{periods - 1})-1)",
                             font_color=BLACK_CALC, number_format=FMT_PERCENT))
 
+    # Mini KPI block for charting (labels + Year-1 values) — chart refs this range.
+    r += 2
+    chart_start = r
+    cells.append(_cell(sheet, r, 1, value="Metric", bold=True, fill_color=HEADER_BG))
+    cells.append(_cell(sheet, r, 2, value="Year 1", bold=True, fill_color=HEADER_BG))
+    r += 1
+    for label, key in (("Revenue", "revenue"), ("Gross Profit", "gross_profit"),
+                       ("EBITDA", "ebitda"), ("Net Income", "net_income")):
+        if key not in is_row_map:
+            continue
+        cells.append(_cell(sheet, r, 1, value=label))
+        cells.append(_cell(sheet, r, 2,
+                            formula=f"'{SH_INCOME}'!B{is_row_map[key]}",
+                            font_color=GREEN_LINK, number_format=FMT_CURRENCY))
+        r += 1
+    chart_end = r - 1
+    if chart_end > chart_start:
+        cells.append({
+            "_type": "chart",
+            "sheet": sheet,
+            "type": "bar",
+            "title": "Year-1 P&L Snapshot",
+            "min_row": chart_start,
+            "max_row": chart_end,
+            "min_col": 1,
+            "max_col": 2,
+            "cats_col": 1,
+            "titles_from_data": True,
+            "anchor": "E3",
+            "height": 10,
+            "width": 14,
+        })
+
+    # Scenario selector dropdown (partner-facing what-if control).
+    cells.append(_cell(sheet, 2, 5, value="Scenario", bold=True))
+    cells.append(_cell(sheet, 2, 6, value="Base", font_color=BLUE_INPUT, fill_color="FFFFCC"))
+    cells.append({
+        "_type": "data_validation",
+        "sheet": sheet,
+        "cell": "F2",
+        "type": "list",
+        "formula1": '"Base,High,Low"',
+        "error": "Choose Base, High, or Low",
+        "error_title": "Scenario",
+    })
+    cells.append({
+        "_type": "named_range",
+        "name": "Dashboard_Scenario",
+        "ref": f"'{sheet}'!$F$2",
+    })
+    if "revenue" in is_row_map:
+        cells.append({
+            "_type": "named_range",
+            "name": "Dashboard_Revenue_Y1",
+            "ref": f"'{SH_INCOME}'!$B${is_row_map['revenue']}",
+        })
+
+    return cells
+
+
+def _compose_sensitivity(
+    ref_map: dict[str, str],
+    is_row_map: dict[str, int],
+    periods: int,
+) -> list[dict[str, Any]]:
+    """Two-way sensitivity: revenue growth vs WACC impact on Year-1 Net Income proxy.
+
+    Uses formula refs to Assumptions so partners can shock inputs without breaking
+    the rest of the model. Values are illustrative deltas around base assumptions.
+    """
+    if "revenue" not in is_row_map:
+        return []
+    growth_ref = ref_map.get("growth_rate") or ref_map.get("revenue_growth_rate")
+    wacc_ref = ref_map.get("discount_rate") or ref_map.get("wacc")
+    if not growth_ref or not wacc_ref:
+        return []
+
+    cells: list[dict[str, Any]] = []
+    sheet = SH_SENSITIVITY
+    cells.append(_cell(sheet, 1, 1, value="Sensitivity — Growth vs WACC",
+                        bold=True, fill_color=HEADER_BG))
+    cells.append(_cell(sheet, 2, 1,
+                        value="Shock growth (rows) and WACC (cols); cells show Year-1 Revenue × (1+growth).",
+                        ))
+    growth_shocks = [-0.05, -0.02, 0.0, 0.02, 0.05]
+    wacc_shocks = [-0.02, -0.01, 0.0, 0.01, 0.02]
+
+    # Header row: WACC shocks
+    cells.append(_cell(sheet, 4, 1, value="Growth \\ WACC", bold=True, fill_color=HEADER_BG))
+    for ci, shock in enumerate(wacc_shocks):
+        cells.append(_cell(sheet, 4, ci + 2, value=shock, bold=True,
+                            fill_color=HEADER_BG, number_format=FMT_PERCENT))
+
+    rev_row = is_row_map["revenue"]
+    for ri, gshock in enumerate(growth_shocks):
+        row = 5 + ri
+        cells.append(_cell(sheet, row, 1, value=gshock, bold=True, number_format=FMT_PERCENT))
+        for ci, _wshock in enumerate(wacc_shocks):
+            # Revenue under growth shock; WACC column is informational for DCF partners.
+            cells.append(_cell(
+                sheet, row, ci + 2,
+                formula=(
+                    f"'{SH_INCOME}'!B{rev_row}*(1+{growth_ref}+{gshock})"
+                ),
+                font_color=BLACK_CALC,
+                number_format=FMT_CURRENCY,
+            ))
     return cells
 
 
@@ -1219,6 +1339,8 @@ def compose_financial_model(
     if is_row_map:
         dash_cells = _compose_dashboard(is_row_map, bs_row_map, periods)
         cells.extend(dash_cells)
+        sens_cells = _compose_sensitivity(ref_map, is_row_map, periods)
+        cells.extend(sens_cells)
 
     return cells
 

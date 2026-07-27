@@ -37,6 +37,10 @@ interface WikiRelationshipsProps {
   projectId?: string;
 }
 
+interface ScorecardSnapshot {
+  relationship_validation?: { issues_count?: number };
+}
+
 export const WikiRelationships: React.FC<WikiRelationshipsProps> = ({ wikiType, pageId, projectId }) => {
   const { api } = useAuth();
   const [stats, setStats]               = useState<RelationshipStats | null>(null);
@@ -46,6 +50,7 @@ export const WikiRelationships: React.FC<WikiRelationshipsProps> = ({ wikiType, 
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState<string | null>(null);
   const [classifyNotice, setClassifyNotice] = useState<string | null>(null);
+  const [scorecard, setScorecard] = useState<ScorecardSnapshot | null>(null);
   const [activeTab, setActiveTab]       = useState<'stats' | 'related' | 'validation'>('stats');
 
   useEffect(() => {
@@ -64,6 +69,13 @@ export const WikiRelationships: React.FC<WikiRelationshipsProps> = ({ wikiType, 
           average_relationships_per_page: data.average_relationships_per_page ?? 0,
         });
         setIssues(data.issues ?? []);
+        const scoreRes = await api(`/api/wiki/${wikiType}/health/scorecard?${params}`);
+        if (scoreRes.ok) {
+          const scoreData = await scoreRes.json();
+          setScorecard(scoreData.scorecard ?? null);
+        } else {
+          setScorecard(null);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');
       } finally {
@@ -130,6 +142,11 @@ export const WikiRelationships: React.FC<WikiRelationshipsProps> = ({ wikiType, 
         <Button variant="primary" className="text-xs px-4 py-2" onClick={handleClassify} disabled={classifying}>
           {classifying ? 'Classifying…' : 'Auto-Classify'}
         </Button>
+        {typeof scorecard?.relationship_validation?.issues_count === 'number' && (
+          <span className="text-[10px] px-2 py-1 border border-[var(--surface-border)] text-[var(--text-muted)]">
+            Scorecard issues: {scorecard.relationship_validation.issues_count}
+          </span>
+        )}
       </div>
 
       {error        && <p className="text-xs text-[var(--error)]">{error}</p>}

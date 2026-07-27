@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import io
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
 from openpyxl import load_workbook
@@ -11,7 +12,7 @@ from app.services.schema_inference import infer_cell_schema
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _sheet_summary(sheet_payload: dict[str, Any]) -> dict[str, Any]:

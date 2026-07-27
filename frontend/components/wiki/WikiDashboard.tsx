@@ -23,6 +23,12 @@ interface WikiStats {
   };
 }
 
+interface WikiScorecard {
+  lint?: { severity?: string; summary?: Record<string, number> };
+  relationship_validation?: { issues_count?: number; total_relationships?: number };
+  freshness?: { maintenance_updated_at?: string | null };
+}
+
 interface SyncResult {
   synced: number;
   already_synced: number;
@@ -43,6 +49,10 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
   const [syncing, setSyncing]   = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [vaultPath, setVaultPath] = useState<string | null>(null);
+  const [scorecard, setScorecard] = useState<WikiScorecard | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
+  const storylineEnabled = process.env.NEXT_PUBLIC_WIKI_STORYLINE_CANVAS_ENABLED === 'true';
 
   const fetchStats = useCallback(async () => {
     try {
@@ -52,6 +62,13 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
       if (!res.ok) throw new Error('Failed to fetch stats');
       const data = await res.json();
       setStats(data.stats);
+      const scoreRes = await api(`/api/wiki/${wikiType}/health/scorecard?${params}`);
+      if (scoreRes.ok) {
+        const scoreData = await scoreRes.json();
+        setScorecard(scoreData.scorecard ?? null);
+      } else {
+        setScorecard(null);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unknown error');
     } finally {
@@ -73,6 +90,27 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
       // Keep dashboard functional even if Obsidian isn't installed.
     }
   }, [wikiType, projectId, api]);
+
+  const cleanupOrphans = useCallback(async () => {
+    if (wikiType !== 'project' || !projectId) return;
+    setCleaning(true);
+    setCleanupMessage(null);
+    try {
+      const params = new URLSearchParams({ project_id: projectId });
+      const res = await api(`/api/wiki/project/cleanup-orphans?${params}`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setCleanupMessage(`Removed ${data.deleted} orphaned page${data.deleted === 1 ? '' : 's'}.`);
+        await fetchStats();
+      } else {
+        setCleanupMessage('Cleanup failed.');
+      }
+    } catch {
+      setCleanupMessage('Cleanup failed.');
+    } finally {
+      setCleaning(false);
+    }
+  }, [wikiType, projectId, api, fetchStats]);
 
   // Auto-sync project documents on mount
   useEffect(() => {
@@ -131,6 +169,9 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
   const lastIngest = stats.last_ingest
     ? new Date(stats.last_ingest).toLocaleDateString()
     : '—';
+  const lintSeverity = scorecard?.lint?.severity ?? stats.health.severity;
+  const relationshipsTotal = scorecard?.relationship_validation?.total_relationships ?? 0;
+  const relationshipIssues = scorecard?.relationship_validation?.issues_count ?? 0;
 
   return (
     <div className="space-y-5">
@@ -171,13 +212,47 @@ export const WikiDashboard: React.FC<WikiDashboardProps> = ({ wikiType, projectI
         )}
       </div>
 
+      {scorecard && (
+        <div className="border border-[var(--surface-border)] px-4 py-3 bg-[var(--surface-muted)] text-xs">
+          <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Health scorecard</div>
+          <div className="flex flex-wrap gap-3 text-[var(--text-muted)]">
+            <span>Lint: <span className="capitalize text-[var(--text-default)]">{lintSeverity}</span></span>
+            <span>Relationships: <span className="text-[var(--text-default)]">{relationshipsTotal}</span></span>
+            <span>Relationship issues: <span className="text-[var(--text-default)]">{relationshipIssues}</span></span>
+            {scorecard.freshness?.maintenance_updated_at && (
+              <span>
+                Maintained: <span className="text-[var(--text-default)]">
+                  {new Date(scorecard.freshness.maintenance_updated_at).toLocaleDateString()}
+                </span>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {wikiType === 'project' && projectId && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button variant="secondary" className="text-xs px-3 py-1.5" onClick={initAndOpenVault}>
             Open in Obsidian
           </Button>
+          <Button
+            variant="ghost"
+            className="text-xs px-3 py-1.5"
+            onClick={cleanupOrphans}
+            disabled={cleaning}
+          >
+            {cleaning ? 'Cleaning…' : 'Clean up orphaned pages'}
+          </Button>
+          {cleanupMessage && (
+            <span className="text-[10px] text-[var(--text-muted)]">{cleanupMessage}</span>
+          )}
           {vaultPath && (
             <span className="text-[10px] text-[var(--text-muted)] font-mono">{vaultPath}</span>
+          )}
+          {storylineEnabled && (
+            <Button variant="ghost" className="text-xs px-3 py-1.5">
+              Open Storyline Canvas
+            </Button>
           )}
         </div>
       )}

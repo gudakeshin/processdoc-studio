@@ -10,9 +10,11 @@ import json
 import logging
 import re
 import time
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from typing import Any
 
+from app.core.config import settings
 from app.services.wiki_ingest import _migrate_meta_directory, _parse_source
 
 logger = logging.getLogger(__name__)
@@ -215,8 +217,32 @@ def wiki_ingest_with_retry(
                 extracted, wiki_type, project_id
             )
 
-            # Update index with incremental build (Phase 4)
-            index_result = _build_relationships_incremental(wiki_type, project_id)
+            # Update graph through canonical wiki_graph path. Evented mode can defer heavy work.
+            index_result = {"changed_pages": 0, "elapsed_time_seconds": 0, "performance_improvement_percent": 0}
+            if bool(getattr(settings, "wiki_evented_graph_rebuild_enabled", False)):
+                from app.services.wiki_ingest import emit_wiki_change_event
+                emit_wiki_change_event(
+                    wiki_type=wiki_type,
+                    project_id=project_id,
+                    change_type="ingest",
+                    changed_page_ids=pages_result.get("page_ids", []),
+                )
+                if bool(getattr(settings, "wiki_evented_graph_rebuild_fallback_sync_enabled", True)):
+                    from app.services.wiki_graph import build_relationships_incremental
+                    index_result = build_relationships_incremental(wiki_type, project_id)
+            else:
+                from app.services.wiki_graph import build_relationships_incremental
+                index_result = build_relationships_incremental(wiki_type, project_id)
+
+            # Compute and persist embeddings (semantic search index)
+            embedding_result = {}
+            if bool(getattr(settings, "wiki_embeddings_persistence_enabled", True)):
+                embedding_result = _try_compute_embeddings(wiki_type, project_id)
+
+            # Auto-generate synthesis pages (emergent insights from connected knowledge)
+            synthesis_result = {}
+            if bool(getattr(settings, "wiki_synthesis_on_ingest_enabled", True)):
+                synthesis_result = _try_generate_synthesis_pages(wiki_type, project_id)
 
             # Log the operation
             log_entry_id = _append_wiki_log(
@@ -232,6 +258,8 @@ def wiki_ingest_with_retry(
                 "page_ids": pages_result.get("page_ids", []),
                 "corrections_made": len(pages_result.get("corrections", [])),
                 "log_entry_id": log_entry_id,
+                "embeddings_computed": embedding_result.get("computed", 0),
+                "synthesis_pages_created": synthesis_result.get("created", 0),
                 "performance": {
                     "changed_pages": index_result.get("changed_pages", 0),
                     "elapsed_time_seconds": index_result.get("elapsed_time_seconds", 0),
@@ -345,8 +373,8 @@ def wiki_query_with_retry(
             if not pages:
                 return None, "No relevant pages found in wiki"
 
-            # Synthesize answer
-            answer = _synthesize_answer(question, pages)
+            # Synthesize answer (pass wiki_type/project_id for schema injection)
+            answer = _synthesize_answer(question, pages, wiki_type=wiki_type, project_id=project_id)
 
             # (Optional) Run QA
             qa_result = None
@@ -355,8 +383,8 @@ def wiki_query_with_retry(
 
             result = {
                 "answer": answer,
-                "citations": _extract_citations(pages),
-                "source_pages": [p["id"] for p in pages],
+                "citations": _extract_citations(answer, pages),
+                "source_pages": [p.get("page_id") or p.get("id", "") for p in pages],
                 "qa_result": qa_result,
             }
 
@@ -520,6 +548,54 @@ def _update_wiki_pages(extracted: dict, wiki_type: str, project_id: str | None) 
         return {"created": 0, "updated": 0, "page_ids": [], "corrections": []}
 
 
+def _try_compute_embeddings(wiki_type: str, project_id: str | None) -> dict:
+    """Compute and persist embeddings for wiki pages (semantic search index).
+
+    Called after ingest, non-blocking. Enables fast semantic search without recomputing
+    embeddings on every query.
+
+    Returns:
+        {"computed": int, "saved": bool, "index_size": int}
+    """
+    try:
+        from app.services.wiki_query import _get_wiki_index, _compute_and_save_embeddings
+
+        index = _get_wiki_index(wiki_type, project_id)
+        if not index or not index.get("pages"):
+            return {"computed": 0, "saved": False}
+
+        result = _compute_and_save_embeddings(index.get("pages", []), wiki_type, project_id)
+        if result.get("saved"):
+            logger.info(f"Embeddings persisted for {result.get('computed', 0)} pages")
+        return result
+
+    except Exception as e:
+        logger.warning(f"Embedding computation failed (non-blocking): {e}")
+        return {"computed": 0, "saved": False, "error": str(e)}
+
+
+def _try_generate_synthesis_pages(wiki_type: str, project_id: str | None) -> dict:
+    """Auto-generate synthesis pages after ingest (Second Brain emergence layer).
+
+    Called after graph rebuild, non-blocking. Synthesis pages connect clusters of related
+    pages, surfacing emergent insights. Limited to 3 pages per ingest to keep light.
+
+    Returns:
+        {"status": "success|skipped|error", "created": int, "pages": list, ...}
+    """
+    try:
+        from app.services.wiki_synthesis import SynthesisEngine
+
+        engine = SynthesisEngine(wiki_type=wiki_type, project_id=project_id)
+        result = engine.create_synthesis_pages(max_pages=3)
+        if result.get("created", 0) > 0:
+            logger.info(f"Auto-generated {result['created']} synthesis pages | wiki_type={wiki_type}")
+        return result
+    except Exception as e:
+        logger.warning(f"Synthesis page generation failed (non-blocking): {e}")
+        return {"status": "skipped", "error": str(e), "created": 0}
+
+
 def _update_wiki_index(wiki_type: str, project_id: str | None) -> dict:
     """Regenerate wiki index from all pages."""
     try:
@@ -570,7 +646,7 @@ def _append_wiki_log(
         log_file = wiki_dir / "log.md"
 
         # Create log entry
-        timestamp = datetime.now(UTC).isoformat()
+        timestamp = datetime.now(IST).isoformat()
         entry = f"\n## {timestamp}\n"
         entry += f"**Operation:** {operation}\n"
         if source_name:
@@ -585,11 +661,11 @@ def _append_wiki_log(
         else:
             log_file.write_text("# Wiki Log\n" + entry)
 
-        log_entry_id = f"log_{int(datetime.now(UTC).timestamp() * 1000)}"
+        log_entry_id = f"log_{int(datetime.now(IST).timestamp() * 1000)}"
         return log_entry_id
     except Exception as e:
         logger.error(f"Error appending to wiki log: {e}")
-        return f"log_{int(datetime.now(UTC).timestamp())}"
+        return f"log_{int(datetime.now(IST).timestamp())}"
 
 
 def _extract_relationships(
@@ -598,95 +674,8 @@ def _extract_relationships(
     all_page_ids: list[str],
     all_page_titles: list[str],
 ) -> list[dict]:
-    """
-    Extract explicit and inferred relationships from page content.
-
-    Explicit: [[Page Name]] links
-    Inferred: Page title mentions in content
-
-    Args:
-        source_page_id: ID of the page being analyzed
-        content: Page content (markdown)
-        all_page_ids: All available page IDs for reference
-        all_page_titles: All available page titles for mention detection
-
-    Returns:
-        List of relationship dicts with structure:
-        {
-            "source_id": str,
-            "target_id": str,
-            "relation_type": "references" | "mentions",
-            "confidence": "EXPLICIT" | "INFERRED",
-            "confidence_score": float,
-            "source_location": str (e.g., "L42"),
-            "created_at": ISO timestamp
-        }
-    """
-    import re
-    relationships = []
-    title_to_id = {
-        title.lower(): pid
-        for pid, title in zip(all_page_ids, all_page_titles, strict=False)
-    }
-
-    try:
-        # Extract explicit links: [[Page Name]] or [[page_id|Title]]
-        explicit_pattern = r"\[\[([^\]]+)\]\]"
-        for match in re.finditer(explicit_pattern, content):
-            raw_target = match.group(1).strip()
-            target_ref, _, target_title = raw_target.partition("|")
-            target_ref = target_ref.strip()
-            target_title = target_title.strip()
-            normalized_target = target_ref.lower().replace(" ", "_").replace(".", "")[:50]
-            target_id = ""
-
-            if normalized_target in all_page_ids:
-                target_id = normalized_target
-            elif target_title and target_title.lower() in title_to_id:
-                target_id = title_to_id[target_title.lower()]
-            elif target_ref.lower() in title_to_id:
-                target_id = title_to_id[target_ref.lower()]
-
-            # Only add if target exists
-            if target_id in all_page_ids:
-                relationships.append({
-                    "source_id": source_page_id,
-                    "target_id": target_id,
-                    "relation_type": "references",
-                    "confidence": "EXPLICIT",
-                    "confidence_score": 1.0,
-                    "source_location": f"L{content[:match.start()].count(chr(10)) + 1}",
-                    "created_at": datetime.now(UTC).isoformat(),
-                })
-
-        # Extract inferred links: page title mentions
-        for idx, title in enumerate(all_page_titles):
-            if title.lower() == all_page_titles[all_page_ids.index(source_page_id)].lower():
-                # Skip self-references
-                continue
-
-            # Count mentions (case-insensitive, word boundary)
-            pattern = r"\b" + re.escape(title) + r"\b"
-            matches = list(re.finditer(pattern, content, re.IGNORECASE))
-
-            if len(matches) >= 2:  # Require at least 2 mentions for inferred
-                target_id = all_page_ids[idx]
-                # Skip if already explicit
-                if not any(r["target_id"] == target_id for r in relationships):
-                    confidence_score = min(0.95, 0.5 + (len(matches) * 0.1))  # 0.5-0.95
-                    relationships.append({
-                        "source_id": source_page_id,
-                        "target_id": target_id,
-                        "relation_type": "mentions",
-                        "confidence": "INFERRED",
-                        "confidence_score": confidence_score,
-                        "source_location": f"L{content[:matches[0].start()].count(chr(10)) + 1}",
-                        "created_at": datetime.now(UTC).isoformat(),
-                    })
-    except Exception as e:
-        logger.warning(f"Error extracting relationships from {source_page_id}: {e}")
-
-    return relationships
+    from app.services.wiki_graph import _extract_relationships as _graph_extract_relationships
+    return _graph_extract_relationships(source_page_id, content, all_page_ids, all_page_titles)
 
 
 def _extract_cross_wiki_relationships(
@@ -743,7 +732,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
             })
 
         # Pattern for cross-project wiki links
@@ -763,7 +752,7 @@ def _extract_cross_wiki_relationships(
                 "relation_type": "cross_wiki_reference",
                 "confidence": "EXPLICIT",
                 "confidence_score": 1.0,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(IST).isoformat(),
             })
 
     except Exception as e:
@@ -842,7 +831,7 @@ def _build_cross_wiki_relationships(
             "lp_to_projects": lp_to_projects,
             "projects_to_lp": projects_to_lp,
             "total_links": len(lp_to_projects) + len(projects_to_lp),
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         logger.info(f"Built cross-wiki relationships: {len(lp_to_projects)} LP refs, {len(projects_to_lp)} Project refs")
@@ -960,7 +949,7 @@ def _save_persistent_graph(
             "metadata": {
                 "node_count": G.number_of_nodes(),
                 "edge_count": G.number_of_edges(),
-                "last_updated": datetime.now(UTC).isoformat(),
+                "last_updated": datetime.now(IST).isoformat(),
             }
         }, indent=2))
 
@@ -976,38 +965,8 @@ def _load_persistent_graph(
     wiki_type: str,
     project_id: str | None,
 ) -> tuple:
-    """
-    Load persistent graph from graph.json for fast queries.
-
-    Returns:
-        (G, page_titles, metadata) or (None, {}, None) on error
-    """
-    try:
-        from networkx.readwrite import json_graph
-
-        from app.services.storage import workspace_path
-
-        if wiki_type == "leading_practice":
-            wiki_dir = workspace_path("leading_practices") / "wiki"
-        else:
-            wiki_dir = workspace_path(project_id) / "wiki"
-
-        graph_file = wiki_dir / ".meta" / "graph.json"
-        if not graph_file.exists():
-            graph_file = wiki_dir / "graph.json"
-        if not graph_file.exists():
-            return None, {}, None
-
-        graph_data = json.loads(graph_file.read_text())
-        G = json_graph.node_link_graph(graph_data["graph"])
-        page_titles = graph_data.get("page_titles", {})
-        metadata = graph_data.get("metadata", {})
-
-        return G, page_titles, metadata
-
-    except Exception as e:
-        logger.warning(f"Error loading persistent graph: {e}")
-        return None, {}, None
+    from app.services.wiki_graph import load_persistent_graph
+    return load_persistent_graph(wiki_type, project_id)
 
 
 def _llm_find_relationships(pages: dict) -> list:
@@ -1059,7 +1018,7 @@ def _llm_find_relationships(pages: dict) -> list:
             return []
 
         all_ids = set(pages.keys())
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(IST).isoformat()
         return [
             {
                 "source_id": r["source_id"],
@@ -1190,74 +1149,8 @@ def _detect_changed_pages(wiki_type: str, project_id: str | None) -> tuple:
         (changed_pages, unchanged_pages, deleted_pages)
         where each is a dict mapping page_id to page_data
     """
-    try:
-        import re
-
-        from app.services.storage import workspace_path
-
-        if wiki_type == "leading_practice":
-            wiki_dir = workspace_path("leading_practices") / "wiki"
-        else:
-            wiki_dir = workspace_path(project_id) / "wiki"
-
-        if not wiki_dir.exists():
-            return {}, {}, {}
-
-        # Load previous manifest
-        manifest = _load_page_manifest(wiki_type, project_id)
-        previous_pages = manifest.get("pages", {})
-
-        # Scan current pages
-        current_pages = {}
-        changed_pages = {}
-        unchanged_pages = {}
-
-        for md_file in wiki_dir.glob("*.md"):
-            if md_file.name in ("index.md", "log.md"):
-                continue
-
-            page_id = md_file.stem
-            content = md_file.read_text(encoding="utf-8")
-            content_hash = _compute_content_hash(content)
-
-            # Extract title from frontmatter
-            title_match = re.search(r'^title:\s*"?([^"\n]+)"?', content, re.MULTILINE)
-            title = title_match.group(1) if title_match else page_id.replace("_", " ").title()
-
-            current_pages[page_id] = {
-                "hash": content_hash,
-                "title": title,
-                "content": content,
-                "file": md_file,
-            }
-
-            # Check if page changed
-            if page_id in previous_pages:
-                if previous_pages[page_id]["hash"] == content_hash:
-                    unchanged_pages[page_id] = current_pages[page_id]
-                else:
-                    changed_pages[page_id] = current_pages[page_id]
-            else:
-                # New page
-                changed_pages[page_id] = current_pages[page_id]
-
-        # Detect deleted pages
-        deleted_pages = {
-            p_id: previous_pages[p_id]
-            for p_id in previous_pages
-            if p_id not in current_pages
-        }
-
-        logger.info(
-            f"Change detection: {len(changed_pages)} changed, "
-            f"{len(unchanged_pages)} unchanged, {len(deleted_pages)} deleted"
-        )
-
-        return changed_pages, unchanged_pages, deleted_pages
-
-    except Exception as e:
-        logger.error(f"Error detecting changed pages: {e}")
-        return {}, {}, {}
+    from app.services.wiki_graph import detect_changed_pages
+    return detect_changed_pages(wiki_type, project_id)
 
 
 def _build_relationships_incremental(
@@ -1281,152 +1174,8 @@ def _build_relationships_incremental(
             "performance_improvement": float (% time saved)
         }
     """
-    try:
-        import time as time_module
-
-        from app.services.storage import workspace_path
-
-        start_time = time_module.time()
-
-        # Detect changes
-        changed_pages, unchanged_pages, deleted_pages = _detect_changed_pages(wiki_type, project_id)
-
-        if wiki_type == "leading_practice":
-            wiki_dir = workspace_path("leading_practices") / "wiki"
-        else:
-            wiki_dir = workspace_path(project_id) / "wiki"
-
-        # Load existing relationships
-        relationships_file = wiki_dir / "relationships.json"
-        if relationships_file.exists():
-            existing_data = json.loads(relationships_file.read_text())
-            all_relationships = existing_data.get("relationships", [])
-        else:
-            all_relationships = []
-
-        # Remove relationships from deleted pages and pages being re-computed.
-        # Keep all other edges so incremental rebuilds don't erase historical links.
-        all_relationships = [
-            r for r in all_relationships
-            if r["source_id"] not in deleted_pages and r["source_id"] not in changed_pages
-        ]
-
-        # Build page lists for relationship extraction
-        all_page_ids = list(changed_pages.keys()) + list(unchanged_pages.keys())
-        page_titles = [
-            p["title"] for p in
-            (list(changed_pages.values()) + list(unchanged_pages.values()))
-        ]
-
-        # Extract relationships for changed pages only
-        pages_with_links = 0
-        changed_page_payload: dict[str, dict[str, Any]] = {}
-        for page_id, page_data in changed_pages.items():
-            changed_page_payload[page_id] = {
-                "title": page_data["title"],
-                "content": page_data["content"],
-            }
-            relationships = _extract_relationships(
-                page_id,
-                page_data["content"],
-                all_page_ids,
-                page_titles
-            )
-            all_relationships.extend(relationships)
-            if relationships:
-                pages_with_links += 1
-
-        # Re-run semantic relationship extraction for changed pages to preserve
-        # non-regex edges that would otherwise be lost in incremental mode.
-        llm_rels = _llm_find_relationships(changed_page_payload)
-        if llm_rels:
-            existing_pairs = {(r["source_id"], r["target_id"]) for r in all_relationships}
-            for rel in llm_rels:
-                pair = (rel["source_id"], rel["target_id"])
-                rev = (rel["target_id"], rel["source_id"])
-                if pair not in existing_pairs and rev not in existing_pairs:
-                    all_relationships.append(rel)
-                    existing_pairs.add(pair)
-
-        # Persist updated relationships
-        relationships_file.write_text(json.dumps({
-            "total": len(all_relationships),
-            "relationships": all_relationships,
-            "last_updated": datetime.now(UTC).isoformat(),
-            "incremental_update": True,
-            "changed_pages_count": len(changed_pages),
-        }, indent=2))
-
-        # Only re-detect communities if significant changes
-        if len(changed_pages) / max(len(changed_pages) + len(unchanged_pages), 1) > 0.1:
-            # More than 10% changed, rebuild communities
-            communities_data = _detect_communities(wiki_type, project_id)
-            _save_communities(wiki_type, project_id, communities_data)
-            logger.info(f"Re-detected {communities_data['total_communities']} communities")
-        else:
-            # Minimal changes, load existing communities
-            communities_data = {"total_communities": 0}
-
-        # Only re-detect god nodes if significant changes
-        if len(changed_pages) / max(len(changed_pages) + len(unchanged_pages), 1) > 0.1:
-            god_nodes_data = _detect_god_nodes(wiki_type, project_id)
-            _save_god_nodes(wiki_type, project_id, god_nodes_data)
-            logger.info(f"Re-detected {len(god_nodes_data['god_nodes'])} god nodes")
-        else:
-            god_nodes_data = {"god_nodes": []}
-
-        # Update persistent graph
-        _save_persistent_graph(wiki_type, project_id)
-
-        # Update manifest
-        manifest = _load_page_manifest(wiki_type, project_id)
-        for page_id, page_data in changed_pages.items():
-            manifest["pages"][page_id] = {
-                "hash": page_data["hash"],
-                "title": page_data["title"],
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
-        # Remove deleted pages from manifest
-        for page_id in deleted_pages:
-            manifest["pages"].pop(page_id, None)
-
-        manifest["last_full_rebuild"] = datetime.now(UTC).isoformat()
-        manifest["relationships_version"] = manifest.get("relationships_version", 0) + 1
-        _save_page_manifest(wiki_type, project_id, manifest)
-
-        elapsed_time = time_module.time() - start_time
-
-        # Estimate time saved vs full rebuild (baseline: 0.5s per 100 pages)
-        total_pages = len(changed_pages) + len(unchanged_pages)
-        estimated_full_rebuild = (total_pages / 100) * 0.5
-        performance_improvement = ((estimated_full_rebuild - elapsed_time) / estimated_full_rebuild * 100
-                                  if estimated_full_rebuild > 0 else 0)
-
-        logger.info(
-            f"Incremental rebuild: {elapsed_time:.3f}s elapsed, "
-            f"~{performance_improvement:.0f}% faster than full rebuild"
-        )
-
-        return {
-            "total_relationships": len(all_relationships),
-            "pages_with_links": pages_with_links + len(unchanged_pages),
-            "changed_pages": len(changed_pages),
-            "unchanged_pages": len(unchanged_pages),
-            "deleted_pages": len(deleted_pages),
-            "communities_count": communities_data.get("total_communities", 0),
-            "god_nodes_count": len(god_nodes_data.get("god_nodes", [])),
-            "elapsed_time_seconds": round(elapsed_time, 3),
-            "performance_improvement_percent": round(performance_improvement, 1),
-        }
-
-    except Exception as e:
-        logger.error(f"Error in incremental relationship build: {e}")
-        return {
-            "total_relationships": 0,
-            "pages_with_links": 0,
-            "changed_pages": 0,
-            "error": str(e),
-        }
+    from app.services.wiki_graph import build_relationships_incremental
+    return build_relationships_incremental(wiki_type, project_id)
 
 
 def _get_wiki_performance_metrics(wiki_type: str, project_id: str | None) -> dict:
@@ -1788,7 +1537,7 @@ def _save_god_nodes(
             "total_pages": god_nodes_data["total_pages"],
             "avg_importance": god_nodes_data["avg_importance"],
             "god_nodes": god_nodes_data["god_nodes"],
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         return True
@@ -2084,7 +1833,7 @@ def _save_communities(
             "total_communities": communities_data["total_communities"],
             "communities": communities_data["communities"],
             "page_community_map": communities_data["page_community_map"],
-            "last_updated": datetime.now(UTC).isoformat(),
+            "last_updated": datetime.now(IST).isoformat(),
         }, indent=2))
 
         return True
@@ -2408,73 +2157,10 @@ def _evaluate_wiki_qa(wiki_type: str, project_id: str | None) -> dict:
         }
 
 
-def _get_wiki_index(wiki_type: str, project_id: str | None) -> dict | None:
-    """Get current wiki index. (To be implemented in Phase 2)"""
-    # Stub
-    return {"pages": []}
-
-
-def _search_wiki_pages(question: str, index: dict, wiki_type: str, project_id: str | None) -> list:
-    """Search wiki pages by relevance. (To be implemented in Phase 2)"""
-    # Stub
-    return []
-
-
-def _synthesize_answer(question: str, pages: list) -> str:
-    """Synthesize answer from pages. (To be implemented in Phase 2)"""
-    # Stub
-    return f"Answer to '{question}' (not yet implemented)"
-
-
-def _extract_citations(pages: list) -> list:
-    """Extract citations from pages. (To be implemented in Phase 2)"""
-    # Stub
-    return []
-
-
-def _evaluate_answer_quality(answer: str, pages: list, question: str) -> dict | None:
-    """Evaluate answer quality. (To be implemented in Phase 3)"""
-    # Stub
-    return None
-
-
-def _get_all_wiki_pages(wiki_type: str, project_id: str | None) -> list:
-    """Get all wiki pages. (To be implemented in Phase 3)"""
-    # Stub
-    return []
-
-
-def _check_contradictions(pages: list) -> list:
-    """Check for contradictory claims. (To be implemented in Phase 3)"""
-    # Stub
-    return []
-
-
-def _check_orphans(pages: list) -> list:
-    """Check for orphaned pages. (To be implemented in Phase 3)"""
-    # Stub
-    return []
-
-
-def _check_broken_links(pages: list) -> list:
-    """Check for broken references. (To be implemented in Phase 3)"""
-    # Stub
-    return []
-
-
-def _check_coverage_gaps(pages: list) -> list:
-    """Check for under-explored topics. (To be implemented in Phase 3)"""
-    # Stub
-    return []
-
-
-def _check_staleness(pages: list) -> list:
-    """Check for stale pages. (To be implemented in Phase 3)"""
-    # Stub
-    return []
-
-
-def _generate_lint_suggestions(issues: list, pages: list) -> list:
-    """Generate suggestions from lint issues. (To be implemented in Phase 3)"""
-    # Stub
-    return []
+from app.services.wiki_query import (  # noqa: E402 — module-level re-export
+    _get_wiki_index,
+    _search_wiki_pages,
+    _synthesize_answer,
+    _extract_citations,
+    _evaluate_answer_quality,
+)

@@ -4,7 +4,8 @@ import asyncio
 import json
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
+from app.core.tz import IST
 from pathlib import Path
 from typing import Any
 
@@ -13,9 +14,12 @@ from fastapi import WebSocket
 
 from app.core.config import settings
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def _events_path(excel_dir: Path) -> Path:
@@ -90,7 +94,8 @@ def _get_redis_client() -> redis.Redis | None:
         client.ping()
         _redis_client = client
         return _redis_client
-    except Exception:
+    except Exception as exc:
+        logger.warning("%s: suppressed error: %s", '_get_redis_client', exc)
         return None
 
 

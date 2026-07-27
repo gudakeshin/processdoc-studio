@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/Input";
 import { Textarea } from "@/components/ui/Textarea";
 import { useAuth } from "@/lib/auth-context";
 import { extractApiErrorMessage } from "@/lib/api-error";
+import { WikiMemoryLink } from "@/components/wiki/WikiMemoryLink";
 
 type MemoryItemRow = {
   id: string;
@@ -384,8 +385,9 @@ export default function MemoryPage() {
         <ProjectPicker value={projectId} onChange={setProjectId} />
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Filter type</label>
+            <label htmlFor="mem-filter-type" className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Filter type</label>
             <select
+              id="mem-filter-type"
               className="input-select-base w-full min-h-11"
               value={filterType}
               onChange={(e) => setFilterType(e.target.value)}
@@ -400,8 +402,9 @@ export default function MemoryPage() {
             </select>
           </div>
           <div className="min-w-[140px] flex-1">
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Search key/value</label>
+            <label htmlFor="mem-search" className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Search key/value</label>
             <Input
+              id="mem-search"
               placeholder="Substring…"
               value={searchQ}
               onChange={(e) => setSearchQ(e.target.value)}
@@ -688,6 +691,16 @@ export default function MemoryPage() {
                         Delete
                       </Button>
                     </div>
+                    {projectId && (item.memory_type === "fact" || item.memory_type === "decision" || item.memory_type === "constraint") && (
+                      <div className="mt-3 pt-3 border-t border-[var(--surface-border)]">
+                        <WikiMemoryLink
+                          memoryId={item.id}
+                          memoryType={item.memory_type as "fact" | "decision" | "constraint"}
+                          memoryContent={item.value}
+                          projectId={projectId}
+                        />
+                      </div>
+                    )}
                   </>
                 )}
               </li>

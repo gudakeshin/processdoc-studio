@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import html
 import logging
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,8 +35,8 @@ _DEFAULT_BRANDING: dict[str, str] = {
     "text_primary": "#1A1A1A",
     "text_inverse": "#FFFFFF",
     "font_family": "Calibri, Helvetica, Arial, sans-serif",
-    "company_name": "Company",
-    "footer_text": "",
+    "company_name": "Deloitte",
+    "footer_text": "Deloitte.",
 }
 
 
@@ -45,12 +46,14 @@ class DeckExportResult:
 
     html_path: Path | None = None
     pdf_path: Path | None = None
+    pdf_source: str | None = None
     errors: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "html_path": str(self.html_path) if self.html_path else None,
             "pdf_path": str(self.pdf_path) if self.pdf_path else None,
+            "pdf_source": self.pdf_source,
             "errors": list(self.errors or []),
         }
 
@@ -77,6 +80,14 @@ def _normalize_branding(branding: Any) -> dict[str, str]:
 
 def _coerce_list(value: Any) -> list[Any]:
     return list(value) if isinstance(value, list) else []
+
+
+def _coerce_process_flow_steps(slide: dict[str, Any]) -> list[dict[str, Any]]:
+    """Steps arrive either as {"steps": [...]} or as a bare list."""
+    raw = slide.get("process_flow")
+    if isinstance(raw, dict):
+        raw = raw.get("steps")
+    return [s for s in _coerce_list(raw) if isinstance(s, dict)]
 
 
 def _safe_str(value: Any, fallback: str = "") -> str:
@@ -109,11 +120,50 @@ def _render_slide_body_html(slide: dict[str, Any], brand: dict[str, str]) -> str
                 "<div class=\"deck-card\">"
                 f"<p class=\"deck-card-stat\">{_esc((c or {}).get('stat') if isinstance(c, dict) else c) or '—'}</p>"
                 f"<p class=\"deck-card-label\">{_esc((c or {}).get('label') if isinstance(c, dict) else '')}</p>"
+                f"<p class=\"deck-card-body\">{_esc((c or {}).get('description') if isinstance(c, dict) else '')}</p>"
                 "</div>"
             )
             for c in cards[:6]
         )
         return f"<div class=\"deck-grid\">{items}</div>"
+    if slide_type == "process_flow":
+        steps = _coerce_process_flow_steps(slide)
+        items = "".join(
+            (
+                "<div class=\"deck-card\">"
+                f"<p class=\"deck-card-heading\">{i}. {_esc(step.get('label') or '')}</p>"
+                f"<p class=\"deck-card-body\">{_esc(step.get('description') or '')}</p>"
+                "</div>"
+            )
+            for i, step in enumerate(steps[:8], start=1)
+        )
+        return f"<div class=\"deck-grid\">{items}</div>"
+    if slide_type == "big_number":
+        big = slide.get("big_number") if isinstance(slide.get("big_number"), dict) else {}
+        return (
+            "<div class=\"deck-divider\">"
+            f"<p class=\"deck-card-stat\">{_esc(big.get('stat') or '—')}</p>"
+            f"<p class=\"deck-card-label\">{_esc(big.get('label') or '')}</p>"
+            f"<p class=\"deck-card-body\">{_esc(big.get('context') or '')}</p>"
+            "</div>"
+        )
+    if slide_type == "chart":
+        chart = slide.get("chart") if isinstance(slide.get("chart"), dict) else {}
+        categories = [_safe_str(c) for c in _coerce_list(chart.get("categories"))]
+        series_rows: list[str] = []
+        for series in _coerce_list(chart.get("series"))[:6]:
+            if not isinstance(series, dict):
+                continue
+            values = [_safe_str(v) for v in _coerce_list(series.get("values"))]
+            cells = "".join(f"<td>{_esc(v)}</td>" for v in values[: len(categories) or None])
+            series_rows.append(f"<tr><td>{_esc(series.get('name') or '')}</td>{cells}</tr>")
+        head = "".join(f"<th>{_esc(c)}</th>" for c in categories)
+        return (
+            "<table class=\"deck-table\">"
+            f"<thead><tr><th></th>{head}</tr></thead>"
+            f"<tbody>{''.join(series_rows)}</tbody>"
+            "</table>"
+        )
     if slide_type in {"column_cards", "stack_layers"}:
         key = slide_type
         rows = _coerce_list(slide.get(key))
@@ -321,9 +371,9 @@ def _render_pdf(
                 elif slide_type == "stat_cards":
                     for card in _coerce_list(slide.get("stat_cards"))[:6]:
                         if isinstance(card, dict):
-                            bullet_source.append(
-                                f"{_safe_str(card.get('stat'))} — {_safe_str(card.get('label'))}".strip(" —")
-                            )
+                            stat_line = f"{_safe_str(card.get('stat'))} — {_safe_str(card.get('label'))}".strip(" —")
+                            desc = _safe_str(card.get("description"))
+                            bullet_source.append(f"{stat_line}: {desc}".strip(": ") if desc else stat_line)
                 elif slide_type in {"column_cards", "stack_layers"}:
                     key = slide_type
                     for card in _coerce_list(slide.get(key))[:6]:
@@ -331,6 +381,28 @@ def _render_pdf(
                             heading = _safe_str(card.get("heading") or card.get("label"))
                             body = _safe_str(card.get("body") or card.get("description"))
                             bullet_source.append(f"{heading}: {body}".strip(": "))
+                elif slide_type == "process_flow":
+                    for step_no, step in enumerate(_coerce_process_flow_steps(slide)[:8], start=1):
+                        label = _safe_str(step.get("label"))
+                        desc = _safe_str(step.get("description"))
+                        bullet_source.append(f"{step_no}. {label} — {desc}".strip(" —. "))
+                elif slide_type == "big_number":
+                    big = slide.get("big_number") if isinstance(slide.get("big_number"), dict) else {}
+                    stat_line = f"{_safe_str(big.get('stat'))} — {_safe_str(big.get('label'))}".strip(" —")
+                    if stat_line:
+                        bullet_source.append(stat_line)
+                    context = _safe_str(big.get("context"))
+                    if context:
+                        bullet_source.append(context)
+                elif slide_type == "chart":
+                    chart = slide.get("chart") if isinstance(slide.get("chart"), dict) else {}
+                    categories = [_safe_str(c) for c in _coerce_list(chart.get("categories"))]
+                    if categories:
+                        bullet_source.append("Categories: " + ", ".join(categories))
+                    for series in _coerce_list(chart.get("series"))[:6]:
+                        if isinstance(series, dict):
+                            values = ", ".join(_safe_str(v) for v in _coerce_list(series.get("values")))
+                            bullet_source.append(f"{_safe_str(series.get('name'))}: {values}".strip(": "))
                 else:
                     bullet_source = [_safe_str(b) for b in _coerce_list(slide.get("bullets"))][:10]
                 for item in bullet_source:
@@ -347,6 +419,23 @@ def _render_pdf(
         return None
 
 
+def _convert_pptx_to_pdf(pptx_path: Path, run_dir: Path, pdf_filename: str) -> Path | None:
+    """Convert the rendered PPTX to ``pdf_filename`` via LibreOffice. Fail-open."""
+    from app.core.soffice_convert import convert_office_to_pdf
+
+    with tempfile.TemporaryDirectory(prefix="deck-pdf-") as tmp:
+        produced = convert_office_to_pdf(pptx_path, Path(tmp))
+        if produced is None:
+            return None
+        target = run_dir / pdf_filename
+        try:
+            target.write_bytes(produced.read_bytes())
+        except OSError as exc:
+            logger.warning("deck_exporter: cannot write %s: %s", target, exc)
+            return None
+        return target
+
+
 def export_deck_artifacts(
     slides: list[dict[str, Any]] | None,
     run_dir: Path,
@@ -354,8 +443,14 @@ def export_deck_artifacts(
     *,
     html_filename: str = "deck.html",
     pdf_filename: str = "deck.pdf",
+    pptx_path: Path | None = None,
 ) -> DeckExportResult:
-    """Write HTML and PDF representations of the deck. Fail-open on either side."""
+    """Write HTML and PDF representations of the deck. Fail-open on either side.
+
+    When ``pptx_path`` points at the rendered deck and LibreOffice is available,
+    the PDF is a faithful conversion of the PPTX; otherwise the ReportLab
+    outline renderer produces a text approximation.
+    """
 
     result = DeckExportResult(errors=[])
     if not slides:
@@ -377,10 +472,25 @@ def export_deck_artifacts(
         logger.warning("deck_exporter: HTML write failed: %s", exc)
         result.errors.append(f"html: {exc}")
 
+    from app.core.config import settings
+
+    if (
+        settings.deck_pdf_via_soffice_enabled
+        and pptx_path is not None
+        and pptx_path.exists()
+    ):
+        converted = _convert_pptx_to_pdf(pptx_path, run_dir, pdf_filename)
+        if converted is not None:
+            result.pdf_path = converted
+            result.pdf_source = "soffice"
+            return result
+        result.errors.append("pdf: soffice conversion unavailable; using outline fallback")
+
     pdf_path = run_dir / pdf_filename
     produced = _render_pdf(slides, brand, pdf_path)
     if produced is not None:
         result.pdf_path = produced
+        result.pdf_source = "reportlab"
     else:
         result.errors.append("pdf: skipped")
 

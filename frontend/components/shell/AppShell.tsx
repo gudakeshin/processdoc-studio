@@ -22,11 +22,20 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const noShell = noShellRoutes.some((prefix) => pathname.startsWith(prefix));
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem("processdoc.desktopNavCollapsed") === "true";
-  });
-  const [matrixTheme, setMatrixTheme] = useState(readMatrixThemeFromStorage);
+  // Persisted UI prefs are read in a mount effect (not in useState initializers)
+  // so the first client render matches the server HTML and hydration does not
+  // mismatch. localStorage is unavailable during SSR.
+  const [hydrated, setHydrated] = useState(false);
+  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(false);
+  const [matrixTheme, setMatrixTheme] = useState(false);
+
+  useEffect(() => {
+    setDesktopNavCollapsed(
+      window.localStorage.getItem("processdoc.desktopNavCollapsed") === "true",
+    );
+    setMatrixTheme(readMatrixThemeFromStorage());
+    setHydrated(true);
+  }, []);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -47,9 +56,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    // Skip until persisted prefs have been read, otherwise the initial default
+    // would overwrite the stored value before the mount effect loads it.
+    if (!hydrated) return;
     window.localStorage.setItem("processdoc.desktopNavCollapsed", desktopNavCollapsed ? "true" : "false");
-  }, [desktopNavCollapsed]);
+  }, [desktopNavCollapsed, hydrated]);
 
   useEffect(() => {
     // Close the mobile nav whenever the route changes. Syncing with router
@@ -79,6 +90,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         matrixTheme && "matrix-app",
       )}
     >
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[100] focus:rounded focus:bg-white focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-[var(--primary-900)] focus:shadow-lg focus:outline-2 focus:outline-[var(--accent-blue)]"
+      >
+        Skip to main content
+      </a>
       <ShellSidebar
         mobileOpen={mobileNavOpen}
         onMobileClose={() => setMobileNavOpen(false)}
@@ -89,7 +106,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       />
       <div className="app-shell-body relative z-[1] min-w-0 flex-1">
         <ShellTopbar onMenuClick={() => setMobileNavOpen(true)} />
-        <main tabIndex={-1} className="mx-auto w-full max-w-[1400px] p-4 md:p-6 outline-none">
+        <main id="main-content" tabIndex={-1} className="mx-auto w-full max-w-[1400px] p-4 md:p-6 outline-none">
           {children}
         </main>
       </div>

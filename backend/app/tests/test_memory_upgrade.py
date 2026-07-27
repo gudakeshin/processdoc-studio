@@ -1,6 +1,6 @@
 """Memory wiring, tools, and personalization (upgrade plan coverage)."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app.core.config import settings
 from app.db.models import MemoryItem, Project, User
@@ -71,7 +71,7 @@ def test_memory_items_tool_filters_denied_consent(monkeypatch) -> None:
                 source="test",
                 consent_state="allowed",
                 is_archived=False,
-                updated_at=datetime.utcnow(),
+                updated_at=datetime.now(UTC).replace(tzinfo=None),
             )
         )
         session.commit()
@@ -149,7 +149,7 @@ def test_merge_ledger_blocks_principal_without_grant() -> None:
             consent_state="allowed",
             principal_id="principal-a@example.com",
             is_archived=False,
-            updated_at=datetime.utcnow(),
+            updated_at=datetime.now(UTC).replace(tzinfo=None),
         )
     )
     session.commit()
@@ -186,7 +186,7 @@ def test_merge_ledger_allows_when_grant_exists() -> None:
             consent_state="allowed",
             principal_id="principal-b@example.com",
             is_archived=False,
-            updated_at=datetime.utcnow(),
+            updated_at=datetime.now(UTC).replace(tzinfo=None),
         )
     )
     from app.db.models import ConsentLedger

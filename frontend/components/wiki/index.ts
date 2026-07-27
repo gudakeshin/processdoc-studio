@@ -20,8 +20,6 @@ export { WikiSynthesis } from './WikiSynthesis';
 
 // Integration Components
 // The standalone /projects/[pid]/wiki route is the single wiki entry point.
-// WikiTabInProjectStudio was removed — link to /projects/[pid]/wiki instead of
-// embedding wiki UI in Project Studio.
 export { WikiArtifactSection } from './WikiArtifactSection';
 export { WikiMemoryLink } from './WikiMemoryLink';
 export { CoordinatorWikiContext } from './CoordinatorWikiContext';

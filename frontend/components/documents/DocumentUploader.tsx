@@ -14,6 +14,7 @@ export function DocumentUploader({ projectId, autoload = true }: { projectId: st
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ index: number; total: number } | null>(null);
 
   const loadDocuments = useCallback(async () => {
     if (!projectId || !token) return;
@@ -38,15 +39,8 @@ export function DocumentUploader({ projectId, autoload = true }: { projectId: st
     void loadDocuments();
   }, [projectId, autoload, ready, token, loadDocuments]);
 
-  async function handleUpload(file: File | null) {
-    if (!projectId || !file || !token) return;
-    setUploading(true);
-    setError(null);
-    setMessage(null);
-
-    // Capture filename immediately from the File object
+  async function handleUploadOne(file: File): Promise<{ filename: string; ok: boolean; error?: string }> {
     const filename = file.name;
-
     try {
       const form = new FormData();
       form.append("project_id", projectId);
@@ -85,11 +79,37 @@ export function DocumentUploader({ projectId, autoload = true }: { projectId: st
       } catch {
         setMessage(`Uploaded: ${filename} — wiki sync pending (open Wiki to sync)`);
       }
+      return { filename, ok: true };
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Upload failed");
-    } finally {
-      setUploading(false);
+      return { filename, ok: false, error: e instanceof Error ? e.message : "Upload failed" };
     }
+  }
+
+  async function handleUpload(files: FileList | null) {
+    if (!projectId || !files || files.length === 0 || !token) return;
+    const fileList = Array.from(files);
+    setUploading(true);
+    setError(null);
+    setMessage(null);
+
+    const failures: string[] = [];
+    for (let i = 0; i < fileList.length; i++) {
+      setUploadProgress({ index: i + 1, total: fileList.length });
+      const result = await handleUploadOne(fileList[i]);
+      if (!result.ok) {
+        failures.push(`${result.filename}: ${result.error ?? "Upload failed"}`);
+      }
+    }
+
+    setUploadProgress(null);
+    if (failures.length > 0) {
+      setError(`Some uploads failed — ${failures.join("; ")}`);
+    }
+    if (failures.length < fileList.length) {
+      const succeeded = fileList.length - failures.length;
+      setMessage(`Uploaded ${succeeded} of ${fileList.length} document${fileList.length > 1 ? "s" : ""}`);
+    }
+    setUploading(false);
   }
 
   async function handleDelete(itemPath: string) {
@@ -129,21 +149,32 @@ export function DocumentUploader({ projectId, autoload = true }: { projectId: st
       <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
         <input
           type="file"
+          multiple
           className="hidden"
           disabled={uploading}
           onChange={(e) => {
-            const selected = e.target.files?.[0] ?? null;
-            setSelectedFileName(selected?.name ?? null);
+            const selected = e.target.files;
+            setSelectedFileName(
+              selected && selected.length > 0
+                ? selected.length === 1
+                  ? selected[0].name
+                  : `${selected.length} files selected`
+                : null
+            );
             void handleUpload(selected);
             e.currentTarget.value = "";
           }}
         />
         <span className="rounded-md border border-[color:color-mix(in_srgb,var(--primary-700)_35%,transparent)] bg-white px-3 py-2 text-sm text-[var(--primary-900)] hover:bg-[var(--primary-50)]">
-          {uploading ? "Uploading..." : "Choose file"}
+          {uploading ? "Uploading..." : "Choose files"}
         </span>
         <span className="text-xs text-[var(--text-muted)]">{selectedFileName ?? "No file selected"}</span>
       </label>
-      {uploading ? <p className="text-xs text-[var(--info)]">Uploading document...</p> : null}
+      {uploading ? (
+        <p className="text-xs text-[var(--info)]">
+          {uploadProgress ? `Uploading document ${uploadProgress.index} of ${uploadProgress.total}...` : "Uploading document..."}
+        </p>
+      ) : null}
       {message ? <p className="text-xs text-[var(--success)]">{message}</p> : null}
       {error ? <p className="text-xs text-[var(--error)]">{error}</p> : null}
       <div className="space-y-2 text-xs text-[var(--text-muted)]">
