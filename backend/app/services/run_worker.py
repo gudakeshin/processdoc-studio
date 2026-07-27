@@ -42,7 +42,12 @@ from app.services.hooks import hook_execution_exists, record_hook_execution, run
 from app.services.langfuse_tracing import langfuse_event, langfuse_span
 from app.services.observability import increment, observe_latency, record_run_trace, set_gauge
 from app.services.permission_pipeline import evaluate_permission_pipeline
-from app.services.proposal_policy import proposal_quality_policy
+from app.services.proposal_policy import PROPOSAL_SKILL_ID
+from app.services.run_evaluator_pipeline import (
+    _build_evaluator_pipeline,
+    _pptx_evidence_gate_from_run_dir,
+)
+from app.services.otel_tracing import start_span
 from app.services.retry_policy import (
     classify_retry_mode,
     compute_rate_limit_backoff,
@@ -308,44 +313,6 @@ def _persist_pptx_visual_critic_signals(run_dir: Any, visual_qa_report: dict[str
     except Exception:  # noqa: S110 — best-effort, non-fatal
         # Fail-open: render-signal persistence should never break run completion.
         pass
-
-
-def _build_evaluator_pipeline(
-    *,
-    requested_outputs: list[str],
-    plan_payload: dict[str, Any],
-    qa_report: dict[str, Any],
-    visual_qa_report: dict[str, Any],
-    guardrail_report: dict[str, Any],
-    final_artifact_report: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    requested_set = {str(x).strip().lower() for x in (requested_outputs or []) if str(x).strip()}
-    gateable_outputs = {"narrative", "raci", "sop", "process_map", "docx", "pptx", "pdf", "xlsx"}
-    proposal_policy = proposal_quality_policy(plan_payload, requested_outputs)
-    if proposal_policy.get("active"):
-        gateable_outputs |= set(proposal_policy.get("required_outputs") or [])
-    has_gateable_outputs = bool(requested_set & gateable_outputs)
-    qa_passed = True if not has_gateable_outputs else bool((qa_report or {}).get("passed"))
-    visual_status = str((visual_qa_report or {}).get("status") or "").lower()
-    visual_passed = visual_status in set(proposal_policy.get("visual_pass_statuses") or {"pass", "warn", "skip"})
-    guardrail_passed = (
-        True
-        if not has_gateable_outputs
-        else str((guardrail_report or {}).get("status") or "").lower() == "pass"
-    )
-    final_artifact_passed = True
-    if isinstance(final_artifact_report, dict) and final_artifact_report:
-        final_artifact_passed = bool(final_artifact_report.get("passed"))
-    return {
-        "qa_passed": qa_passed,
-        "visual_qa_passed": visual_passed,
-        "guardrails_passed": guardrail_passed,
-        "final_artifact_qa_passed": final_artifact_passed,
-        "status": "pass"
-        if (qa_passed and visual_passed and guardrail_passed and final_artifact_passed)
-        else "fail",
-        "quality_policy": proposal_policy,
-    }
 
 
 def _guardrail_regeneration_directive(guardrail_report: dict[str, Any]) -> str:
@@ -1544,7 +1511,11 @@ def _execute_run_job(
             try:
                 with project_token_context(project_id), run_llm_budget(int(settings.anthropic_max_tokens_per_run or 0), run_id=run_id):
                     try:
-                        state = _run_coordinator_async()
+                        with start_span(
+                            "run.coordinator",
+                            attributes={"project_id": project_id, "run_id": run_id},
+                        ):
+                            state = _run_coordinator_async()
                     finally:
                         _run_usage = get_run_usage()
                         _run_cost = calculate_run_cost_usd(**_run_usage)
@@ -1844,14 +1815,20 @@ def _execute_run_job(
                     if kept_total > 0:
                         set_gauge("context_compaction_drop_ratio", dropped_total / max(1.0, kept_total))
 
-            evaluator_pipeline = _build_evaluator_pipeline(
-                requested_outputs=requested,
-                plan_payload=plan_payload_obj,
-                qa_report=state.get("qa_report") if isinstance(state.get("qa_report"), dict) else {},
-                visual_qa_report=visual_qa_report if isinstance(visual_qa_report, dict) else {},
-                guardrail_report=guardrail_report if isinstance(guardrail_report, dict) else {},
-                final_artifact_report=final_artifact_report if isinstance(final_artifact_report, dict) else {},
-            )
+            with start_span(
+                "run.evaluator_pipeline",
+                attributes={"project_id": project_id, "run_id": run_id},
+            ):
+                evidence_gate = _pptx_evidence_gate_from_run_dir(run_dir)
+                evaluator_pipeline = _build_evaluator_pipeline(
+                    requested_outputs=requested,
+                    plan_payload=plan_payload_obj,
+                    qa_report=state.get("qa_report") if isinstance(state.get("qa_report"), dict) else {},
+                    visual_qa_report=visual_qa_report if isinstance(visual_qa_report, dict) else {},
+                    guardrail_report=guardrail_report if isinstance(guardrail_report, dict) else {},
+                    final_artifact_report=final_artifact_report if isinstance(final_artifact_report, dict) else {},
+                    evidence_gate=evidence_gate,
+                )
             append_run_event(session, run_id, "evaluator_pipeline", evaluator_pipeline)
             if hard_gate_enabled and evaluator_pipeline["status"] != "pass":
                 prior_retry_count = int(
@@ -1909,6 +1886,35 @@ def _execute_run_job(
                                 continue
                             retry_plan[payload_key] = hints
                             hints_injected[artifact_key] = len(hints)
+                        # Evidence hard-fail: inject per-slide unsupported-claim fixes so the
+                        # PPTX agent can remove or re-source fabricated numbers on retry.
+                        if evidence_gate.get("hard_fail"):
+                            evidence_hints = evidence_gate.get("remediation_hints") or []
+                            if evidence_hints:
+                                prior_pptx_hints = retry_plan.get("pptx_visual_feedback")
+                                merged_evidence = (
+                                    list(prior_pptx_hints)
+                                    if isinstance(prior_pptx_hints, list)
+                                    else []
+                                )
+                                merged_evidence.extend(evidence_hints)
+                                retry_plan["pptx_visual_feedback"] = merged_evidence
+                                hints_injected["pptx_evidence"] = len(evidence_hints)
+                            prior_regen = str(retry_plan.get("regeneration_directive") or "").strip()
+                            evidence_directive = (
+                                "Evidence hard-fail remediation required. Remove unsupported "
+                                "numeric claims or replace them with values present in retrieved "
+                                "client source documents, and cite Source: <filename, sheet/page>."
+                            )
+                            retry_plan["regeneration_directive"] = (
+                                f"{prior_regen}\n\n{evidence_directive}".strip()
+                                if prior_regen
+                                else evidence_directive
+                            )
+                            hints_injected.setdefault(
+                                "pptx_evidence",
+                                int(evidence_gate.get("unsupported_claims_count") or 1),
+                            )
                         # Narrative coherence feedback: mirror pptx_visual_feedback
                         # by loading persisted narrative_signals.json (or deriving from
                         # unified_quality_reports) and injecting per-output hints for
@@ -2002,8 +2008,9 @@ def _execute_run_job(
                     and evaluator_pipeline.get("qa_passed", True)
                     and evaluator_pipeline.get("visual_qa_passed", True)
                     and evaluator_pipeline.get("final_artifact_qa_passed", True)
+                    and evaluator_pipeline.get("evidence_passed", True)
                 )
-                if guardrails_only_failure:
+                if guardrails_only_failure and getattr(settings, "guardrails_fail_open_enabled", False):
                     _write_token_usage(run, _run_usage, _run_cost)
                     run.status = "review_ready"
                     run.error_message = (
@@ -2030,10 +2037,20 @@ def _execute_run_job(
                     return True, None
 
                 run.status = "failed"
-                run.error_message = (
-                    f"Pre-review evaluator pipeline failed after {MAX_EVALUATOR_REMEDIATION_ROUNDS} "
-                    "remediation attempt(s). See visual_qa_report and run events."
-                )
+                if not evaluator_pipeline.get("evidence_passed", True):
+                    unsupported = int(
+                        ((evaluator_pipeline.get("evidence_gate") or {}).get("unsupported_claims_count")) or 0
+                    )
+                    run.error_message = (
+                        f"Evidence hard-fail: {unsupported} unsupported numeric claim(s) in the PPTX "
+                        f"after {MAX_EVALUATOR_REMEDIATION_ROUNDS} remediation attempt(s). "
+                        "Replace fabricated figures with sourced client data or remove them."
+                    )
+                else:
+                    run.error_message = (
+                        f"Pre-review evaluator pipeline failed after {MAX_EVALUATOR_REMEDIATION_ROUNDS} "
+                        "remediation attempt(s). See visual_qa_report and run events."
+                    )
                 session.commit()
                 if run_todos:
                     todo_set_status(run_todos, "finalize", "failed")

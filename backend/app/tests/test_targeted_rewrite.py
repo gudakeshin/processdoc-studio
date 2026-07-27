@@ -101,7 +101,7 @@ def test_targeted_slide_rewrite_preserves_unflagged_slides(monkeypatch: pytest.M
     hints = [{"slide_index": 2, "instruction": "Rewrite as assertion title", "source": "action_title"}]
 
     with patch(
-        "app.agents.subagents.claude_generate_json",
+        "app.agents.pptx_critique_repair.claude_generate_json",
         return_value={
             "slides": [
                 {
@@ -125,7 +125,7 @@ def test_targeted_slide_rewrite_preserves_unflagged_slides(monkeypatch: pytest.M
 def test_targeted_slide_rewrite_returns_input_on_llm_failure() -> None:
     prior = [{"title": "A", "slide_type": "title"}]
     hints = [{"slide_index": 1, "instruction": "fix", "source": "action_title"}]
-    with patch("app.agents.subagents.claude_generate_json", side_effect=RuntimeError("down")):
+    with patch("app.agents.pptx_critique_repair.claude_generate_json", side_effect=RuntimeError("down")):
         assert _targeted_slide_rewrite(_ctx(), prior, hints) == prior
 
 

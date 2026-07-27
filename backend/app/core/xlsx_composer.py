@@ -47,6 +47,14 @@ class XlsxComposer:
             self._scan_overflow(typed_cells)
             return
 
+        process_cells = self._process_workbook_cells(payload if isinstance(payload, dict) else {})
+        if process_cells:
+            from app.core.deliverable_xlsx import apply_cells_to_workbook
+
+            apply_cells_to_workbook(self.wb, process_cells, header_fill=self.theme.hex6("primary"))
+            self._scan_overflow(process_cells)
+            return
+
         rows = self._fallback_rows(payload if isinstance(payload, dict) else {})
         ws = self.wb.active
         ws.title = "Output"
@@ -56,12 +64,47 @@ class XlsxComposer:
         else:
             self._append_totals_row(ws, rows)
 
+    def _process_workbook_cells(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Multi-sheet process workbook when process_model has steps (non-financial path)."""
+        pm = payload.get("process_model") if isinstance(payload.get("process_model"), dict) else {}
+        steps = pm.get("steps") if isinstance(pm.get("steps"), list) else []
+        if len(steps) < 2:
+            return []
+        cells: list[dict[str, Any]] = []
+        # Summary sheet
+        cells.append({"sheet": "Summary", "row": 1, "col": 1, "value": "Process", "bold": True})
+        cells.append({"sheet": "Summary", "row": 1, "col": 2, "value": str(pm.get("process_name") or "Process")})
+        cells.append({"sheet": "Summary", "row": 2, "col": 1, "value": "Step count", "bold": True})
+        cells.append({"sheet": "Summary", "row": 2, "col": 2, "value": len(steps)})
+        roles = pm.get("roles") if isinstance(pm.get("roles"), list) else []
+        cells.append({"sheet": "Summary", "row": 3, "col": 1, "value": "Roles", "bold": True})
+        cells.append({"sheet": "Summary", "row": 3, "col": 2, "value": ", ".join(str(r) for r in roles[:12])})
+        # Steps sheet
+        for i, h in enumerate(["ID", "Step", "Role", "Notes"], start=1):
+            cells.append({"sheet": "Steps", "row": 1, "col": i, "value": h, "bold": True})
+        for i, step in enumerate(steps[:80], start=2):
+            if not isinstance(step, dict):
+                continue
+            cells.append({"sheet": "Steps", "row": i, "col": 1, "value": str(step.get("id") or i - 1)})
+            cells.append({"sheet": "Steps", "row": i, "col": 2, "value": str(step.get("name") or "")})
+            cells.append({"sheet": "Steps", "row": i, "col": 3, "value": str(step.get("role") or "")})
+            cells.append({"sheet": "Steps", "row": i, "col": 4, "value": str(step.get("notes") or "")})
+        cells.append({
+            "_type": "named_range",
+            "name": "Process_Step_Count",
+            "ref": "'Summary'!$B$2",
+        })
+        self._record("process_workbook", f"{len(steps)} steps across Summary + Steps sheets")
+        return cells
+
     def _fallback_rows(self, payload: dict[str, Any]) -> list[list[str]]:
         rows: list[list[str]] = []
         if isinstance(payload.get("xlsx_markdown"), str):
             rows = rows_from_markdown(str(payload.get("xlsx_markdown") or ""))
         if not rows and isinstance(payload.get("raci_markdown"), str):
             rows = rows_from_markdown(str(payload.get("raci_markdown") or ""))
+        if not rows and isinstance(payload.get("sop_markdown"), str):
+            rows = rows_from_markdown(str(payload.get("sop_markdown") or ""))
         if not rows and isinstance(payload.get("process_model"), dict):
             rows = rows_from_process_model(payload.get("process_model") or {})
         if not rows:

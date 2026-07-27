@@ -10,7 +10,9 @@
     "lint:fix": "eslint . --fix",
     "ui:style-audit": "node scripts/ui_style_audit.mjs",
     "test": "node --test tests/**/*.test.mjs",
-    "test:vitest": "vitest run"
+    "test:vitest": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.95.2",
@@ -27,6 +29,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
+    "@playwright/test": "^1.62.0",
     "@tailwindcss/postcss": "^4.2.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

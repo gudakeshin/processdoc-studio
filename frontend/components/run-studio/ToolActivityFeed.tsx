@@ -324,6 +324,7 @@ export function ToolActivityFeed({
   streamError,
   onTaskAction,
   onRegenerateSlide,
+  onPatchSlideElement,
   slideRegenerateBusyIndex,
   downloadsContent,
   showAgentGraph = true,
@@ -346,6 +347,7 @@ export function ToolActivityFeed({
   downloadsContent?: React.ReactNode;
   onTaskAction?: (taskId: string, action: "retry" | "skip" | "approve") => void;
   onRegenerateSlide?: (slideIndex: number, instruction?: string, elementPath?: string) => void;
+  onPatchSlideElement?: (slideIndex: number, elementPath: string, value: string) => void;
   slideRegenerateBusyIndex?: number | null;
   hooksPanel?: {
     hooks: Array<Record<string, unknown>>;
@@ -486,6 +488,14 @@ export function ToolActivityFeed({
     setSlideModalOpen(false);
   }, [onRegenerateSlide, selectedElementPath, selectedSlideIndex, slideInstruction]);
 
+  const submitSlidePatch = useCallback(() => {
+    if (!onPatchSlideElement || selectedSlideIndex === null || !selectedElementPath) return;
+    const value = slideInstruction.trim();
+    if (!value) return;
+    onPatchSlideElement(selectedSlideIndex, selectedElementPath, value);
+    setSlideModalOpen(false);
+  }, [onPatchSlideElement, selectedElementPath, selectedSlideIndex, slideInstruction]);
+
   const onCanvasElementClick = useCallback(
     ({ slideIndex, elementPath }: { slideIndex: number; elementPath: string }) => {
       const slide = pptxSlides.find((s: any, i: number) => {
@@ -496,9 +506,14 @@ export function ToolActivityFeed({
       setSelectedSlideIndex(slideIndex);
       setSelectedSlideTitle(slideTitle);
       setSelectedElementPath(elementPath);
-      setSlideInstruction(
-        `Update only ${elementPath} on slide ${slideIndex} (${slideTitle}). Preserve all other content and layout on this slide and all other slides.`
-      );
+      // Prefill with current element text when available for deterministic edit.
+      const current =
+        elementPath === "title"
+          ? String(slide?.title || "")
+          : elementPath === "subtitle"
+            ? String(slide?.subtitle || "")
+            : "";
+      setSlideInstruction(current || `New text for ${elementPath}`);
       setSlideModalOpen(true);
     },
     [pptxSlides]
@@ -1034,21 +1049,22 @@ export function ToolActivityFeed({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-xl rounded-lg border border-[var(--surface-border)] bg-white p-4 shadow-lg">
             <h3 className="text-sm font-semibold text-[var(--text-default)]">
-              Regenerate slide {selectedSlideIndex}
+              {selectedElementPath ? `Edit slide ${selectedSlideIndex}` : `Regenerate slide ${selectedSlideIndex}`}
             </h3>
             <p className="mt-1 text-2xs text-[var(--text-muted)]">
               {selectedSlideTitle}
             </p>
             {selectedElementPath ? (
               <p className="mt-1 text-2xs text-[var(--text-muted)]">
-                Target element path: <span className="mono">{selectedElementPath}</span>
+                Target element: <span className="mono">{selectedElementPath}</span>
+                {" — "}use Apply text for an instant edit, or Queue AI rewrite for LLM regeneration.
               </p>
             ) : null}
             <p className="mt-1 text-2xs text-[var(--text-muted)]">
-              Press <kbd>Esc</kbd> to cancel, <kbd>Cmd/Ctrl+Enter</kbd> to queue.
+              Press <kbd>Esc</kbd> to cancel, <kbd>Cmd/Ctrl+Enter</kbd> to queue AI rewrite.
             </p>
             <label htmlFor="slide-instruction" className="mt-3 block text-2xs font-medium text-[var(--text-default)]">
-              Instruction
+              {selectedElementPath ? "New text / AI instruction" : "Instruction"}
             </label>
             <textarea
               id="slide-instruction"
@@ -1067,6 +1083,16 @@ export function ToolActivityFeed({
               >
                 Cancel
               </Button>
+              {selectedElementPath && onPatchSlideElement ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={submitSlidePatch}
+                  disabled={!slideInstruction.trim() || slideRegenerateBusyIndex !== null}
+                >
+                  Apply text
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 onClick={submitSlideRegeneration}

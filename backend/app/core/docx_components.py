@@ -294,6 +294,113 @@ def _append_field(run, instr_text: str) -> None:
     run._r.append(fld_end)
 
 
+def _append_ref_field(run, bookmark_name: str) -> None:
+    """Insert a Word REF field that resolves to a bookmark (updates on F9 / open)."""
+    _append_field(run, f" REF {bookmark_name} \\h ")
+
+
+def _stable_bookmark_id(name: str) -> str:
+    """Deterministic bookmark id across processes (avoid PYTHONHASHSEED)."""
+    import hashlib
+
+    return str(int(hashlib.md5(name.encode("utf-8")).hexdigest()[:8], 16) % 100000)
+
+
+def _add_bookmark(paragraph, bookmark_name: str) -> None:
+    try:
+        bid = _stable_bookmark_id(bookmark_name)
+        bookmark_start = OxmlElement("w:bookmarkStart")
+        bookmark_start.set(qn("w:id"), bid)
+        bookmark_start.set(qn("w:name"), bookmark_name)
+        paragraph._p.insert(0, bookmark_start)
+        bookmark_end = OxmlElement("w:bookmarkEnd")
+        bookmark_end.set(qn("w:id"), bid)
+        paragraph._p.append(bookmark_end)
+    except Exception as exc:
+        logger.debug("bookmark skipped: %s", exc)
+
+
+def table_caption(
+    doc: Document,
+    theme: DocTheme,
+    caption: str,
+    *,
+    number: int,
+    bookmark_id: str | None = None,
+) -> None:
+    """Centered 'Table N.' caption with optional bookmark for REF fields."""
+    cap = doc.add_paragraph()
+    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    prefix_run = cap.add_run(f"Table {number}. ")
+    prefix_run.font.name = theme.font_body
+    prefix_run.font.size = Pt(theme.pt("caption"))
+    prefix_run.italic = True
+    if caption.strip():
+        r = cap.add_run(caption.strip())
+        r.italic = True
+        r.font.name = theme.font_body
+        r.font.size = Pt(theme.pt("caption"))
+        r.font.color.rgb = RGBColor(*theme.rgb("muted"))
+    if bookmark_id:
+        _add_bookmark(cap, bookmark_id)
+
+
+def append_text_with_cross_refs(
+    paragraph: Any,
+    theme: DocTheme,
+    text: str,
+    *,
+    figure_ids: dict[str, int],
+    table_ids: dict[str, int],
+    unresolved: list[str],
+) -> None:
+    """Write text into ``paragraph``, converting ``[fig:id]`` / ``[tbl:id]`` to REF fields."""
+    import re
+
+    pattern = re.compile(r"\[(fig|tbl):([^\]]+)\]")
+    last = 0
+    for m in pattern.finditer(text or ""):
+        if m.start() > last:
+            run = paragraph.add_run(text[last:m.start()])
+            run.font.name = theme.font_body
+            run.font.size = Pt(theme.pt("body"))
+        kind, raw_id = m.group(1), m.group(2)
+        if kind == "fig" and raw_id in figure_ids:
+            num = figure_ids[raw_id]
+            prefix = paragraph.add_run("Figure ")
+            prefix.font.name = theme.font_body
+            prefix.font.size = Pt(theme.pt("body"))
+            ref_run = paragraph.add_run()
+            _append_ref_field(ref_run, f"fig_{num}")
+            visible = paragraph.add_run(str(num))
+            visible.font.name = theme.font_body
+            visible.font.size = Pt(theme.pt("body"))
+        elif kind == "tbl" and raw_id in table_ids:
+            num = table_ids[raw_id]
+            prefix = paragraph.add_run("Table ")
+            prefix.font.name = theme.font_body
+            prefix.font.size = Pt(theme.pt("body"))
+            ref_run = paragraph.add_run()
+            _append_ref_field(ref_run, f"tbl_{raw_id}")
+            # Visible placeholder until Word updates fields on open
+            visible = paragraph.add_run(str(num))
+            visible.font.name = theme.font_body
+            visible.font.size = Pt(theme.pt("body"))
+        else:
+            unresolved.append(m.group(0))
+            run = paragraph.add_run(m.group(0))
+            run.font.name = theme.font_body
+            run.font.size = Pt(theme.pt("body"))
+        last = m.end()
+    if last < len(text or ""):
+        run = paragraph.add_run(text[last:])
+        run.font.name = theme.font_body
+        run.font.size = Pt(theme.pt("body"))
+    if not text:
+        paragraph.add_run("")
+
+
+
 def parse_inline(text: str) -> list[tuple[str, bool, bool, str | None, bool]]:
     """Parse inline markers into (text, bold, italic, url, is_code) tuples."""
     result: list[tuple[str, bool, bool, str | None, bool]] = []
@@ -453,16 +560,7 @@ def figure_caption(
         r.font.size = Pt(theme.pt("caption"))
         r.font.color.rgb = RGBColor(*theme.rgb("muted"))
     if bookmark_id:
-        try:
-            bookmark_start = OxmlElement("w:bookmarkStart")
-            bookmark_start.set(qn("w:id"), str(abs(hash(bookmark_id)) % 100000))
-            bookmark_start.set(qn("w:name"), bookmark_id)
-            cap._p.insert(0, bookmark_start)
-            bookmark_end = OxmlElement("w:bookmarkEnd")
-            bookmark_end.set(qn("w:id"), str(abs(hash(bookmark_id)) % 100000))
-            cap._p.append(bookmark_end)
-        except Exception as exc:
-            logger.debug("figure bookmark skipped: %s", exc)
+        _add_bookmark(cap, bookmark_id)
 
 
 def embed_figure(

@@ -33,6 +33,7 @@ class AgentContext:
     branding: Any | None = None
     deliverable_metadata: Any | None = None
     deliverable_archetype: str = "process_doc"
+    compaction_snapshot: dict[str, Any] | None = None
     emit_event: Callable[[str, dict[str, Any]], None] | None = None
     swarm_teammate_id: str | None = None
 
@@ -119,6 +120,9 @@ def build_agent_context(state: ProcessDocState, output_type: str) -> AgentContex
         if isinstance(state.get("deliverable_metadata_by_output_type"), dict)
         else None,
         deliverable_archetype=str(state.get("deliverable_archetype") or "process_doc"),
+        compaction_snapshot=state.get("compaction_snapshot")
+        if isinstance(state.get("compaction_snapshot"), dict)
+        else None,
         emit_event=state.get("_emit_run_event"),
         swarm_teammate_id=swarm_teammate_id,
     )

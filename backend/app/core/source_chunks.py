@@ -203,6 +203,43 @@ def extract_numeric_tokens(text: str) -> list[str]:
     return tokens
 
 
+def extract_claim_context_hints(context: str) -> dict[str, str | None]:
+    """Best-effort entity / unit / period hints from claim context (±50 chars)."""
+    ctx = (context or "").strip()
+    unit = None
+    if re.search(r"\$|usd|dollar", ctx, re.I):
+        unit = "USD"
+    elif re.search(r"%|percent|bps", ctx, re.I):
+        unit = "PCT"
+    elif re.search(r"\bfte\b|headcount", ctx, re.I):
+        unit = "FTE"
+    period = None
+    m = re.search(r"\b(FY\s?20\d{2}|Q[1-4]\s?20\d{2}|20\d{2})\b", ctx, re.I)
+    if m:
+        period = re.sub(r"\s+", "", m.group(1).upper())
+    entity = None
+    ent = re.search(
+        r"\b(revenue|savings|cost|ebitda|margin|roi|cycle.?time|headcount|fte)\b",
+        ctx,
+        re.I,
+    )
+    if ent:
+        entity = ent.group(1).lower().replace(" ", "_")
+    return {"entity": entity, "unit": unit, "period": period}
+
+
+def infer_chunk_field_hints(text: str, sheet: str | None = None) -> dict[str, str | None]:
+    """Infer entity/unit/period from a source chunk body or sheet name."""
+    hints = extract_claim_context_hints(text or "")
+    if not hints.get("entity") and sheet:
+        sheet_l = sheet.lower()
+        for key in ("revenue", "savings", "cost", "ebitda", "kpi", "pnl", "p&l"):
+            if key in sheet_l:
+                hints["entity"] = key.replace("&", "")
+                break
+    return hints
+
+
 def citation_label(chunk: dict[str, Any]) -> str:
     """Human-readable source label for footnotes."""
     filename = str(chunk.get("filename") or "source")

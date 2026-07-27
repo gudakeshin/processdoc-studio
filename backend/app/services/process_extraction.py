@@ -46,6 +46,26 @@ _ACTION_HINT = re.compile(
 )
 
 
+def _is_valid_step_name(name: str, entities: list[str] | None = None) -> bool:
+    """Reject noun-only entity lines masquerading as process steps."""
+    cleaned = (name or "").strip()
+    if len(cleaned) < 8:
+        return False
+    if _TOOL_MECHANIC_RE.search(cleaned):
+        return False
+    entity_set = {str(e).strip().lower() for e in (entities or []) if str(e).strip()}
+    if cleaned.lower() in entity_set:
+        return False
+    # Must look like an activity, not a bare noun label.
+    if not _ACTION_HINT.search(cleaned) and not re.search(
+        r"\b(process|validate|review|submit|approve|assign|configure|ingest|reconcile|close|monitor)\b",
+        cleaned,
+        re.I,
+    ):
+        return False
+    return True
+
+
 def _uniq_roles(roles: Iterable[str], cap: int = 12) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -193,12 +213,13 @@ def _llm_structure(text: str, ctx: str) -> ProcessModel | None:
     if not isinstance(payload, dict) or not isinstance(payload.get("steps"), list):
         return None
 
+    entities = [humanize_wiki_links(e) for e in (payload.get("entities") or []) if str(e).strip()]
     steps: list[ProcessStep] = []
     for i, s in enumerate(payload["steps"][:40], start=1):
         if not isinstance(s, dict):
             continue
         name = humanize_wiki_links(s.get("name") or "")
-        if not name:
+        if not name or not _is_valid_step_name(name, entities):
             continue
         steps.append({
             "id": f"s{i}", "name": name[:500],
@@ -211,7 +232,6 @@ def _llm_structure(text: str, ctx: str) -> ProcessModel | None:
     roles = _uniq_roles(humanize_wiki_links(r) for r in (payload.get("roles") or []) if str(r).strip())
     if not roles:
         roles = ["Process Owner", "Contributor"]
-    entities = [humanize_wiki_links(e) for e in (payload.get("entities") or []) if str(e).strip()]
     decisions: list[DecisionBranch] = []
     for j, d in enumerate(payload.get("decisions") or [], start=1):
         cond = humanize_wiki_links((d or {}).get("condition") if isinstance(d, dict) else d)
@@ -305,9 +325,9 @@ def _heuristic_process_model(raw_text: str, assembled_context: str = "") -> Proc
                 fallback.append((score, s))
         fallback.sort(key=lambda x: x[0], reverse=True)
         ranked_lines = [line for _, line in fallback]
-        if not ranked_lines and text:
-            ranked_lines = [text[:800] + ("…" if len(text) > 800 else "")]
         for i, title in enumerate(ranked_lines[:15], start=1):
+            if not _is_valid_step_name(title):
+                continue
             source_trace.append(title.strip()[:300])
             steps.append(
                 {

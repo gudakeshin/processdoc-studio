@@ -141,6 +141,7 @@ def apply_cells_to_workbook(
     by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
     charts_by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
     tables_by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    validations_by_sheet: dict[str, list[dict[str, Any]]] = defaultdict(list)
     named_ranges: list[dict[str, Any]] = []
 
     for item in cells:
@@ -154,11 +155,13 @@ def apply_cells_to_workbook(
             charts_by_sheet[sheet].append(item)
         elif item.get("_type") == "table":
             tables_by_sheet[sheet].append(item)
+        elif item.get("_type") == "data_validation":
+            validations_by_sheet[sheet].append(item)
         else:
             by_sheet[sheet].append(item)
 
     all_sheets = list(dict.fromkeys(
-        list(by_sheet) + list(charts_by_sheet) + list(tables_by_sheet)
+        list(by_sheet) + list(charts_by_sheet) + list(tables_by_sheet) + list(validations_by_sheet)
     ))
     if not all_sheets:
         all_sheets = ["Output"]
@@ -248,6 +251,28 @@ def apply_cells_to_workbook(
                 _add_chart(ws, cdef, anchor)
             except Exception as exc:
                 logger.warning("Chart add failed (%s): %s", sheet_name, exc)
+
+        # Scenario / list dropdowns
+        for vdef in validations_by_sheet.get(sheet_name, []):
+            try:
+                from openpyxl.worksheet.datavalidation import DataValidation
+
+                cell_ref = str(vdef.get("cell") or "").strip()
+                formula1 = str(vdef.get("formula1") or "").strip()
+                if not cell_ref or not formula1:
+                    continue
+                dv = DataValidation(
+                    type=str(vdef.get("type") or "list"),
+                    formula1=formula1,
+                    allow_blank=True,
+                    showDropDown=False,
+                )
+                dv.error = str(vdef.get("error") or "Select a valid scenario")
+                dv.errorTitle = str(vdef.get("error_title") or "Invalid selection")
+                ws.add_data_validation(dv)
+                dv.add(cell_ref)
+            except Exception as exc:
+                logger.warning("data validation skipped (%s): %s", sheet_name, exc)
 
     # Named ranges after sheets exist so Absolute/relative refs resolve.
     if named_ranges:

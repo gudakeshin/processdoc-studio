@@ -20,6 +20,20 @@ _SLIDE_TYPE_LAYOUT: dict[str, int] = {
     "title": _LAYOUT_TITLE,
     "section_divider": _LAYOUT_SECTION,
     "bullets": _LAYOUT_TITLE_CONTENT,
+    "stat_cards": _LAYOUT_TITLE_ONLY,
+    "column_cards": _LAYOUT_TITLE_ONLY,
+    "table": _LAYOUT_TITLE_ONLY,
+    "chart": _LAYOUT_TITLE_ONLY,
+    "big_number": _LAYOUT_TITLE_ONLY,
+    "process_flow": _LAYOUT_TITLE_ONLY,
+    "stack_layers": _LAYOUT_TITLE_ONLY,
+    "split_panel": _LAYOUT_TITLE_ONLY,
+    "lanes": _LAYOUT_TITLE_ONLY,
+    "workstream_cards": _LAYOUT_TITLE_ONLY,
+    "tower_cards": _LAYOUT_TITLE_ONLY,
+    "roadmap_matrix": _LAYOUT_TITLE_ONLY,
+    "swimlane_timeline": _LAYOUT_TITLE_ONLY,
+    "flagship_cards": _LAYOUT_TITLE_ONLY,
 }
 
 

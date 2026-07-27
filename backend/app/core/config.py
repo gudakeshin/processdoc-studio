@@ -115,6 +115,8 @@ class Settings(BaseSettings):
     trust_forwarded_for_hosts: str = "127.0.0.1"
 
     otel_sdk_enabled: bool = False
+    otel_service_name: str = "processdoc-backend"
+    otel_exporter_otlp_endpoint: str = ""  # e.g. http://localhost:4318/v1/traces
 
     anthropic_api_key: str = ""
     anthropic_claude_model: str = "claude-haiku-4-5"
@@ -345,6 +347,15 @@ class Settings(BaseSettings):
     # When True, unsupported numeric claims from PPTX evidence validation fail the render QA gate.
     # When False, evidence signals remain advisory metadata.
     pptx_evidence_hard_fail_enabled: bool = True
+    # When False (default), guardrail-only evaluator failures block review_ready.
+    # When True, guardrail-only failures may still ship as review_ready with a warning.
+    guardrails_fail_open_enabled: bool = False
+    # PDF ingestion: configurable page cap and OCR for scanned pages.
+    pdf_max_pages: int = 200
+    pdf_ocr_enabled: bool = True
+    pdf_ocr_min_chars_per_page: int = 50
+    # When client source chunks are present, ignore ProcessModel KPIs as evidence fallback.
+    evidence_ignore_process_model_when_sources_present: bool = True
     # When True, deck.pdf is produced by converting the rendered PPTX with LibreOffice
     # (pixel-faithful); the ReportLab outline renderer remains the fail-open fallback.
     deck_pdf_via_soffice_enabled: bool = True
@@ -421,6 +432,9 @@ class Settings(BaseSettings):
         "figure_vocab_v2_enabled",
         "docx_formatting_v2_enabled",
         "pptx_evidence_hard_fail_enabled",
+        "guardrails_fail_open_enabled",
+        "pdf_ocr_enabled",
+        "evidence_ignore_process_model_when_sources_present",
         "deck_pdf_via_soffice_enabled",
         "docx_composer_enabled",
         "xlsx_composer_enabled",

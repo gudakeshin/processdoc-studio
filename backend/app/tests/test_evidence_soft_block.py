@@ -76,7 +76,7 @@ def test_pptx_soft_block_builds_rewrite_instructions(monkeypatch: pytest.MonkeyP
         captured["directive"] = directive
         return slide_dicts
 
-    with patch("app.agents.subagents._targeted_slide_rewrite", side_effect=_capture_rewrite):
+    with patch("app.agents.pptx_critique_repair.targeted_slide_rewrite", side_effect=_capture_rewrite):
         out = _critique_and_repair_pptx(_ctx(), slides, None)
 
     assert out == slides
@@ -84,6 +84,36 @@ def test_pptx_soft_block_builds_rewrite_instructions(monkeypatch: pytest.MonkeyP
     assert "never invent" in captured["directive"].lower()
     assert captured["hints"][0]["source"] == "evidence"
     assert "$900M" in captured["hints"][0]["instruction"]
+
+
+def test_pptx_soft_block_uses_source_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "deliverable_critique_loop_enabled", False)
+    monkeypatch.setattr(settings, "evidence_soft_block_enabled", True)
+
+    registry = [
+        {
+            "source_id": "S1",
+            "text": "Revenue | 1200 | 1450",
+            "filename": "model.xlsx",
+            "sheet": "Revenue",
+        }
+    ]
+    slides = [
+        {"slide_type": "title", "title": "Deck"},
+        {
+            "slide_type": "stat_cards",
+            "title": "Revenue",
+            "stat_cards": [{"stat": "1200", "label": "Annual revenue"}],
+        },
+    ]
+    ctx = _ctx(compaction_snapshot={"source_registry": registry})
+
+    with patch("app.agents.pptx_critique_repair.targeted_slide_rewrite", side_effect=lambda *_a, **_k: slides):
+        out = _critique_and_repair_pptx(ctx, slides, None)
+
+    assert out[1]["footer_note"].startswith("Source: model.xlsx")
 
 
 def test_pptx_soft_block_render_proceeds_when_rewrite_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,7 +131,7 @@ def test_pptx_soft_block_render_proceeds_when_rewrite_fails(monkeypatch: pytest.
     before = validate_pptx_slides_evidence(slides, None)["unsupported_claims_count"]
     assert before >= 1
 
-    with patch("app.agents.subagents._targeted_slide_rewrite", side_effect=RuntimeError("llm down")):
+    with patch("app.agents.pptx_critique_repair.targeted_slide_rewrite", side_effect=RuntimeError("llm down")):
         out = _critique_and_repair_pptx(_ctx(), slides, None)
 
     assert out == slides

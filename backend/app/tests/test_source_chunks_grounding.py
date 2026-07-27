@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from app.core.evidence_validator import (
+    apply_source_citations_to_slides,
+    load_source_registry,
     validate_claims_against_evidence,
     validate_pptx_slides_evidence,
 )
@@ -122,3 +124,99 @@ def test_pptx_evidence_hard_fail_blocks_when_sources_present() -> None:
     assert report["unsupported_claims_count"] >= 1
     assert report["status"] in ("warn", "fail")
     assert settings.pptx_evidence_hard_fail_enabled is True
+
+
+def test_apply_source_citations_sets_footer_note() -> None:
+    slides = [
+        {
+            "slide_type": "stat_cards",
+            "title": "Revenue",
+            "stat_cards": [{"stat": "1200", "label": "Annual revenue"}],
+        }
+    ]
+    source_chunks = [
+        {
+            "source_id": "S1",
+            "text": "Revenue | 1200 | 1450",
+            "filename": "model.xlsx",
+            "sheet": "Revenue",
+        }
+    ]
+    out = apply_source_citations_to_slides(slides, source_chunks, None)
+    assert out[0]["footer_note"] == "Source: model.xlsx, Sheet: Revenue"
+    assert "Source:" in out[0]["notes"]
+
+
+def test_load_source_registry_from_disk_top_level(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    registry = [{"source_id": "S1", "text": "Revenue | 99", "filename": "a.xlsx", "sheet": "S1"}]
+    (run_dir / "compaction_snapshot.json").write_text(
+        json.dumps({"source_registry": registry, "char_cap": 32000}),
+        encoding="utf-8",
+    )
+    loaded = load_source_registry({}, run_dir)
+    assert loaded == registry
+
+
+def test_render_grounds_number_and_blocks_fabrication(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+    from app.core.pptx_artifact_renderer import render_pptx_with_artifact_tool
+    from app.core.pptx_qa import _extract_pptx_text
+
+    monkeypatch.setattr(settings, "pptx_evidence_hard_fail_enabled", True)
+    monkeypatch.setattr(settings, "pptx_editorial_theme_enabled", True)
+
+    branding = {
+        "primary_color": "#86BC25",
+        "company_name": "Deloitte",
+        "font_family": "Calibri",
+        "font_family_header": "Calibri Light",
+    }
+    registry = [
+        {
+            "source_id": "S1",
+            "text": "Revenue | 1200 | 1450",
+            "filename": "model.xlsx",
+            "sheet": "Revenue",
+        }
+    ]
+
+    grounded_payload = {
+        "pptx_slides": [
+            {"slide_type": "title", "title": "Deck"},
+            {
+                "slide_type": "bullets",
+                "title": "Revenue outlook",
+                "bullets": ["Annual revenue reached 1200 in the latest period."],
+            },
+        ],
+        "compaction_snapshot": {"source_registry": registry},
+    }
+    (tmp_path / "grounded").mkdir()
+    grounded = render_pptx_with_artifact_tool(grounded_payload, tmp_path / "grounded", branding)
+    assert grounded["status"] == "success"
+    text_by_slide = _extract_pptx_text(tmp_path / "grounded" / "output.pptx")
+    flat = " ".join(" ".join(v) for v in text_by_slide.values()).lower()
+    assert "source:" in flat
+    assert "model.xlsx" in flat
+
+    (tmp_path / "fabricated").mkdir()
+    fabricated = render_pptx_with_artifact_tool(
+        {
+            "pptx_slides": [
+                {"slide_type": "title", "title": "Deck"},
+                {
+                    "slide_type": "stat_cards",
+                    "title": "Impact",
+                    "stat_cards": [{"stat": "$900M", "label": "Savings"}],
+                },
+            ],
+            "compaction_snapshot": {"source_registry": registry},
+        },
+        tmp_path / "fabricated",
+        branding,
+    )
+    assert fabricated["status"] == "failed"
+    assert fabricated["qa_report"]["status"] == "fail"
+    assert fabricated["qa_report"].get("evidence_hard_fail") is True

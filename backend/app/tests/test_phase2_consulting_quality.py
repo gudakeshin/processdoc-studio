@@ -98,19 +98,24 @@ def test_financial_model_named_ranges_sensitivity_and_chart() -> None:
     )
     named = [c for c in cells if c.get("_type") == "named_range"]
     charts = [c for c in cells if c.get("_type") == "chart"]
+    validations = [c for c in cells if c.get("_type") == "data_validation"]
     sens = [c for c in cells if c.get("sheet") == SH_SENSITIVITY]
     assert any(n.get("name") == "Assumptions_revenue" for n in named)
+    assert any(n.get("name") == "Dashboard_Scenario" for n in named)
     assert charts and charts[0].get("sheet") == SH_DASHBOARD
+    assert validations and validations[0].get("cell") == "F2"
     assert sens
 
     wb = Workbook()
     apply_cells_to_workbook(wb, cells)
     assert "Assumptions_revenue" in wb.defined_names
+    assert "Dashboard_Scenario" in wb.defined_names
     assert SH_ASSUMPTIONS in wb.sheetnames
     assert SH_SENSITIVITY in wb.sheetnames
     assert SH_DASHBOARD in wb.sheetnames
     dash = wb[SH_DASHBOARD]
     assert dash._charts, "Dashboard should carry at least one chart"
+    assert dash.data_validations.dataValidation, "Dashboard should have scenario dropdown"
 
 
 def test_xlsx_composer_adds_totals_for_numeric_columns() -> None:

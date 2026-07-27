@@ -447,6 +447,18 @@ def build_storyline_contract(
         "slides": slides,
         "degraded": not bool(slides),
     }
+    ok, issues = validate_storyline_contract(contract)
+    if not ok:
+        for i, s in enumerate(slides):
+            if not isinstance(s, dict):
+                continue
+            ev = str(s.get("required_evidence") or "").strip()
+            s["suggested_visual"] = coerce_numeric_visual(str(s.get("suggested_visual") or ""), ev)
+        contract["slides"] = slides
+        ok, issues = validate_storyline_contract(contract)
+        if not ok:
+            contract["degraded"] = True
+            contract["validation_issues"] = issues
     return contract
 
 

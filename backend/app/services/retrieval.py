@@ -242,6 +242,36 @@ class TieredContextEngine:
                     scores[i] = s
         return scores
 
+    def _semantic_rerank(
+        self,
+        query: str,
+        candidates: list[tuple[int, float]],
+        texts: list[str],
+        *,
+        top_k: int = 20,
+    ) -> list[tuple[int, float]]:
+        """Optional semantic rerank of BM25 candidates when sentence-transformers is available."""
+        if not candidates or not query.strip():
+            return candidates
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            return candidates
+        try:
+            model = SentenceTransformer("all-MiniLM-L6-v2")
+            q_emb = model.encode([query], normalize_embeddings=True)
+            idxs = [i for i, _ in candidates[:top_k]]
+            docs = [texts[i] for i in idxs if 0 <= i < len(texts)]
+            if not docs:
+                return candidates
+            d_emb = model.encode(docs, normalize_embeddings=True)
+            sims = (d_emb @ q_emb.T).reshape(-1)
+            reranked = sorted(zip(idxs, sims.tolist()), key=lambda x: x[1], reverse=True)
+            tail = [(i, s) for i, s in candidates if i not in idxs]
+            return reranked + tail
+        except Exception:
+            return candidates
+
     def _mmr_select(
         self,
         candidates: list[tuple[int, float]],
@@ -674,6 +704,7 @@ class TieredContextEngine:
                 else self._bm25_scores(doc_index, instruction or "")
             )
             candidate_list = sorted(enumerate(doc_scores), key=lambda kv: kv[1], reverse=True)[:60]
+            candidate_list = self._semantic_rerank(instruction or "", candidate_list, texts)
             if not any(score > 0 for _, score in candidate_list):
                 selected_idxs = list(range(min(12, len(texts))))
             else:
@@ -753,6 +784,21 @@ class TieredContextEngine:
             )[:char_cap]
         if tier4_applied:
             compaction_trace.append("tier4_context_collapse")
+        section_sizes = {k: len(v) for k, v in sections.items()}
+        section_utilization = {
+            k: round(section_sizes.get(k, 0) / max(1, section_caps.get(k, 1)), 3)
+            for k in section_caps
+        }
+        evidence_coverage = {
+            "parsed_chunk_count": len(chunks),
+            "selected_evidence_chunk_count": len(evidence_out),
+            "selected_wiki_page_count": len(selected_wiki_info),
+            "wiki_chunk_pool_count": len(wiki_chunks) if wiki_chunks else 0,
+            "evidence_budget_chars": section_caps.get("Evidence", 0),
+            "evidence_used_chars": section_sizes.get("Evidence", 0),
+            "evidence_utilization": section_utilization.get("Evidence", 0.0),
+            "source_registry_count": len(source_registry),
+        }
         metadata = {
             "char_cap": char_cap,
             "token_budget_estimate": token_budget,
@@ -760,7 +806,10 @@ class TieredContextEngine:
             "parsed_chunk_count": len(chunks),
             "selected_evidence_chunk_count": len(evidence_out),
             "source_registry": source_registry,
-            "section_sizes": {k: len(v) for k, v in sections.items()},
+            "section_sizes": section_sizes,
+            "section_budgets": dict(section_caps),
+            "section_utilization": section_utilization,
+            "evidence_coverage": evidence_coverage,
             "compaction_tiers_applied": compaction_trace,
             "compaction_reason_codes": [
                 "overflow_detected" if tier4_applied else "quality_preserve",

@@ -936,6 +936,30 @@ def _compose_dashboard(
             "width": 14,
         })
 
+    # Scenario selector dropdown (partner-facing what-if control).
+    cells.append(_cell(sheet, 2, 5, value="Scenario", bold=True))
+    cells.append(_cell(sheet, 2, 6, value="Base", font_color=BLUE_INPUT, fill_color="FFFFCC"))
+    cells.append({
+        "_type": "data_validation",
+        "sheet": sheet,
+        "cell": "F2",
+        "type": "list",
+        "formula1": '"Base,High,Low"',
+        "error": "Choose Base, High, or Low",
+        "error_title": "Scenario",
+    })
+    cells.append({
+        "_type": "named_range",
+        "name": "Dashboard_Scenario",
+        "ref": f"'{sheet}'!$F$2",
+    })
+    if "revenue" in is_row_map:
+        cells.append({
+            "_type": "named_range",
+            "name": "Dashboard_Revenue_Y1",
+            "ref": f"'{SH_INCOME}'!$B${is_row_map['revenue']}",
+        })
+
     return cells
 
 

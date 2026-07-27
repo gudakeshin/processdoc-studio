@@ -471,12 +471,22 @@ def _synthesize_answer(question: str, pages: list, wiki_type: str = "", project_
 
 def _extract_citations(answer: str, pages: list) -> list:
     """Parse [[Page Title]] and [[page_id|Label]] links from synthesized answer to build citations.
-    Falls back to all source pages if the LLM didn't use wiki-link syntax."""
+
+  Does not fabricate citations when the LLM omitted wiki-link syntax — only pages
+  explicitly linked or strongly overlapping the answer text are returned.
+    """
+    from app.core.pdf_extract import citation_overlap_score
+
     cited_titles = set(re.findall(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", answer))
     page_map = {p.get("title", "").lower(): p for p in pages}
     cited = [page_map[t.lower()] for t in cited_titles if t.lower() in page_map]
-    if not cited:
-        cited = pages[:5]
+    if not cited and pages and (answer or "").strip():
+        ranked = sorted(
+            ((citation_overlap_score(answer, p), p) for p in pages),
+            key=lambda x: x[0],
+            reverse=True,
+        )
+        cited = [p for score, p in ranked if score >= 0.15][:3]
     return [
         {
             "page_id": p.get("page_id", ""),

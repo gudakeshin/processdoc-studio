@@ -488,6 +488,7 @@ export function ProjectStudioUnified({ pid, initialRunId = null }: Props) {
                       downloadsContent={studio.downloadsContent}
                       onTaskAction={studio.applyTaskAction}
                       onRegenerateSlide={studio.regenerateSlide}
+                      onPatchSlideElement={studio.patchSlideElement}
                       slideRegenerateBusyIndex={studio.slideRegenerateBusyIndex}
                       hooksPanel={studio.hooksPanel}
                       permissionPanel={studio.permissionPanel}

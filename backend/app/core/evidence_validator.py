@@ -14,7 +14,9 @@ from typing import Any
 from app.core.source_chunks import (
     chunk_text,
     citation_label,
+    extract_claim_context_hints,
     extract_numeric_tokens,
+    infer_chunk_field_hints,
     normalize_numeric,
 )
 
@@ -51,23 +53,33 @@ def extract_numeric_claims(text: str) -> list[dict[str, Any]]:
     claims: list[dict[str, Any]] = []
     seen: set[str] = set()
 
+    def _append(value: str, claim_type: str, *, span_start: int, span_end: int) -> None:
+        key = value.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        start = max(0, span_start - 50)
+        end = min(len(text), span_end + 50)
+        context = text[start:end].lower()
+        has_assumption = any(asm in context for asm in ACCEPTABLE_ASSUMPTIONS)
+        claims.append({
+            "value": value,
+            "type": claim_type,
+            "context": context,
+            "has_assumption_label": has_assumption,
+            **extract_claim_context_hints(context),
+        })
+
     for pattern, claim_type in BUSINESS_CLAIM_PATTERNS.items():
         for match in re.finditer(pattern, text, re.IGNORECASE):
-            value = match.group()
-            key = value.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            start = max(0, match.start() - 50)
-            end = min(len(text), match.end() + 50)
-            context = text[start:end].lower()
-            has_assumption = any(asm in context for asm in ACCEPTABLE_ASSUMPTIONS)
-            claims.append({
-                "value": value,
-                "type": claim_type,
-                "context": context,
-                "has_assumption_label": has_assumption,
-            })
+            _append(match.group(), claim_type, span_start=match.start(), span_end=match.end())
+
+    for match in re.finditer(r"(?<!\d)(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?!\d)", text or ""):
+        tok = match.group(1)
+        if len(re.sub(r"[^\d]", "", tok)) < 2:
+            continue
+        _append(tok, "Numeric metric", span_start=match.start(), span_end=match.end())
+
     return claims
 
 
@@ -91,6 +103,7 @@ def _build_evidence_from_source_chunks(source_chunks: list[dict[str, Any]]) -> l
             norm = normalize_numeric(tok)
             if norm is None:
                 continue
+            hints = infer_chunk_field_hints(text, chunk.get("sheet"))
             entries.append({
                 "value": tok,
                 "normalized": norm,
@@ -98,6 +111,9 @@ def _build_evidence_from_source_chunks(source_chunks: list[dict[str, Any]]) -> l
                 "filename": chunk.get("filename"),
                 "sheet": chunk.get("sheet"),
                 "page": chunk.get("page"),
+                "entity": chunk.get("entity") or hints.get("entity"),
+                "unit": chunk.get("unit") or hints.get("unit"),
+                "period": chunk.get("period") or hints.get("period"),
                 "citation": citation_label(chunk),
                 "excerpt": text[:240],
             })
@@ -122,6 +138,16 @@ def _build_evidence_map(
     if not process_model:
         return evidence
 
+    from app.core.config import settings
+
+    source_entries = evidence.get("source_entries") or []
+    ignore_pm = (
+        bool(source_entries)
+        and getattr(settings, "evidence_ignore_process_model_when_sources_present", True)
+    )
+    if ignore_pm:
+        return evidence
+
     if "kpis" in process_model and isinstance(process_model["kpis"], list):
         for kpi in process_model["kpis"]:
             if isinstance(kpi, dict):
@@ -143,15 +169,30 @@ def _build_evidence_map(
     return evidence
 
 
-def _find_evidence_for_claim(claim_value: str, evidence_map: dict[str, Any]) -> dict[str, Any] | None:
+def _find_evidence_for_claim(claim_value: str, evidence_map: dict[str, Any], claim: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Return matching provenance when a claim is grounded, else None."""
     claim_norm = normalize_numeric(claim_value)
     claim_lower = claim_value.lower()
+    claim = claim if isinstance(claim, dict) else {}
+    claim_entity = str(claim.get("entity") or "").strip().lower() or None
+    claim_unit = str(claim.get("unit") or "").strip().upper() or None
+    claim_period = str(claim.get("period") or "").strip().upper() or None
 
     # Primary: retrieved client source chunks.
     for entry in evidence_map.get("source_entries") or []:
         if not isinstance(entry, dict):
             continue
+        entry_entity = str(entry.get("entity") or "").strip().lower() or None
+        entry_unit = str(entry.get("unit") or "").strip().upper() or None
+        entry_period = str(entry.get("period") or "").strip().upper() or None
+        # Soft bind: when both sides declare entity/unit/period, require agreement.
+        if claim_entity and entry_entity and claim_entity not in entry_entity and entry_entity not in claim_entity:
+            continue
+        if claim_unit and entry_unit and claim_unit != entry_unit:
+            continue
+        if claim_period and entry_period and claim_period != entry_period:
+            continue
+
         excerpt = str(entry.get("excerpt") or "")
         # Avoid spurious substring passes ("1" inside "1200").
         if claim_lower and len(re.sub(r"[^\d]", "", claim_lower)) <= 1:
@@ -161,6 +202,9 @@ def _find_evidence_for_claim(claim_value: str, evidence_map: dict[str, Any]) -> 
                 "source_id": entry.get("source_id"),
                 "citation": entry.get("citation"),
                 "match_type": "verbatim",
+                "entity": entry_entity,
+                "unit": entry_unit,
+                "period": entry_period,
             }
         entry_norm = entry.get("normalized")
         if claim_norm is not None and isinstance(entry_norm, (int, float)):
@@ -169,6 +213,9 @@ def _find_evidence_for_claim(claim_value: str, evidence_map: dict[str, Any]) -> 
                     "source_id": entry.get("source_id"),
                     "citation": entry.get("citation"),
                     "match_type": "numeric",
+                    "entity": entry_entity,
+                    "unit": entry_unit,
+                    "period": entry_period,
                 }
 
     if claim_value in evidence_map.get("metrics", []):
@@ -218,7 +265,7 @@ def validate_claims_against_evidence(
 
     for claim in claims:
         claim_value = claim["value"]
-        match = _find_evidence_for_claim(claim_value, evidence_map)
+        match = _find_evidence_for_claim(claim_value, evidence_map, claim)
 
         if match:
             grounded.append({"claim": claim_value, **match})
@@ -294,11 +341,10 @@ def validate_slide_evidence(
     if "stat_cards" in slide and isinstance(slide["stat_cards"], list):
         for card in slide["stat_cards"]:
             if isinstance(card, dict):
-                text_parts.extend(
-                    str(card.get(k))
-                    for k in ("stat", "label", "description")
-                    if card.get(k)
-                )
+                for key in ("stat", "label", "description"):
+                    part = str(card.get(key) or "")
+                    if part:
+                        text_parts.append(part)
 
     if "bullets" in slide and isinstance(slide["bullets"], list):
         text_parts.extend(str(b) for b in slide["bullets"] if b)
@@ -371,19 +417,24 @@ def validate_pptx_slides_evidence(
     }
 
 
+def _registry_from_snapshot(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Extract provenance chunks from an assemble_v2 metadata dict."""
+    if not isinstance(snapshot, dict):
+        return []
+    top = snapshot.get("source_registry")
+    if isinstance(top, list):
+        registry = [c for c in top if isinstance(c, dict)]
+        if registry:
+            return registry
+    prov = snapshot.get("context_provenance")
+    if isinstance(prov, dict) and isinstance(prov.get("source_registry"), list):
+        return [c for c in prov["source_registry"] if isinstance(c, dict)]
+    return []
+
+
 def load_source_registry(payload: dict[str, Any], run_dir: Any | None = None) -> list[dict[str, Any]]:
     """Load source chunk registry from run payload or compaction snapshot on disk."""
-    registry: list[dict[str, Any]] = []
-    snap = payload.get("compaction_snapshot")
-    if isinstance(snap, dict):
-        top = snap.get("source_registry")
-        if isinstance(top, list):
-            registry = [c for c in top if isinstance(c, dict)]
-            if registry:
-                return registry
-        prov = snap.get("context_provenance")
-        if isinstance(prov, dict) and isinstance(prov.get("source_registry"), list):
-            registry = [c for c in prov["source_registry"] if isinstance(c, dict)]
+    registry = _registry_from_snapshot(payload.get("compaction_snapshot"))
     if registry:
         return registry
     if run_dir is not None:
@@ -394,9 +445,54 @@ def load_source_registry(payload: dict[str, Any], run_dir: Any | None = None) ->
         if path.is_file():
             try:
                 data = _json.loads(path.read_text(encoding="utf-8"))
-                prov = data.get("context_provenance") if isinstance(data, dict) else None
-                if isinstance(prov, dict) and isinstance(prov.get("source_registry"), list):
-                    return [c for c in prov["source_registry"] if isinstance(c, dict)]
+                if isinstance(data, dict):
+                    return _registry_from_snapshot(data)
             except Exception as exc:  # noqa: BLE001 — best-effort load
                 logger.debug("could not load source_registry from %s: %s", path, exc)
     return []
+
+
+def _source_chunk_citations(grounded_claims: list[dict[str, Any]]) -> list[str]:
+    """Unique citation labels grounded in retrieved client documents (not process model)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in grounded_claims:
+        if not isinstance(item, dict):
+            continue
+        if item.get("match_type") not in {"verbatim", "numeric"}:
+            continue
+        citation = str(item.get("citation") or "").strip()
+        if not citation or citation in seen:
+            continue
+        seen.add(citation)
+        out.append(citation)
+    return out
+
+
+def apply_source_citations_to_slides(
+    slides: list[dict[str, Any]],
+    source_chunks: list[dict[str, Any]] | None,
+    process_model: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Attach visible ``footer_note`` and speaker ``notes`` from grounded source claims."""
+    if not slides or not source_chunks:
+        return slides
+
+    annotated: list[dict[str, Any]] = []
+    for slide in slides:
+        if not isinstance(slide, dict):
+            annotated.append(slide)
+            continue
+        updated = dict(slide)
+        validation = validate_slide_evidence(updated, process_model, source_chunks).get("validation") or {}
+        citations = _source_chunk_citations(validation.get("grounded_claims") or [])
+        if not citations:
+            annotated.append(updated)
+            continue
+        source_line = "Source: " + "; ".join(citations[:3])
+        if not str(updated.get("footer_note") or "").strip():
+            updated["footer_note"] = source_line
+        if "Source:" not in str(updated.get("notes") or ""):
+            updated["notes"] = source_line
+        annotated.append(updated)
+    return annotated

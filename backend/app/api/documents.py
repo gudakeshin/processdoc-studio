@@ -100,19 +100,20 @@ async def upload_document(
     safe_name = _normalize_upload_filename(file.filename)
     validate_document_upload(safe_name, content)
     if safe_name.lower().endswith(".pdf"):
-        import io as _io
-
+        from app.core.config import settings
         from pypdf import PdfReader
+        import io as _io
 
         try:
             page_count = len(PdfReader(_io.BytesIO(content)).pages)
         except Exception:
             logger.warning("could not read PDF page count for %s; skipping page-limit check", safe_name, exc_info=True)
             page_count = 0
-        if page_count > 50:
+        max_pages = int(getattr(settings, "pdf_max_pages", 200))
+        if page_count > max_pages:
             raise HTTPException(
                 status_code=400,
-                detail=f"PDF has {page_count} pages; maximum allowed is 50",
+                detail=f"PDF has {page_count} pages; maximum allowed is {max_pages}",
             )
     digest = hashlib.sha256(content).hexdigest()
 

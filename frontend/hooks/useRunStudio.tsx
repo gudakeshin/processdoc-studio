@@ -731,6 +731,41 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     }
   }
 
+  async function patchSlideElement(slideIndex: number, elementPath: string, value: string) {
+    if (!pid || !rid) return;
+    if (!Number.isInteger(slideIndex) || slideIndex < 1) return;
+    if (!elementPath.trim()) return;
+    if (slideRegenerateBusyIndex !== null) return;
+    setSlideRegenerateBusyIndex(slideIndex);
+    setArtifactsError(null);
+    try {
+      const res = await api(
+        `/api/runs/${encodeURIComponent(pid)}/${encodeURIComponent(rid)}/slides/${slideIndex}/elements`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ element_path: elementPath, value }),
+        }
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        detail?: string;
+        pptx_slides?: unknown;
+        regenerated?: boolean;
+      };
+      if (!res.ok) throw new Error(extractApiErrorMessage(data, "Failed to patch slide element"));
+      await refreshArtifactsFromServer({ silent: true });
+      emitToast({
+        kind: "success",
+        message: data.regenerated
+          ? `Slide ${slideIndex} updated and PPTX re-rendered.`
+          : `Slide ${slideIndex} JSON updated (PPTX re-render pending).`,
+      });
+    } catch (e) {
+      setArtifactsError(e instanceof Error ? e.message : "Failed to patch slide element");
+    } finally {
+      setSlideRegenerateBusyIndex(null);
+    }
+  }
+
   async function regenerateSlide(slideIndex: number, instruction?: string, elementPath?: string) {
     if (!pid || !rid) return;
     if (!Number.isInteger(slideIndex) || slideIndex < 1) return;
@@ -1260,6 +1295,7 @@ export function useRunStudio({ pid, rid, liveEvents, streamError, pollMode }: Us
     applyTaskAction,
     controlRun,
     regenerateSlide,
+    patchSlideElement,
     simulatePermissionPreflight,
     loadHooks,
     disableHookByName,

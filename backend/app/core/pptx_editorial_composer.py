@@ -217,6 +217,20 @@ class EditorialSlideComposer:
         handler = handlers.get(slide_type, self._compose_bullets)
         with contextlib.suppress(Exception):
             handler(slide, slide_dict, rect)
+        footer_note = str(slide_dict.get("footer_note") or "").strip()
+        if footer_note:
+            m_h = self.theme.spacing["margin_h"]
+            src_y = SLIDE_H - self.theme.spacing["margin_v"] - 0.48
+            tf = C.textbox(slide, m_h, src_y, SLIDE_W - 2 * m_h, 0.24)
+            p = tf.paragraphs[0]
+            C.add_run(
+                p,
+                footer_note,
+                font=self.theme.font_body,
+                size=9,
+                color=self.theme.color("muted"),
+                italic=True,
+            )
         C.footer_band(slide, self.theme, self.deck_label, page_num, total_pages)
         set_slide_notes(slide, self._notes_text(slide_dict))
 

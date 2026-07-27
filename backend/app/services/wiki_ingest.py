@@ -305,24 +305,17 @@ def _extract_text_from_file(filename: str, content: bytes) -> str:
         # PDF files
         if lower.endswith(".pdf"):
             try:
-                from pypdf import PdfReader
+                from app.core.config import settings
+                from app.core.pdf_extract import extract_pdf_text
 
-                reader = PdfReader(io.BytesIO(content))
-                max_pages = 50
-                if len(reader.pages) > max_pages:
-                    _LOG.warning(
-                        "PDF %s has %s pages; max %s",
-                        filename,
-                        len(reader.pages),
-                        max_pages,
-                    )
-                    return f"[PDF rejected: exceeds {max_pages} page limit]"
-                text_parts = []
-                for page_num, page in enumerate(reader.pages[:max_pages]):
-                    page_text = page.extract_text().strip()
-                    if page_text:
-                        text_parts.append(f"[Page {page_num + 1}]\n{page_text}")
-                return "\n".join(text_parts) if text_parts else "[No text content in PDF]"
+                text, mode = extract_pdf_text(
+                    content,
+                    filename=filename,
+                    max_pages=int(getattr(settings, "pdf_max_pages", 200)),
+                    ocr_enabled=bool(getattr(settings, "pdf_ocr_enabled", True)),
+                    ocr_min_chars=int(getattr(settings, "pdf_ocr_min_chars_per_page", 50)),
+                )
+                return text
             except Exception as pdf_err:
                 _LOG.warning(f"Failed to parse PDF {filename}: {pdf_err}")
                 return "[Unable to extract text from PDF file]"

@@ -348,6 +348,57 @@ def review_document(
     }
 
 
+def _subject_matter_relevance(
+    slides: list[dict[str, Any]],
+    process_model: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Flag decks that read like internal product docs instead of client process work."""
+    pm = process_model if isinstance(process_model, dict) else {}
+    process_name = str(pm.get("process_name") or "").strip()
+    if not process_name or process_name.lower() in {"documented process", "process output"}:
+        return {"status": "skip", "hints": []}
+    blob = " ".join(
+        str(s.get(k) or "")
+        for s in slides
+        if isinstance(s, dict)
+        for k in ("title", "subtitle", "description")
+    ).lower()
+    name_tokens = [t for t in re.findall(r"[a-z0-9]{4,}", process_name.lower()) if t not in {"process", "documented"}]
+    if not name_tokens:
+        return {"status": "skip", "hints": []}
+    matched = sum(1 for t in name_tokens if t in blob)
+    ratio = matched / len(name_tokens)
+    internal_markers = (
+        "index.md", "log.md", "knowledge graph", "ingest cycle", "wiki-link",
+        "parsed_docs", "assemble_v2", "processdoc",
+    )
+    if any(m in blob for m in internal_markers):
+        return {
+            "status": "fail",
+            "hints": [{
+                "slide_index": 0,
+                "instruction": (
+                    "Deck content appears to describe internal tooling rather than the client's "
+                    f"process ({process_name}). Rewrite slides around the client process and evidence."
+                ),
+                "source": "subject_matter",
+            }],
+        }
+    if ratio < 0.25:
+        return {
+            "status": "warn",
+            "hints": [{
+                "slide_index": 0,
+                "instruction": (
+                    f"Deck may not be anchored to the client process '{process_name}'. "
+                    "Ensure titles and body text reference the client's process, roles, and evidence."
+                ),
+                "source": "subject_matter",
+            }],
+        }
+    return {"status": "pass", "hints": []}
+
+
 def review_deck(
     slides: list[dict[str, Any]],
     process_model: dict[str, Any] | None = None,
@@ -411,10 +462,14 @@ def review_deck(
     markup = _markup_leak(slides)
     hints.extend(markup.get("hints", []))
 
+    # 7) Subject-matter relevance -----------------------------------------------
+    relevance = _subject_matter_relevance(slides, process_model)
+    hints.extend(relevance.get("hints", []))
+
     # Overall status = worst of the checks (skips ignored) ---------------------
     statuses = [titles_status, ev.get("status", "skip"), arc.get("status", "skip"),
                 visual.get("status", "skip"), governance.get("status", "skip"),
-                markup.get("status", "skip")]
+                markup.get("status", "skip"), relevance.get("status", "skip")]
     rank = max((_RANK.get(s, 0) for s in statuses if s in _RANK), default=0)
     overall = _RANK_INV[rank]
 

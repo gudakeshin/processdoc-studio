@@ -12,6 +12,8 @@ from pathlib import Path
 
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+logger = logging.getLogger(__name__)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
@@ -407,6 +409,11 @@ class RegenerateSlideRequest(BaseModel):
     instruction: str
     scope: str = "slide"
     element_path: str | None = None
+
+
+class PatchSlideElementRequest(BaseModel):
+    element_path: str
+    value: str | int | float | bool | None = None
 
 
 class RecommendOutputTypesRequest(BaseModel):
@@ -1706,6 +1713,112 @@ def regenerate_run_slide(
         "element_path": element_path or None,
         "queued": True,
         "status": "approved",
+    }
+
+
+@router.patch("/{project_id}/{run_id}/slides/{slide_index}/elements")
+def patch_run_slide_element(
+    project_id: str,
+    run_id: str,
+    slide_index: int,
+    body: PatchSlideElementRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Deterministic in-place slide mutation — no LLM re-queue."""
+    require_project_role(project_id, {"Owner", "Editor"}, user, db)
+    run = db.scalar(select(Run).where(Run.id == run_id, Run.project_id == project_id))
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    element_path = str(body.element_path or "").strip()
+    if not element_path:
+        raise HTTPException(status_code=400, detail="element_path is required")
+    if slide_index < 1:
+        raise HTTPException(status_code=400, detail="slide_index must be >= 1")
+
+    run_dir = workspace_path(project_id) / "runs" / run_id
+    slides_path = run_dir / "pptx_slides.json"
+    if not slides_path.is_file():
+        raise HTTPException(status_code=409, detail="pptx_slides.json is not available for this run")
+    try:
+        prior_slides = json.loads(slides_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Could not read pptx slide state") from exc
+    if not isinstance(prior_slides, list) or not prior_slides:
+        raise HTTPException(status_code=409, detail="pptx slide state is empty")
+
+    from app.core.pptx_slide_patch import patch_slide_element
+
+    try:
+        updated = patch_slide_element(
+            prior_slides,
+            slide_index,
+            element_path=element_path,
+            value=body.value,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    slides_path.write_text(json.dumps(updated, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Re-render PPTX from mutated JSON so downloads stay in sync.
+    regenerated = False
+    try:
+        from app.core.deliverable import DeliverableRegistry, _init_default_deliverables
+        from app.services.branding_service import BrandingService
+
+        _init_default_deliverables()
+        branding = BrandingService(db).get_branding_for_run(project_id)
+        process_model = {}
+        pm_path = run_dir / "process_model.json"
+        if pm_path.is_file():
+            try:
+                process_model = json.loads(pm_path.read_text(encoding="utf-8"))
+            except Exception:
+                process_model = {}
+        payload = {
+            "pptx_slides": updated,
+            "process_model": process_model if isinstance(process_model, dict) else {},
+            "requested_outputs": ["pptx"],
+            "compaction_snapshot": {},
+        }
+        snap_path = run_dir / "compaction_snapshot.json"
+        if snap_path.is_file():
+            try:
+                payload["compaction_snapshot"] = json.loads(snap_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        out = DeliverableRegistry.get("pptx").render(payload, run_dir, branding=branding)
+        regenerated = out is not None
+    except Exception as exc:
+        logger.warning("deterministic slide patch render failed for %s: %s", run_id, exc)
+
+    try:
+        from app.services.run_events import append_run_event
+
+        append_run_event(
+            db,
+            run_id,
+            "slide_element_patched",
+            {
+                "slide_index": slide_index,
+                "element_path": element_path,
+                "regenerated": regenerated,
+            },
+        )
+        db.commit()
+    except Exception:
+        pass
+
+    return {
+        "project_id": project_id,
+        "run_id": run_id,
+        "slide_index": slide_index,
+        "element_path": element_path,
+        "queued": False,
+        "deterministic": True,
+        "regenerated": regenerated,
+        "pptx_slides": updated,
     }
 
 

@@ -374,6 +374,17 @@ def _regenerate_office_from_canvas(
         except Exception as exc:  # noqa: BLE001
             errors.append(f"xlsx: {exc}")
 
+    if artifact_key == "process_map_mermaid":
+        payload["process_map_mermaid"] = content
+        try:
+            out = DeliverableRegistry.get("process_map").render(payload, run_dir, branding=branding)
+            if out is not None:
+                regenerated.append("process_map")
+            else:
+                errors.append("process_map render returned None")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"process_map: {exc}")
+
     return {"regenerated": regenerated, "errors": errors, "run_id": run_id}
 
 
@@ -395,7 +406,7 @@ def save_canvas_artifact(
     (run_dir / CANVAS_ARTIFACT_FILES[body.artifact_key]).write_text(body.content, encoding="utf-8")
 
     regen: dict[str, object] = {"regenerated": [], "errors": []}
-    if body.artifact_key in {"narrative_md", "sop_markdown", "raci_markdown"}:
+    if body.artifact_key in {"narrative_md", "sop_markdown", "raci_markdown", "process_map_mermaid"}:
         try:
             regen = _regenerate_office_from_canvas(
                 project_id=project_id,
@@ -407,6 +418,23 @@ def save_canvas_artifact(
             )
         except Exception as exc:  # noqa: BLE001 — save still succeeded
             regen = {"regenerated": [], "errors": [str(exc)]}
+
+    try:
+        from app.services.run_events import append_run_event
+
+        append_run_event(
+            db,
+            run_id,
+            "canvas_artifact_saved",
+            {
+                "artifact_key": body.artifact_key,
+                "regenerated": regen.get("regenerated") or [],
+                "regen_errors": regen.get("errors") or [],
+            },
+        )
+        db.commit()
+    except Exception:
+        pass
 
     return {
         "ok": True,
