@@ -116,11 +116,13 @@ class TestWikiIngestRetry:
 
     def test_ingest_retries_on_timeout(self):
         """Ingest should retry on TimeoutError"""
-        with patch('app.services.wiki_operations._parse_source') as mock_parse, \
-             patch('app.services.wiki_operations._update_wiki_pages') as mock_update, \
-             patch('app.services.wiki_operations._update_wiki_index') as mock_index, \
-             patch('app.services.wiki_operations._append_wiki_log') as mock_log, \
-             patch('time.sleep') as mock_sleep:
+        with patch("app.services.wiki_operations._parse_source") as mock_parse, \
+             patch("app.services.wiki_operations._update_wiki_pages") as mock_update, \
+             patch("app.services.wiki_graph.build_relationships_incremental") as mock_index, \
+             patch("app.services.wiki_operations._try_compute_embeddings", return_value={}), \
+             patch("app.services.wiki_operations._try_generate_synthesis_pages", return_value={}), \
+             patch("app.services.wiki_operations._append_wiki_log") as mock_log, \
+             patch("time.sleep") as mock_sleep:
 
             # Fail twice, succeed on third attempt
             mock_parse.side_effect = [
@@ -129,7 +131,11 @@ class TestWikiIngestRetry:
                 {"title": "Test", "content": "Content"},
             ]
             mock_update.return_value = {"created": 1, "updated": 0, "page_ids": ["p1"], "corrections": []}
-            mock_index.return_value = {"page_count": 1}
+            mock_index.return_value = {
+                "changed_pages": 1,
+                "elapsed_time_seconds": 0,
+                "performance_improvement_percent": 0,
+            }
             mock_log.return_value = "log_1"
 
             result, error = wiki_ingest_with_retry(
