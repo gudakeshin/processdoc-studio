@@ -1,7 +1,7 @@
 """add unique constraint to memory_items (project_id, memory_type, key)
 
 Revision ID: 016_memory_item_unique_key
-Revises: 015_conversation_message_source_freshness
+Revises: 015_msg_source_freshness
 Create Date: 2026-05-28
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "016_memory_item_unique_key"
-down_revision = "015_conversation_message_source_freshness"
+down_revision = "015_msg_source_freshness"
 branch_labels = None
 depends_on = None
 

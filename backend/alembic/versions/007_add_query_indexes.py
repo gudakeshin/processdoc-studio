@@ -3,7 +3,7 @@
 from alembic import op
 
 revision = "007_add_query_indexes"
-down_revision = "006_memory_items_and_scheduled_tasks"
+down_revision = "006_memory_items_tasks"
 branch_labels = None
 depends_on = None
 

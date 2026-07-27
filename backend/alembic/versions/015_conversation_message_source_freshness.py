@@ -1,6 +1,6 @@
 """add conversation message source freshness fields
 
-Revision ID: 015_conversation_message_source_freshness
+Revision ID: 015_msg_source_freshness
 Revises: 014_project_brands
 Create Date: 2026-04-21
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "015_conversation_message_source_freshness"
+revision = "015_msg_source_freshness"
 down_revision = "014_project_brands"
 branch_labels = None
 depends_on = None
