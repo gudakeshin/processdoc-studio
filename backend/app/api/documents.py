@@ -3,15 +3,13 @@ import hashlib
 import json
 import logging
 import re
-import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_project_role
-from app.core.config import settings
-from app.core.office.zip_safety import validate_zip_for_read
+from app.core.source_chunks import build_chunks_from_text
 from app.core.upload_validation import validate_document_upload
 from app.db.models import User
 from app.db.session import get_db
@@ -45,150 +43,32 @@ def _normalize_upload_filename(name: str | None) -> str:
 
 
 async def _extract_text_from_bytes(filename: str, content: bytes, timeout_sec: int = 30) -> tuple[str, str]:
-    """Extract text from various document formats with timeout protection."""
+    """Extract text via the canonical wiki_ingest parser (python-docx, sheet markers, etc.)."""
+    from app.services.wiki_ingest import _extract_text_from_file
+
     lower = (filename or "").lower()
-
-    if lower.endswith((".txt", ".md", ".csv", ".json")):
-        return content.decode("utf-8", errors="ignore"), "utf8_text"
-
-    if lower.endswith(".docx") or lower.endswith(".pptx"):
-        try:
-            def _extract_zip():
-                import io
-                text_parts: list[str] = []
-                with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                    validate_zip_for_read(zf, max_uncompressed_bytes=settings.zip_max_uncompressed_bytes)
-                    for name in zf.namelist():
-                        if lower.endswith(".docx") and not name.startswith("word/"):
-                            continue
-                        if lower.endswith(".pptx") and not name.startswith("ppt/"):
-                            continue
-                        if not name.endswith(".xml"):
-                            continue
-                        raw = zf.read(name).decode("utf-8", errors="ignore")
-                        cleaned = re.sub(r"<[^>]+>", " ", raw)
-                        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-                        if cleaned:
-                            text_parts.append(cleaned)
-                return "\n".join(text_parts)
-
-            text = await asyncio.wait_for(
-                asyncio.to_thread(_extract_zip),
-                timeout=timeout_sec
-            )
-            return text, "zip_xml"
-        except TimeoutError:
-            logger.warning("docx/pptx text extraction timed out for %s", filename)
-            return f"[Office extraction timeout for {filename}]", "zip_timeout_fallback"
-        except Exception:
-            # Decoding the raw zip container here would index compressed bytes
-            # as document text; emit a marker instead.
-            logger.warning("docx/pptx text extraction failed for %s", filename, exc_info=True)
-            return f"[Unable to extract Office file {filename}]", "zip_error_fallback"
-
+    parse_mode = "wiki_ingest"
     if lower.endswith(".pdf"):
-        try:
-            def _extract_pdf():
-                import io
+        parse_mode = "wiki_ingest_pdf"
+    elif lower.endswith((".xlsx", ".xls")):
+        parse_mode = "wiki_ingest_xlsx"
+    elif lower.endswith(".docx"):
+        parse_mode = "wiki_ingest_docx"
+    elif lower.endswith(".pptx"):
+        parse_mode = "wiki_ingest_pptx"
 
-                from pypdf import PdfReader
-
-                reader = PdfReader(io.BytesIO(content))
-                pages = []
-                # Limit pages to first 50 for very large PDFs
-                for idx, page in enumerate(reader.pages[:50]):
-                    if idx > 50:
-                        break
-                    try:
-                        text = page.extract_text() or ""
-                        if text.strip():
-                            pages.append(text)
-                    except Exception:  # noqa: S112 — best-effort, non-fatal
-                        # Skip pages that fail extraction
-                        continue
-                return "\n".join(pages)
-
-            text = await asyncio.wait_for(
-                asyncio.to_thread(_extract_pdf),
-                timeout=timeout_sec
-            )
-            return text, "pypdf"
-        except TimeoutError:
-            logger.warning("PDF text extraction timed out for %s", filename)
-            return f"[PDF extraction timeout for {filename}]", "pdf_timeout_fallback"
-        except Exception:
-            logger.warning("PDF text extraction failed for %s", filename, exc_info=True)
-            return f"[Unable to extract PDF for {filename}]", "pdf_error_fallback"
-
-    if lower.endswith(".xlsx"):
-        try:
-            def _extract_xlsx():
-                import io
-
-                from openpyxl import load_workbook
-
-                wb = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
-                text_parts: list[str] = []
-                for sheet_name in wb.sheetnames:
-                    ws = wb[sheet_name]
-                    sheet_text: list[str] = [sheet_name]
-                    for row in ws.iter_rows(values_only=True):
-                        row_text = " ".join(str(cell or "").strip() for cell in row if cell is not None)
-                        if row_text.strip():
-                            sheet_text.append(row_text)
-                    if len(sheet_text) > 1:
-                        text_parts.append("\n".join(sheet_text))
-                return "\n\n".join(text_parts)
-
-            text = await asyncio.wait_for(
-                asyncio.to_thread(_extract_xlsx),
-                timeout=timeout_sec
-            )
-            return text, "openpyxl"
-        except TimeoutError:
-            logger.warning("XLSX text extraction timed out for %s", filename)
-            return f"[XLSX extraction timeout for {filename}]", "xlsx_timeout_fallback"
-        except Exception:
-            logger.warning("XLSX text extraction failed for %s", filename, exc_info=True)
-            return f"[Unable to extract XLSX for {filename}]", "xlsx_error_fallback"
-
-    if lower.endswith(".xls"):
-        # Legacy OLE2 binary. Without this branch it fell through to
-        # binary_fallback below, which utf-8-decodes the raw container and
-        # indexes the resulting garbage as if it were document text.
-        try:
-            def _extract_xls():
-                import xlrd  # xlrd>=2.0 reads .xls only
-
-                book = xlrd.open_workbook(file_contents=content)
-                text_parts: list[str] = []
-                for sheet in book.sheets():
-                    rows: list[str] = [f"[Sheet: {sheet.name}]"]
-                    for r in range(sheet.nrows):
-                        cells = [str(c).strip() for c in sheet.row_values(r)]
-                        row_text = " | ".join(c for c in cells if c)
-                        if row_text:
-                            rows.append(row_text)
-                    if len(rows) > 1:
-                        text_parts.append("\n".join(rows))
-                return "\n\n".join(text_parts)
-
-            text = await asyncio.wait_for(
-                asyncio.to_thread(_extract_xls),
-                timeout=timeout_sec
-            )
-            return text, "xlrd"
-        except TimeoutError:
-            logger.warning("XLS text extraction timed out for %s", filename)
-            return f"[XLS extraction timeout for {filename}]", "xls_timeout_fallback"
-        except Exception:
-            logger.warning("XLS text extraction failed for %s", filename, exc_info=True)
-            return f"[Unable to extract XLS for {filename}]", "xls_error_fallback"
-
-    # Never returns decoded binary: unknown types are almost always containers,
-    # and decoding them injects mojibake into the retrieval index.
-    logger.warning("No parser for %s; skipping text extraction", filename)
-    return f"[Unsupported file type for text extraction: {filename}]", "unsupported_format"
+    try:
+        text = await asyncio.wait_for(
+            asyncio.to_thread(_extract_text_from_file, filename, content),
+            timeout=timeout_sec,
+        )
+        return str(text or ""), parse_mode
+    except TimeoutError:
+        logger.warning("document text extraction timed out for %s", filename)
+        return f"[Extraction timeout for {filename}]", "timeout_fallback"
+    except Exception:
+        logger.warning("document text extraction failed for %s", filename, exc_info=True)
+        return f"[Unable to extract {filename}]", "error_fallback"
 
 
 @router.post("/upload")
@@ -242,7 +122,11 @@ async def upload_document(
     if cached and isinstance(cached.get("chunks"), list):
         text = cached.get("text", "")
         parse_mode = cached.get("parse_mode", "cached")
-        chunks = cached.get("chunks", [])
+        raw_chunks = cached.get("chunks", [])
+        if raw_chunks and isinstance(raw_chunks[0], str):
+            chunks = build_chunks_from_text(text or "", doc_id=digest, filename=safe_name)
+        else:
+            chunks = raw_chunks
     else:
         try:
             # Extract text with 30-second timeout
@@ -264,23 +148,11 @@ async def upload_document(
             status_message=parse_mode if (parse_mode or "").endswith("fallback") else None,
         )
 
-        def chunk_text(t: str, *, chunk_chars: int = 1200, overlap_chars: int = 120) -> list[str]:
-            t = t.strip()
-            if not t:
-                return []
-            out: list[str] = []
-            start = 0
-            while start < len(t):
-                end = min(len(t), start + chunk_chars)
-                chunk = t[start:end].strip()
-                if chunk:
-                    out.append(chunk)
-                if end >= len(t):
-                    break
-                start = max(0, end - overlap_chars)
-            return out
-
-        chunks = chunk_text(text)
+        chunks = build_chunks_from_text(
+            text or "",
+            doc_id=digest,
+            filename=safe_name,
+        )
         cached = {
             "status": "chunked",
             "chars": len(text),

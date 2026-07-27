@@ -27,7 +27,7 @@ from app.core.icon_library import place_step_icon
 from app.core.tz import IST
 from app.core.topic_palette import pick_topic_palette as _pick_topic_palette
 from app.core.pptx_qa import MAX_RENDERED_SLIDES, validate_pptx_against_slides
-from app.core.evidence_validator import validate_pptx_slides_evidence
+from app.core.evidence_validator import load_source_registry, validate_pptx_slides_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -1441,9 +1441,12 @@ def render_pptx_with_artifact_tool(
                     f"Text trimmed in {len(composer.fit_report)} field(s) — consider shorter copy or splitting across slides."
                 )
 
-        # Run evidence validation
+        # Run evidence validation against retrieved source chunks (primary) and process model (fallback)
         process_model = payload.get("process_model")
-        evidence_report = validate_pptx_slides_evidence(pptx_slides, process_model)
+        source_registry = load_source_registry(payload if isinstance(payload, dict) else {}, run_dir)
+        evidence_report = validate_pptx_slides_evidence(
+            pptx_slides, process_model, source_registry or None
+        )
         qa_report["evidence"] = evidence_report
 
         unsupported_claims = int(evidence_report.get("unsupported_claims_count", 0) or 0)
@@ -1453,9 +1456,9 @@ def render_pptx_with_artifact_tool(
                 unsupported_claims,
                 evidence_report.get("summary", "")
             )
-            # Optional hard gate (default off): evidence soft-block in subagents is the
-            # intended default — ONE targeted rewrite then render proceeds regardless.
-            if settings.pptx_evidence_hard_fail_enabled:
+            # Hard gate only when retrieved client source chunks were available —
+            # blocking with zero source docs would fail every advisory-only deck.
+            if settings.pptx_evidence_hard_fail_enabled and source_registry:
                 qa_report["status"] = "fail"
                 qa_report.setdefault("issues", []).append(
                     f"Evidence validation failed: {unsupported_claims} unsupported claim(s)."

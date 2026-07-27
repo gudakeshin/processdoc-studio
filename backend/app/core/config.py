@@ -344,7 +344,7 @@ class Settings(BaseSettings):
     pptx_visual_critic_mode: str = "auto"
     # When True, unsupported numeric claims from PPTX evidence validation fail the render QA gate.
     # When False, evidence signals remain advisory metadata.
-    pptx_evidence_hard_fail_enabled: bool = False
+    pptx_evidence_hard_fail_enabled: bool = True
     # When True, deck.pdf is produced by converting the rendered PPTX with LibreOffice
     # (pixel-faithful); the ReportLab outline renderer remains the fail-open fallback.
     deck_pdf_via_soffice_enabled: bool = True

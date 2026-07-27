@@ -7,7 +7,7 @@ monkeypatch contract on app.api.projects.conversation.<name> still holds.
 import logging
 import re
 
-from app.services.retrieval import TieredContextEngine
+from app.services.retrieval import TieredContextEngine, _chunk_strings
 
 _LOG = logging.getLogger(__name__)
 
@@ -147,7 +147,8 @@ def _top_parsed_doc_chunks_for_query(project_id: str, query_text: str, max_chunk
         chunks = engine._load_all_parsed_chunks(project_id)  # noqa: SLF001
         if not chunks:
             return []
-        scores = engine._bm25_scores(chunks, query_text)  # noqa: SLF001
+        texts = _chunk_strings(chunks)
+        scores = engine._bm25_scores(texts, query_text)  # noqa: SLF001
         ranked = [chunks[i] for i, score in sorted(enumerate(scores), key=lambda x: x[1], reverse=True) if score > 0]
         return ranked[:max_chunks]
     except Exception as exc:

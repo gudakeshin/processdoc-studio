@@ -5,7 +5,14 @@ import math
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
+from app.core.source_chunks import (
+    assign_source_ids,
+    chunk_text,
+    format_chunk_citation,
+    normalize_chunk,
+)
 from app.services.storage import workspace_path
 
 
@@ -14,6 +21,11 @@ class ContextBundle:
     text: str
     char_budget: int = 32000
     metadata: dict[str, object] | None = None
+
+
+def _chunk_strings(chunks: list[dict[str, Any]]) -> list[str]:
+    """BM25/search text for provenance chunk records."""
+    return [chunk_text(c) for c in chunks if chunk_text(c)]
 
 
 _TOKEN_RE = re.compile(r"[^a-zA-Z0-9]+")
@@ -58,11 +70,11 @@ class TieredContextEngine:
     def __init__(self) -> None:
         self.k1 = 1.5
         self.b = 0.75
-        # Caches store (latest_mtime, chunks, precomputed_bm25_index).
-        self._parsed_cache: dict[str, tuple[float, list[str], _BM25Index]] = {}
+        # Caches store (latest_mtime, chunk_records, precomputed_bm25_index).
+        self._parsed_cache: dict[str, tuple[float, list[dict[str, Any]], _BM25Index]] = {}
         self._wiki_cache: dict[str, tuple[float, list[str], _BM25Index]] = {}
 
-    def _load_all_parsed_chunks(self, project_id: str | None) -> list[str]:
+    def _load_all_parsed_chunks(self, project_id: str | None) -> list[dict[str, Any]]:
         if not project_id:
             return []
         parsed_dir = workspace_path(project_id) / "parsed_docs"
@@ -79,17 +91,22 @@ class TieredContextEngine:
         cached = self._parsed_cache.get(cache_key)
         if cached and cached[0] == latest_mtime:
             return list(cached[1])
-        chunks: list[str] = []
+        chunks: list[dict[str, Any]] = []
         for p in parsed_files:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
+                doc_id = str(data.get("sha256") or p.stem)
+                filename = str(data.get("filename") or "")
                 doc_chunks = data.get("chunks") or []
                 for c in doc_chunks:
                     if isinstance(c, str) and c.strip():
-                        chunks.append(c)
+                        chunks.append(normalize_chunk(c, doc_id=doc_id, filename=filename))
+                    elif isinstance(c, dict) and chunk_text(c):
+                        chunks.append(normalize_chunk(c, doc_id=doc_id, filename=filename))
             except Exception:  # noqa: S112 — best-effort, non-fatal
                 continue
-        self._parsed_cache[cache_key] = (latest_mtime, list(chunks), _build_bm25_index(chunks))
+        texts = _chunk_strings(chunks)
+        self._parsed_cache[cache_key] = (latest_mtime, list(chunks), _build_bm25_index(texts))
         return chunks
 
     def _get_doc_index(self, project_id: str | None) -> _BM25Index | None:
@@ -290,6 +307,27 @@ class TieredContextEngine:
             f"{ins} best practices standards frameworks",
         ]
 
+    @staticmethod
+    def _format_selected_sources(
+        chunks: list[dict[str, Any]],
+        selected_idxs: list[int],
+        *,
+        prefix: str = "S",
+        start_at: int = 1,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """Build inline ``[S#]`` context lines and a provenance registry for selected chunks."""
+        formatted: list[str] = []
+        registry: list[dict[str, Any]] = []
+        for offset, idx in enumerate(selected_idxs):
+            if idx < 0 or idx >= len(chunks):
+                continue
+            chunk = normalize_chunk(chunks[idx])
+            sid = f"{prefix}{start_at + offset}"
+            chunk["source_id"] = sid
+            registry.append(chunk)
+            formatted.append(format_chunk_citation(chunk, sid))
+        return formatted, registry
+
     def assemble(
         self,
         project_id: str | None,
@@ -314,14 +352,15 @@ class TieredContextEngine:
         tier1 = "\n".join(lp_snippets)[:12000]
 
         chunks = self._load_all_parsed_chunks(project_id) if project_id else []
-        if not chunks:
+        texts = _chunk_strings(chunks)
+        if not texts:
             tier2 = instruction[:10000]
             combined = "\n\n".join([tier0, tier1, tier2])[:32000]
             return ContextBundle(text=combined)
 
         # Multi-query expansion + BM25 candidate scoring using precomputed index.
         queries = self._expand_queries(instruction)
-        index = self._get_doc_index(project_id) or _build_bm25_index(chunks)
+        index = self._get_doc_index(project_id) or _build_bm25_index(texts)
         candidates: dict[int, float] = {}
         for q in queries:
             scores = self._bm25_scores(index, q)
@@ -340,10 +379,10 @@ class TieredContextEngine:
         candidate_list = sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)[:60]
         selected_idxs = self._mmr_select(
             candidate_list,
-            chunks,
+            texts,
             max_chars=10000,
         )
-        tier2 = "\n".join(chunks[i] for i in selected_idxs)[:10000]
+        tier2 = "\n".join(texts[i] for i in selected_idxs)[:10000]
 
         combined = "\n\n".join([tier0, tier1, tier2])[:32000]
         return ContextBundle(text=combined)
@@ -380,14 +419,16 @@ class TieredContextEngine:
             wiki_text = "\n\n---\n\n".join(wiki_chunks[i] for i in wiki_sel)
 
         chunks = self._load_all_parsed_chunks(project_id)
+        texts = _chunk_strings(chunks)
         doc_text = ""
-        if chunks:
-            doc_index = self._get_doc_index(project_id) or _build_bm25_index(chunks)
+        if texts:
+            doc_index = self._get_doc_index(project_id) or _build_bm25_index(texts)
             doc_scores = self._multi_query_max(doc_index, queries)
             candidate_list = sorted(enumerate(doc_scores), key=lambda kv: kv[1], reverse=True)[:60]
             doc_budget = max(400, cap - len(wiki_text) - len("## Planner retrieval excerpt\n\n"))
-            selected_idxs = self._mmr_select(candidate_list, chunks, max_chars=doc_budget)
-            doc_text = "\n\n---\n\n".join(chunks[i] for i in selected_idxs)
+            selected_idxs = self._mmr_select(candidate_list, texts, max_chars=doc_budget)
+            cited, _registry = self._format_selected_sources(chunks, selected_idxs, prefix="S")
+            doc_text = "\n\n---\n\n".join(cited)
 
         if not wiki_text and not doc_text:
             return ""
@@ -623,8 +664,10 @@ class TieredContextEngine:
             evidence_input.extend(wiki_chunks[i] for i in wiki_selected)
 
         chunks = self._load_all_parsed_chunks(project_id) if project_id else []
-        if chunks:
-            doc_index = self._get_doc_index(project_id) or _build_bm25_index(chunks)
+        texts = _chunk_strings(chunks)
+        source_registry: list[dict[str, Any]] = []
+        if texts:
+            doc_index = self._get_doc_index(project_id) or _build_bm25_index(texts)
             doc_scores = (
                 self._multi_query_max(doc_index, queries)
                 if queries
@@ -632,10 +675,11 @@ class TieredContextEngine:
             )
             candidate_list = sorted(enumerate(doc_scores), key=lambda kv: kv[1], reverse=True)[:60]
             if not any(score > 0 for _, score in candidate_list):
-                selected_idxs = list(range(min(12, len(chunks))))
+                selected_idxs = list(range(min(12, len(texts))))
             else:
-                selected_idxs = self._mmr_select(candidate_list, chunks, max_chars=section_caps["Evidence"])
-            evidence_input.extend(chunks[i] for i in selected_idxs)
+                selected_idxs = self._mmr_select(candidate_list, texts, max_chars=section_caps["Evidence"])
+            cited, source_registry = self._format_selected_sources(chunks, selected_idxs, prefix="S")
+            evidence_input.extend(cited)
 
         objective_out, obj_dropped = self._compact_items(objective_items, section_caps["ObjectiveNow"])
 
@@ -715,6 +759,7 @@ class TieredContextEngine:
             "token_count_estimate": int(len(assembled) / 4),
             "parsed_chunk_count": len(chunks),
             "selected_evidence_chunk_count": len(evidence_out),
+            "source_registry": source_registry,
             "section_sizes": {k: len(v) for k, v in sections.items()},
             "compaction_tiers_applied": compaction_trace,
             "compaction_reason_codes": [
@@ -738,6 +783,7 @@ class TieredContextEngine:
                 "selected_wiki_pages": selected_wiki_info,
                 "selected_lp_headings": selected_lp_info,
                 "parsed_doc_count": len(chunks),
+                "source_registry": source_registry,
             },
             "tier4_dropped_sources": tier4_dropped_sources,
         }
