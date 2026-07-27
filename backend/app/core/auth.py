@@ -198,5 +198,4 @@ def ensure_user(email: str, password: str, db: Session) -> User:
     created = User(id=f"u_{uuid.uuid4().hex[:10]}", email=email, hashed_password=get_password_hash(password))
     db.add(created)
     db.commit()
-    db.refresh(created)
     return created
